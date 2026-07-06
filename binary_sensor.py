@@ -3,6 +3,7 @@
 支持设备类别：
 - MOTION_SENSOR (deviceType=26) 人体传感器
 - DOOR_WINDOW_SENSOR (deviceType=46) 门窗传感器
+- EMERGENCY_BUTTON (deviceType=56) 紧急按钮
 """
 import logging
 from typing import Optional
@@ -191,7 +192,7 @@ class OrviboSmokeSensor(CoordinatorEntity, BinarySensorEntity):
 
 
 class OrviboEmergencyButton(CoordinatorEntity, BinarySensorEntity):
-    """紧急按钮（deviceType=93）。"""
+    """紧急按钮（deviceType=56）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
         super().__init__(coordinator)

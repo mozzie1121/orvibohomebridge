@@ -3,7 +3,7 @@
 支持设备类别：
 - MOTION_SENSOR (deviceType=26) 人体传感器
 - SMOKE_SENSOR (deviceType=27) 烟雾传感器
-- EMERGENCY_BUTTON (deviceType=93) 紧急按钮
+- EMERGENCY_BUTTON (deviceType=56) 紧急按钮
 - DOOR_LOCK (deviceType=300) 智能门锁
 - TEMP_HUMIDITY_SENSOR (deviceType=300 subType=491) 温湿度传感器
 - DOOR_WINDOW_SENSOR (deviceType=46) 门窗传感器
@@ -46,6 +46,8 @@ async def async_setup_entry(
             entities.append(OrviboDoorWindowBatterySensor(coordinator, device))
         elif category == DeviceCategory.SMOKE_SENSOR:
             entities.append(OrviboSmokeBatterySensor(coordinator, device))
+        elif category == DeviceCategory.EMERGENCY_BUTTON:
+            entities.append(OrviboEmergencyButtonBatterySensor(coordinator, device))
         elif category == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboDoorLockDryBatterySensor(coordinator, device))
             entities.append(OrviboDoorLockLithiumBatterySensor(coordinator, device))
@@ -190,6 +192,27 @@ class OrviboSmokeBatterySensor(OrviboSensorBase):
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
         super().__init__(coordinator, device)
         self._attr_unique_id = f"orvibohomebridge_smoke_battery_{self._device_id}"
+        self._attr_name = "电量"
+        self._attr_device_class = SensorDeviceClass.BATTERY
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = "%"
+
+    @property
+    def native_value(self) -> Optional[int]:
+        state = self.coordinator.get_device_state(self._device_id)
+        if state:
+            bat = state.get("battery")
+            if bat is not None:
+                return int(bat)
+        return None
+
+
+class OrviboEmergencyButtonBatterySensor(OrviboSensorBase):
+    """紧急按钮 - 电量（deviceType=56）。"""
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"orvibohomebridge_emergency_battery_{self._device_id}"
         self._attr_name = "电量"
         self._attr_device_class = SensorDeviceClass.BATTERY
         self._attr_state_class = SensorStateClass.MEASUREMENT

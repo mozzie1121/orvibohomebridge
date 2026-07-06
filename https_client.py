@@ -512,6 +512,9 @@ class HttpsClient:
                     elif any(keyword in device_name for keyword in ["晾衣架", "晾衣机", "晾衣"]):
                         device_type = DEVICE_TYPE_COVER
                         _LOGGER.info(f"通过名称推断为晾衣架: {device_name}")
+                    elif any(keyword in device_name for keyword in ["紧急按钮", "emergency"]):
+                        device_type = DEVICE_TYPE_SENSOR
+                        _LOGGER.info(f"通过名称推断为紧急按钮: {device_name}")
                     # 通过 properties 中的特征推断
                     elif isinstance(properties, dict):
                         # 有 percent 属性 -> 窗帘或晾衣架

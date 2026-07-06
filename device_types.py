@@ -31,7 +31,7 @@ class DeviceCategory(Enum):
     CLOTHES_HORSE = "clothes_horse"                    # deviceTypeId=52，智能电动晾衣机
     MOTION_SENSOR = "motion_sensor"                    # deviceTypeId=26
     SMOKE_SENSOR = "smoke_sensor"                      # deviceTypeId=27
-    EMERGENCY_BUTTON = "emergency_button"              # deviceTypeId=93
+    EMERGENCY_BUTTON = "emergency_button"              # deviceTypeId=56
     SMART_REMOTE = "smart_remote"                      # deviceTypeId=150
     MIXPAD_4WAY_BASE = "mixpad_4way_base"              # deviceTypeId=511
     DIMMABLE_LIGHT = "dimmable_light"                  # deviceTypeId=502，可调光灯（仅亮度，无色温）
@@ -164,7 +164,7 @@ _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
     DeviceCategory.EMERGENCY_BUTTON: CategoryInfo(
         category=DeviceCategory.EMERGENCY_BUTTON,
         label="紧急按钮",
-        description="deviceTypeId=93，紧急报警按钮",
+        description="deviceTypeId=56，紧急报警按钮",
         capabilities=("emergency_alarm",),
     ),
     DeviceCategory.SMART_REMOTE: CategoryInfo(
@@ -239,7 +239,7 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     52: DeviceCategory.CLOTHES_HORSE,
     26: DeviceCategory.MOTION_SENSOR,
     27: DeviceCategory.SMOKE_SENSOR,
-    93: DeviceCategory.EMERGENCY_BUTTON,
+    56: DeviceCategory.EMERGENCY_BUTTON,
     150: DeviceCategory.SMART_REMOTE,
     511: DeviceCategory.MIXPAD_4WAY_BASE,
     502: DeviceCategory.DIMMABLE_LIGHT,
