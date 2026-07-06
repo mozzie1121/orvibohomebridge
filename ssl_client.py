@@ -114,7 +114,7 @@ class SSLClient:
                 timeout=10.0
             )
             self.connected = True
-            _LOGGER.info("SSL连接成功")
+            _LOGGER.debug("SSL连接成功")
             return True
         except asyncio.TimeoutError:
             _LOGGER.error("SSL连接服务器 [%s:%s] 超时", SSL_HOST, SSL_PORT)
@@ -142,7 +142,7 @@ class SSLClient:
                 pass
 
         if self.writer and not self.writer.is_closing():
-            _LOGGER.info("SSL正在断开已有连接...")
+            _LOGGER.debug("SSL正在断开已有连接...")
             self.writer.close()
             try:
                 await asyncio.wait_for(self.writer.wait_closed(), timeout=2.0)
@@ -156,7 +156,7 @@ class SSLClient:
         self.session_id = None
         self.session_key = None
         self.connected = False
-        _LOGGER.info("SSL连接已断开")
+        _LOGGER.debug("SSL连接已断开")
 
     async def _reconnect(self):
         try:
@@ -165,7 +165,7 @@ class SSLClient:
             _LOGGER.error("断开连接异常: %s", e)
 
         if self.retry_interval > 0:
-            _LOGGER.info(f"{self.retry_interval}秒后尝试重连...")
+            _LOGGER.debug(f"{self.retry_interval}秒后尝试重连...")
             await asyncio.sleep(self.retry_interval)
             await self.connect_and_login()
 
@@ -174,30 +174,30 @@ class SSLClient:
             return True
         for retry in range(SSL_MAX_RECONNECT_ATTEMPTS):
             try:
-                _LOGGER.info("SSL正在连接和登录...")
+                _LOGGER.debug("SSL正在连接和登录...")
                 self.connected = await self._connect()
                 if self.connected:
-                    _LOGGER.info("SSL连接成功，发送Hello...")
+                    _LOGGER.debug("SSL连接成功，发送Hello...")
                     await self._send_hello()
-                    _LOGGER.info("创建后台监听任务...")
+                    _LOGGER.debug("创建后台监听任务...")
                     self._listening_task = self.hass.async_create_background_task(
                         self._listen_loop(),
                         name="orvibohomebridge_server_response_listener"
                     )
                     # 等待Hello密钥返回
                     await asyncio.sleep(3)
-                    _LOGGER.info(f"等待后检查session_key={self.session_key}")
+                    _LOGGER.debug(f"等待后检查session_key={self.session_key}")
                     login_result = await self._send_login()
-                    _LOGGER.info(f"SSL登录结果: {login_result}")
+                    _LOGGER.debug(f"SSL登录结果: {login_result}")
                     if login_result:
-                        _LOGGER.info("启动心跳保活任务...")
+                        _LOGGER.debug("启动心跳保活任务...")
                         self._heartbeat_task = self.hass.async_create_background_task(
                             self._heartbeat_loop(),
                             name="orvibohomebridge_heartbeat"
                         )
                     return login_result
             except Exception as e:
-                _LOGGER.warning(f"连接/登录重试 {retry+1}/{SSL_MAX_RECONNECT_ATTEMPTS}: {e}")
+                _LOGGER.debug(f"连接/登录重试 {retry+1}/{SSL_MAX_RECONNECT_ATTEMPTS}: {e}")
                 await asyncio.sleep(self.retry_interval * (retry + 1))
         return False
 
@@ -229,14 +229,14 @@ class SSLClient:
 
     async def _send_hello(self):
         payload = HomemateJsonData.ssl_get_session()
-        _LOGGER.info(f"发送Hello包: {payload}")
+        _LOGGER.debug(f"发送Hello包: {payload}")
         await self._send_packet(payload, DEFAULT_KEY.encode("utf-8"))
 
     async def _send_login(self):
         if not self.connected:
-            _LOGGER.warning("未建立SSL连接，无法发起登录")
+            _LOGGER.debug("未建立SSL连接，无法发起登录")
             return False
-        _LOGGER.info(f"准备登录，当前session_key={self.session_key}, family_id={self.family_id}")
+        _LOGGER.debug(f"准备登录，当前session_key={self.session_key}, family_id={self.family_id}")
         password_md5 = hashlib.md5(self.password.encode()).hexdigest().upper()
         payload = HomemateJsonData.ssl_login(
             username=self.username,
@@ -247,13 +247,13 @@ class SSLClient:
             await self._send_packet(payload, self.session_key)
             return True
         else:
-            _LOGGER.warning("会话密钥未获取，暂不发送登录包")
+            _LOGGER.debug("会话密钥未获取，暂不发送登录包")
             return False
 
     async def send_control_switch(self, device_id: str, device_uid: str, state: bool):
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_control_switch(
             username=self.username,
@@ -261,7 +261,7 @@ class SSLClient:
             device_uid=device_uid,
             state=state
         )
-        _LOGGER.info(f"下发开关控制 {device_id} state={state} payload={payload}")
+        _LOGGER.debug(f"下发开关控制 {device_id} state={state} payload={payload}")
         await self._send_packet(payload, self.session_key)
         return True
 
@@ -269,7 +269,7 @@ class SSLClient:
         """可调光灯亮度控制（set property 格式，type=502）。"""
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_control_dimmable_light_brightness(
             username=self.username,
@@ -277,14 +277,14 @@ class SSLClient:
             device_uid=device_uid,
             brightness_percent=brightness_percent
         )
-        _LOGGER.info(f"下发可调光灯亮度 {device_id} brightness={brightness_percent}%")
+        _LOGGER.debug(f"下发可调光灯亮度 {device_id} brightness={brightness_percent}%")
         await self._send_packet(payload, self.session_key)
         return True
 
     async def send_control_light(self, device_id: str, device_uid: str, state: bool, brightness: int = 0, colortemp_mired: int = 0):
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_control_light(
             username=self.username,
@@ -294,14 +294,14 @@ class SSLClient:
             brightness=brightness,
             colortemp_mired=colortemp_mired
         )
-        _LOGGER.info(f"下发灯光控制 {device_id} state={state} bri={brightness} ct_mired={colortemp_mired}")
+        _LOGGER.debug(f"下发灯光控制 {device_id} state={state} bri={brightness} ct_mired={colortemp_mired}")
         await self._send_packet(payload, self.session_key)
         return True
 
     async def send_control_light_brightness(self, device_id: str, device_uid: str, brightness: int):
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_control_light_brightness(
             username=self.username,
@@ -309,14 +309,14 @@ class SSLClient:
             device_uid=device_uid,
             brightness=brightness
         )
-        _LOGGER.info(f"下发亮度 {device_id} value={brightness}")
+        _LOGGER.debug(f"下发亮度 {device_id} value={brightness}")
         await self._send_packet(payload, self.session_key)
         return True
 
     async def send_control_light_colortemp(self, device_id: str, device_uid: str, colortemp_k: int, brightness: int = 0):
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_control_light_colortemp(
             username=self.username,
@@ -325,7 +325,7 @@ class SSLClient:
             colortemp_k=colortemp_k,
             brightness=brightness
         )
-        _LOGGER.info(f"下发色温 {device_id} {colortemp_k}K bri={brightness}")
+        _LOGGER.debug(f"下发色温 {device_id} {colortemp_k}K bri={brightness}")
         await self._send_packet(payload, self.session_key)
         return True
 
@@ -333,7 +333,7 @@ class SSLClient:
         """一次性下发亮度+色温 复合cmd=15指令"""
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发复合灯光指令")
+            _LOGGER.debug("会话密钥无效，无法下发复合灯光指令")
             return False
 
         if power is None:
@@ -347,14 +347,14 @@ class SSLClient:
             colortemp_k=color_temp_k,
             power=power
         )
-        _LOGGER.info(f"复合调光下发 device={device_id} power={power} bri={brightness} ct={color_temp_k}")
+        _LOGGER.debug(f"复合调光下发 device={device_id} power={power} bri={brightness} ct={color_temp_k}")
         await self._send_packet(payload, self.session_key)
         return True
 
     async def send_control_cover(self, device_id: str, device_uid: str, position: int):
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_control_cover(
             username=self.username,
@@ -374,7 +374,7 @@ class SSLClient:
         """
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_clothes_horse_control(
             username=self.username,
@@ -383,7 +383,7 @@ class SSLClient:
             ctrl_field=ctrl_field,
             ctrl_value=ctrl_value,
         )
-        _LOGGER.info(f"下发晾衣架控制 {device_id} {ctrl_field}={ctrl_value}")
+        _LOGGER.debug(f"下发晾衣架控制 {device_id} {ctrl_field}={ctrl_value}")
         await self._send_packet(payload, self.session_key)
         return True
 
@@ -391,10 +391,10 @@ class SSLClient:
         """发送晾衣架状态查询命令(cmd=100)。"""
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
-            _LOGGER.warning("会话密钥无效，无法下发")
+            _LOGGER.debug("会话密钥无效，无法下发")
             return False
         payload = HomemateJsonData.ssl_clothes_horse_query(device_id=device_id)
-        _LOGGER.info(f"查询晾衣架状态 {device_id}")
+        _LOGGER.debug(f"查询晾衣架状态 {device_id}")
         await self._send_packet(payload, self.session_key)
         return True
 
@@ -434,7 +434,7 @@ class SSLClient:
                 self.session_id = bytes(packet.session_id).decode("utf-8")
                 data = packet.json_payload
                 if data is None:
-                    _LOGGER.warning("数据包JSON解析失败，丢弃")
+                    _LOGGER.debug("数据包JSON解析失败，丢弃")
                     continue
                 cmd = data.get("cmd")
                 _LOGGER.debug(f"收到服务端包 cmd={cmd}")
@@ -455,12 +455,12 @@ class SSLClient:
                 else:
                     _LOGGER.debug(f"未知cmd包: {data}")
             except asyncio.IncompleteReadError:
-                _LOGGER.warning("SSL流读取不完整，连接断开")
+                _LOGGER.debug("SSL流读取不完整，连接断开")
                 break
             except asyncio.TimeoutError:
                 continue
             except ConnectionError:
-                _LOGGER.warning("网络连接中断")
+                _LOGGER.debug("网络连接中断")
                 break
             except asyncio.CancelledError:
                 _LOGGER.debug("监听任务被取消，退出循环")
@@ -475,21 +475,21 @@ class SSLClient:
         key = data.get("key")
         self.session_key = str(key).encode("utf-8") if key else DEFAULT_KEY.encode("utf-8")
         SSLClient.add_key(self.session_id, self.session_key)
-        _LOGGER.info(f"Hello响应成功，会话ID:{self.session_id} 密钥:{key}")
+        _LOGGER.debug(f"Hello响应成功，会话ID:{self.session_id} 密钥:{key}")
         self.on_session_id_obtained(self.session_id)
 
     async def _handle_login(self, data: dict):
         status = data.get("status")
         user_id = data.get("userId")
         if status == 0 or user_id:
-            _LOGGER.info(f"SSL登录成功 userId={user_id}")
+            _LOGGER.debug(f"SSL登录成功 userId={user_id}")
             return True
         _LOGGER.error(f"登录失败 status={status} msg={data.get('msg')}")
         return False
 
     async def _handle_upload_device_list(self, data: dict):
         device_list = data.get("data", {}).get("deviceList", [])
-        _LOGGER.info(f"全量设备列表推送，共{len(device_list)}台")
+        _LOGGER.debug(f"全量设备列表推送，共{len(device_list)}台")
         for dev_data in device_list:
             dev_id = dev_data.get("deviceId")
             if not dev_id:
@@ -518,7 +518,7 @@ class SSLClient:
         if not dev_id:
             return
         
-        _LOGGER.info(f"[SSL接收] deviceStatusReport数据: {data}")
+        _LOGGER.debug(f"[SSL接收] deviceStatusReport数据: {data}")
         
         # 只提取原始数据，不做解析
         raw_status = {
@@ -529,16 +529,16 @@ class SSLClient:
             "online": True,
         }
         
-        _LOGGER.info(f"[SSL输出] deviceStatusReport原始数据: deviceId={dev_id}")
+        _LOGGER.debug(f"[SSL输出] deviceStatusReport原始数据: deviceId={dev_id}")
         self.on_status_update(dev_id, raw_status)
 
     async def _handle_state_update(self, data: dict):
         """处理cmd=42 MQTT设备状态推送，只提取原始数据，不做状态解析"""
         # 输出所有cmd=42消息，用于诊断
-        _LOGGER.info(f"[SSL接收] cmd=42完整数据: {data}")
+        _LOGGER.debug(f"[SSL接收] cmd=42完整数据: {data}")
         
         if not data.get("respByAcc"):
-            _LOGGER.info(f"[SSL过滤] respByAcc=false，跳过处理: deviceId={data.get('deviceId')}")
+            _LOGGER.debug(f"[SSL过滤] respByAcc=false，跳过处理: deviceId={data.get('deviceId')}")
             return
         
         dev_id = data.get("deviceId", "")
@@ -559,13 +559,13 @@ class SSLClient:
             "online": True,  # MQTT推送的设备默认在线
         }
         
-        _LOGGER.info(f"[SSL输出] 原始状态数据: deviceId={dev_id}, value1={raw_status['value1']}, value2={raw_status['value2']}, value3={raw_status['value3']}")
+        _LOGGER.debug(f"[SSL输出] 原始状态数据: deviceId={dev_id}, value1={raw_status['value1']}, value2={raw_status['value2']}, value3={raw_status['value3']}")
         
         self.on_status_update(dev_id, raw_status)
 
     async def _handle_clothes_horse_state(self, data: dict):
         """处理 cmd=99 晾衣架状态推送。"""
-        _LOGGER.info(f"[SSL接收] cmd=99晾衣架状态: {data}")
+        _LOGGER.debug(f"[SSL接收] cmd=99晾衣架状态: {data}")
 
         dev_id = data.get("deviceId", "")
         if not dev_id:
@@ -586,7 +586,7 @@ class SSLClient:
             "online": True,
         }
 
-        _LOGGER.info(
+        _LOGGER.debug(
             f"[SSL输出] 晾衣架状态: deviceId={dev_id}, "
             f"lighting={raw_status['lighting_state']}, motor={raw_status['motor_state']}, "
             f"pos={raw_status['motor_position']}"
