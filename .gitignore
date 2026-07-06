@@ -1,0 +1,45 @@
+# HA Orvibo Integration - .gitignore
+
+# Standalone project (contains privacy-sensitive data)
+standalone/
+
+# Log files
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+
+# Certificates
+certs/
+
+# Configuration files
+config.json
+*.config
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Node modules (if any)
+node_modules/
+
+# Build artifacts
+dist/
+build/
+
+# Home Assistant specific
+.homeassistant/
