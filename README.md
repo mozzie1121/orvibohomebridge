@@ -69,7 +69,7 @@
 
 ### 手动安装
 
-1. 将 `orvibohomebridge` 文件夹复制到 `config/custom_components/` 目录
+1. 将仓库中的 `custom_components/orvibohomebridge` 文件夹复制到 Home Assistant 的 `config/custom_components/orvibohomebridge` 目录
 2. 重启 Home Assistant
 
 ## 🔧 配置
@@ -124,22 +124,30 @@
 
 ```
 orvibohomebridge/
-├── __init__.py          # 集成入口，平台注册
-├── config_flow.py       # 配置流程
-├── coordinator.py       # 数据协调器，状态管理
-├── const.py             # 常量定义
-├── device_types.py      # 设备分类
-├── https_client.py      # HTTP API 客户端
-├── ssl_client.py        # SSL 连接客户端
-├── packet.py            # 数据包构造
-├── functions.py         # 工具函数
-├── light.py             # 灯光平台
-├── cover.py             # 窗帘平台
-├── climate.py           # 空调平台
-├── switch.py            # 开关平台
-├── sensor.py            # 传感器平台
-├── binary_sensor.py     # 二元传感器平台
-└── manifest.json        # 集成元数据
+├── custom_components/
+│   └── orvibohomebridge/     # HACS 自定义集成
+│       ├── __init__.py       # 集成入口，平台注册
+│       ├── manifest.json     # 集成元数据
+│       ├── config_flow.py    # 配置流程
+│       ├── coordinator.py    # 数据协调器，状态管理
+│       ├── const.py          # 常量定义
+│       ├── device_types.py   # 设备分类
+│       ├── https_client.py   # HTTP API 客户端
+│       ├── ssl_client.py     # SSL 连接客户端
+│       ├── packet.py         # 数据包构造
+│       ├── functions.py      # 工具函数
+│       ├── light.py          # 灯光平台
+│       ├── cover.py          # 窗帘平台
+│       ├── climate.py        # 空调平台
+│       ├── switch.py         # 开关平台
+│       ├── sensor.py         # 传感器平台
+│       ├── binary_sensor.py  # 二元传感器平台
+│       ├── fan.py            # 新风系统平台
+│       └── certs/            # SSL 证书
+├── hacs.json                 # HACS 配置
+├── brand/                    # 品牌图标
+├── screenshots/              # 界面截图
+└── README.md
 ```
 
 ## 📝 协议说明
