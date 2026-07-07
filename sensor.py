@@ -50,6 +50,8 @@ async def async_setup_entry(
             entities.append(OrviboEmergencyButtonBatterySensor(coordinator, device))
         elif category == DeviceCategory.WATER_LEAK_SENSOR:
             entities.append(OrviboWaterLeakBatterySensor(coordinator, device))
+        elif category == DeviceCategory.GAS_SENSOR:
+            pass
         elif category == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboDoorLockDryBatterySensor(coordinator, device))
             entities.append(OrviboDoorLockLithiumBatterySensor(coordinator, device))
@@ -236,6 +238,27 @@ class OrviboWaterLeakBatterySensor(OrviboSensorBase):
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
         super().__init__(coordinator, device)
         self._attr_unique_id = f"orvibohomebridge_water_leak_battery_{self._device_id}"
+        self._attr_name = "电量"
+        self._attr_device_class = SensorDeviceClass.BATTERY
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = "%"
+
+    @property
+    def native_value(self) -> Optional[int]:
+        state = self.coordinator.get_device_state(self._device_id)
+        if state:
+            bat = state.get("battery")
+            if bat is not None:
+                return int(bat)
+        return None
+
+
+class OrviboGasBatterySensor(OrviboSensorBase):
+    """可燃气体探测器 - 电量（deviceType=25）。"""
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"orvibohomebridge_gas_battery_{self._device_id}"
         self._attr_name = "电量"
         self._attr_device_class = SensorDeviceClass.BATTERY
         self._attr_state_class = SensorStateClass.MEASUREMENT

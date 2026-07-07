@@ -49,6 +49,8 @@ async def async_setup_entry(
             entities.append(OrviboEmergencyButton(coordinator, device))
         elif category == DeviceCategory.WATER_LEAK_SENSOR:
             entities.append(OrviboWaterLeakSensor(coordinator, device))
+        elif category == DeviceCategory.GAS_SENSOR:
+            entities.append(OrviboGasSensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -245,6 +247,34 @@ class OrviboWaterLeakSensor(CoordinatorEntity, BinarySensorEntity):
             "name": self._device.get("device_name", "Orvibo Water Leak Sensor"),
             "manufacturer": MANUFACTURER,
             "model": "Water Leak Sensor",
+            "sw_version": "1.0",
+        }
+
+
+class OrviboGasSensor(CoordinatorEntity, BinarySensorEntity):
+    """可燃气体探测器（deviceType=25）。"""
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator)
+        self._device = device
+        self._device_id = device.get("device_id", "")
+        self._attr_unique_id = f"orvibohomebridge_gas_{self._device_id}"
+        self._attr_name = "燃气检测"
+        self._attr_device_class = BinarySensorDeviceClass.GAS
+        self._attr_icon = "mdi:gas-cylinder"
+
+    @property
+    def is_on(self) -> Optional[bool]:
+        state = self.coordinator.get_device_state(self._device_id)
+        return state.get("gas_detected", False) if state else False
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", "Orvibo Gas Sensor"),
+            "manufacturer": MANUFACTURER,
+            "model": "Gas Sensor",
             "sw_version": "1.0",
         }
 

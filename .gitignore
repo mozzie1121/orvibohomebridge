@@ -43,3 +43,4 @@ build/
 
 # Home Assistant specific
 .homeassistant/
+check_gas_sensor.py

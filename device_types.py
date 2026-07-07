@@ -33,6 +33,7 @@ class DeviceCategory(Enum):
     SMOKE_SENSOR = "smoke_sensor"                      # deviceTypeId=27
     EMERGENCY_BUTTON = "emergency_button"              # deviceTypeId=56
     WATER_LEAK_SENSOR = "water_leak_sensor"            # deviceTypeId=54，水浸探测器
+    GAS_SENSOR = "gas_sensor"                          # deviceTypeId=25，可燃气体探测器
     SMART_REMOTE = "smart_remote"                      # deviceTypeId=150
     MIXPAD_4WAY_BASE = "mixpad_4way_base"              # deviceTypeId=511
     DIMMABLE_LIGHT = "dimmable_light"                  # deviceTypeId=502，可调光灯（仅亮度，无色温）
@@ -174,6 +175,12 @@ _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
         description="deviceTypeId=54，水浸传感器",
         capabilities=("water_leak_detection",),
     ),
+    DeviceCategory.GAS_SENSOR: CategoryInfo(
+        category=DeviceCategory.GAS_SENSOR,
+        label="可燃气体探测器",
+        description="deviceTypeId=25，检测可燃气体浓度",
+        capabilities=("gas_detection",),
+    ),
     DeviceCategory.SMART_REMOTE: CategoryInfo(
         category=DeviceCategory.SMART_REMOTE,
         label="智能遥控器",
@@ -246,6 +253,7 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     52: DeviceCategory.CLOTHES_HORSE,
     26: DeviceCategory.MOTION_SENSOR,
     27: DeviceCategory.SMOKE_SENSOR,
+    25: DeviceCategory.GAS_SENSOR,
     56: DeviceCategory.EMERGENCY_BUTTON,
     54: DeviceCategory.WATER_LEAK_SENSOR,
     150: DeviceCategory.SMART_REMOTE,

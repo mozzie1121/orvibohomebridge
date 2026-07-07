@@ -13,6 +13,7 @@ from .const import (
     DEVICE_TYPE_LIGHT,
     DEVICE_TYPE_COVER,
     DEVICE_TYPE_SWITCH,
+    DEVICE_TYPE_SENSOR,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -518,6 +519,9 @@ class HttpsClient:
                     elif any(keyword in device_name for keyword in ["水浸", "漏水", "water leak", "water"]):
                         device_type = DEVICE_TYPE_SENSOR
                         _LOGGER.info(f"通过名称推断为水浸探测器: {device_name}")
+                    elif any(keyword in device_name for keyword in ["可燃气体", "气体", "燃气", "gas", "煤气"]):
+                        device_type = DEVICE_TYPE_SENSOR
+                        _LOGGER.info(f"通过名称推断为气体探测器: {device_name}")
                     # 通过 properties 中的特征推断
                     elif isinstance(properties, dict):
                         # 有 percent 属性 -> 窗帘或晾衣架
