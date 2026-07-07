@@ -1,4 +1,7 @@
+import os
 from datetime import timedelta
+
+_CERTS_DIR = os.path.join(os.path.dirname(__file__), "certs")
 
 # 设置为 None 禁用自动更新，或设置一个很长的时间
 UPDATE_INTERVAL = None  # timedelta(seconds=60)
@@ -37,9 +40,9 @@ SIGN_KEY = "nQ45RjPtOws96jmH"
 
 SSL_HOST = "china.orvibo.com"
 SSL_PORT = 10002
-CLIENT_CERT = "./certs/client_cert.pem"
-CLIENT_KEY = "./certs/client_key.pem"
-SERVER_CA = "./certs/server_ca.pem"
+CLIENT_CERT = os.path.join(_CERTS_DIR, "client_cert.pem")
+CLIENT_KEY = os.path.join(_CERTS_DIR, "client_key.pem")
+SERVER_CA = os.path.join(_CERTS_DIR, "server_ca.pem")
 DEFAULT_KEY = "khggd54865SNJHGF"
 MAGIC = bytes([0x68, 0x64])
 ID_UNSET = b'\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20'

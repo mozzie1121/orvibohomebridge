@@ -47,10 +47,9 @@ class SSLClient:
         self.heartbeat_interval = heartbeat_interval
         self.retry_interval = retry_interval
 
-        BASE_DIR = Path(__file__).parent.resolve()
-        self.certfile = BASE_DIR / CLIENT_CERT
-        self.keyfile = BASE_DIR / CLIENT_KEY
-        self.cafile = BASE_DIR / SERVER_CA
+        self.certfile = Path(CLIENT_CERT)
+        self.keyfile = Path(CLIENT_KEY)
+        self.cafile = Path(SERVER_CA)
 
         self.ssl_context = None
         self.reader: Optional[asyncio.StreamReader] = None
