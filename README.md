@@ -1,4 +1,4 @@
-# Orvibo Homebridge
+# ORVIBO HomeBridge
 
 一个用于 Home Assistant 的欧瑞博（Orvibo）智能设备集成。通过 SSL 连接和 MQTT 状态推送，实现对欧瑞博智能家居设备的控制和状态监控。
 
