@@ -962,7 +962,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     self._parse_status_generic(dev_state, raw_status)
 
             # 通知HA刷新实体状态
-            self.hass.async_add_job(self.async_set_updated_data, self.device_states)
+            asyncio.create_task(self.async_set_updated_data(self.device_states))
             _LOGGER.debug(f"[{matched_device_id}] MQTT状态同步完成: state={dev_state.get('state')}, bri={dev_state.get('brightness')}, ct={dev_state.get('color_temp')}, pos={dev_state.get('position')}")
 
         self.ssl_client = SSLClient(
