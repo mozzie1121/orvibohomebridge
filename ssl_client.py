@@ -498,6 +498,24 @@ class SSLClient:
         await self._send_packet(payload, self.session_key)
         return True
 
+    async def send_control_ventilation(self, device_id: str, device_uid: str, value1: int):
+        """发送新风系统控制命令(cmd=15 set property)。
+        value1: 0=慢, 50=停, 100=快
+        """
+        await self.connect_and_login()
+        if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
+            _LOGGER.debug("会话密钥无效，无法下发")
+            return False
+        payload = HomemateJsonData.ssl_control_ventilation(
+            username=self.username,
+            device_id=device_id,
+            device_uid=device_uid,
+            value1=value1
+        )
+        _LOGGER.debug(f"下发新风系统控制 {device_id} value1={value1}")
+        await self._send_packet(payload, self.session_key)
+        return True
+
     async def send_clothes_horse_control(self, device_id: str, device_uid: str, ctrl_field: str, ctrl_value: str):
         """发送晾衣架控制命令(cmd=98)。
 

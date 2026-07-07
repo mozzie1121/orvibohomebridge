@@ -50,6 +50,7 @@ DEVICE_TYPE_LIGHT = "light"
 DEVICE_TYPE_CLOTHES_HORSE = "clothes_horse"
 DEVICE_TYPE_SENSOR = "sensor"
 DEVICE_TYPE_CLIMATE = "climate"
+DEVICE_TYPE_FAN = "fan"
 
 # HA 平台路由映射（device_type_raw → HA 平台字符串）
 # 注意：隐藏类别（114/135/136/137/143/518/14/150/511）不在本表，由
@@ -74,12 +75,14 @@ DEVICE_TYPE_MAP = {
     502: DEVICE_TYPE_LIGHT,         # DIMMABLE_LIGHT
     0: DEVICE_TYPE_LIGHT,           # 0-10V调光灯模块 调光模式 (deviceType=0, subDeviceType=-2)
     46: DEVICE_TYPE_SENSOR,         # DOOR_WINDOW_SENSOR
+    516: DEVICE_TYPE_FAN,           # VENTILATION_SYSTEM 新风系统
 }
 
 CLASS_ID_MAP = {
     426: DEVICE_TYPE_LIGHT,
     429: DEVICE_TYPE_LIGHT,
     436: DEVICE_TYPE_LIGHT,         # CCT_LIGHT_STRIP
+    1114: DEVICE_TYPE_FAN,          # VENTILATION_SYSTEM 新风系统
 }
 
 CONF_USERNAME = "username"

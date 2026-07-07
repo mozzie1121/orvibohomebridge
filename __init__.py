@@ -10,7 +10,7 @@ from .coordinator import OrviboMeshCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["switch", "light", "cover", "sensor", "binary_sensor", "climate"]
+PLATFORMS = ["switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan"]
 
 SERVICE_REFRESH = "refresh_devices"
 

@@ -537,6 +537,48 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         _LOGGER.debug(f"[空调] state={dev_state.get('state')}, mode={dev_state.get('ac_mode')}, fan_speed={dev_state.get('fan_speed')}, temperature={dev_state.get('temperature')}")
     
+    def _parse_status_ventilation(self, dev_state: dict, raw_status: dict) -> None:
+        """解析新风系统状态 (deviceType 516, classId 1114)
+        properties.fanControl.fanMode: off/low/high -> 停/慢/快
+        properties.temperature.value: 温度
+        也支持 value1 格式: 0=慢, 50=停, 100=快
+        """
+        props = raw_status.get("properties", {})
+        value1 = raw_status.get("value1")
+
+        if value1 is not None:
+            value1 = int(value1)
+            # value1 映射: 0=慢, 50=停, 100=快
+            if value1 == 0:
+                dev_state["fan_speed"] = "慢"
+                dev_state["state"] = True
+            elif value1 == 50:
+                dev_state["fan_speed"] = "停"
+                dev_state["state"] = False
+            elif value1 == 100:
+                dev_state["fan_speed"] = "快"
+                dev_state["state"] = True
+            dev_state["value1"] = value1
+
+        fan_control = props.get("fanControl", {}) if isinstance(props, dict) else {}
+        if isinstance(fan_control, dict):
+            fan_mode = fan_control.get("fanMode")
+            if fan_mode:
+                fan_speed_map = {"off": "停", "low": "慢", "high": "快"}
+                dev_state["fan_speed"] = fan_speed_map.get(fan_mode, fan_mode)
+                dev_state["state"] = fan_mode != "off"
+
+        temp_obj = props.get("temperature", {}) if isinstance(props, dict) else {}
+        if isinstance(temp_obj, dict):
+            temp_val = temp_obj.get("value")
+            if temp_val is not None:
+                try:
+                    dev_state["temperature"] = float(temp_val)
+                except (TypeError, ValueError):
+                    pass
+
+        _LOGGER.debug(f"[新风系统] state={dev_state.get('state')}, fan_speed={dev_state.get('fan_speed')}, temperature={dev_state.get('temperature')}")
+    
     def _parse_status_curtain(self, dev_state: dict, raw_status: dict) -> None:
         """解析百分比窗帘状态 (deviceType 34)
         核心控制参数: value1 (0-100) 开度
@@ -765,6 +807,13 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         "main_switch_state": False,
                     })
 
+                # 新风系统设备初始化专属字段
+                if category == DeviceCategory.VENTILATION_SYSTEM:
+                    self.device_states[device_id].update({
+                        "fan_speed": device.get("fan_speed", "停"),
+                        "temperature": device.get("temperature"),
+                    })
+
             _LOGGER.info(f"设备列表拉取完成，共 {len(self.devices)} 个设备")
 
             _LOGGER.debug("第二步：通过 getDeviceDesc API 拉取全量设备状态...")
@@ -834,6 +883,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     self._parse_status_gas_sensor(state, {"value1": state.get("value1"), "value4": state.get("value4")})
                 elif category == DeviceCategory.DOOR_LOCK:
                     self._parse_status_door_lock(state, {"properties": state.get("properties", {})})
+                elif category == DeviceCategory.VENTILATION_SYSTEM:
+                    self._parse_status_ventilation(state, {"properties": state.get("properties", {}), "value1": state.get("value1")})
                 
                 _LOGGER.debug(
                     f"  设备: name={dev.get('device_name')}, device_id={device_id}, "
@@ -967,6 +1018,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 self._parse_status_curtain(dev_state, raw_status)
             elif device_type == 36:
                 self._parse_status_fan_coil_ac(dev_state, raw_status)
+            elif device_type == 516:
+                self._parse_status_ventilation(dev_state, raw_status)
             elif device_type in (135, 136):
                 self._parse_status_switch(dev_state, raw_status)
             else:
@@ -979,6 +1032,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     self._parse_status_cct_light_strip(dev_state, raw_status)
                 elif category == DeviceCategory.FAN_COIL_AC:
                     self._parse_status_fan_coil_ac(dev_state, raw_status)
+                elif category == DeviceCategory.VENTILATION_SYSTEM:
+                    self._parse_status_ventilation(dev_state, raw_status)
                 elif category == DeviceCategory.DIMMABLE_LIGHT:
                     self._parse_status_dimmable_light(dev_state, raw_status)
                 elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
@@ -1094,6 +1149,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             result = await self._async_ac_control_raw(device_id, device_uid, value1=0)
         elif category == DeviceCategory.CLOTHES_HORSE:
             result = await self.async_clothes_horse_control(device_id, "main_switch", "on")
+        elif category == DeviceCategory.VENTILATION_SYSTEM:
+            result = await self.async_ventilation_state_update(device_id, 0)
         else:
             # 兜底用 light 控制
             result = await self.ssl_client.send_control_light(device_id, device_uid, True)
@@ -1152,6 +1209,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             result = await self._async_ac_control_raw(device_id, device_uid, value1=1)
         elif category == DeviceCategory.CLOTHES_HORSE:
             result = await self.async_clothes_horse_control(device_id, "main_switch", "off")
+        elif category == DeviceCategory.VENTILATION_SYSTEM:
+            result = await self.async_ventilation_state_update(device_id, 50)
         else:
             result = await self.ssl_client.send_control_light(device_id, device_uid, False)
 
@@ -1410,6 +1469,47 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.error(f"无效的风速: {fan_speed}")
             return False
         return await self._async_ac_control_raw(device_id, device.get("uid", ""), value3=speed_value)
+
+    # ------------------------------------------------------------------
+    # 新风系统控制（deviceType=516, cmd=15 set property）
+    # ------------------------------------------------------------------
+    async def async_ventilation_state_update(self, device_id: str, value1: int) -> bool:
+        """新风系统控制（value1 格式）。
+        value1: 0=慢, 50=停, 100=快
+        """
+        if not self.ssl_client:
+            _LOGGER.error("SSL客户端未初始化")
+            return False
+        device = self.devices.get(device_id)
+        if not device:
+            _LOGGER.error(f"设备不存在: {device_id}")
+            return False
+        device_uid = device.get("uid", "")
+
+        result = await self.ssl_client.send_control_ventilation(device_id, device_uid, value1)
+        if result:
+            dev_state = self.device_states.setdefault(device_id, {})
+            if value1 == 0:
+                dev_state["fan_speed"] = "慢"
+                dev_state["state"] = True
+            elif value1 == 50:
+                dev_state["fan_speed"] = "停"
+                dev_state["state"] = False
+            elif value1 == 100:
+                dev_state["fan_speed"] = "快"
+                dev_state["state"] = True
+            dev_state["value1"] = value1
+            self.async_set_updated_data(self.device_states)
+        return result
+
+    async def async_set_ventilation_preset_mode(self, device_id: str, preset_mode: str) -> bool:
+        """设置新风系统预设模式（停/慢/快）"""
+        preset_map = {"停": 50, "慢": 0, "快": 100}
+        value1 = preset_map.get(preset_mode)
+        if value1 is None:
+            _LOGGER.error(f"无效的新风模式: {preset_mode}")
+            return False
+        return await self.async_ventilation_state_update(device_id, value1)
 
     # ------------------------------------------------------------------
     # 晾衣架控制（cmd=98）

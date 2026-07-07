@@ -601,6 +601,8 @@ class HttpsClient:
                 initial_position = None
                 initial_brightness = None
                 initial_color_temp = None
+                initial_fan_speed = "停"
+                initial_temperature = None
 
                 # 根据 deviceType 推断 value1~value3 的语义
                 if device_type_raw in (1, 102):
@@ -651,6 +653,34 @@ class HttpsClient:
                             initial_state = v1 == 1
                     if value2 is not None:
                         initial_brightness = int(value2)
+                elif device_type_raw == 516:
+                    # deviceType=516: 新风系统
+                    # fanControl.fanMode: off/low/high -> 停/慢/快
+                    fan_control = item_properties.get("fanControl", {}) if isinstance(item_properties, dict) else {}
+                    if not fan_control:
+                        fan_control = status_properties.get("fanControl", {}) if isinstance(status_properties, dict) else {}
+                    fan_mode = fan_control.get("fanMode", "off") if isinstance(fan_control, dict) else "off"
+                    
+                    # fan_speed 映射: off -> 停, low -> 慢, high -> 快
+                    fan_speed_map = {"off": "停", "low": "慢", "high": "快"}
+                    initial_fan_speed = fan_speed_map.get(fan_mode, "停")
+                    initial_state = fan_mode != "off"
+                    
+                    # 温度
+                    temp_obj = item_properties.get("temperature", {}) if isinstance(item_properties, dict) else {}
+                    if not temp_obj:
+                        temp_obj = status_properties.get("temperature", {}) if isinstance(status_properties, dict) else {}
+                    if isinstance(temp_obj, dict):
+                        temp_val = temp_obj.get("value")
+                        if temp_val is not None:
+                            try:
+                                initial_temperature = float(temp_val)
+                            except (TypeError, ValueError):
+                                initial_temperature = None
+                        else:
+                            initial_temperature = None
+                    else:
+                        initial_temperature = None
 
                 # 兜底：从 properties 取（SSL 推送或其他接口可能返回 properties 格式）
                 onoff_value = None
@@ -718,7 +748,7 @@ class HttpsClient:
                             if isinstance(colortemp_val, (int, float)) and colortemp_val > 0:
                                 initial_color_temp = int(colortemp_val)
 
-                _LOGGER.info(f"设备 {device_id} 初始状态: online={online}, state={initial_state}, brightness={initial_brightness}, color_temp={initial_color_temp}, position={initial_position}")
+                _LOGGER.info(f"设备 {device_id} 初始状态: online={online}, state={initial_state}, brightness={initial_brightness}, color_temp={initial_color_temp}, position={initial_position}, fan_speed={initial_fan_speed}, temperature={initial_temperature}")
 
                 devices.append({
                     "device_id": device_id,
@@ -740,6 +770,8 @@ class HttpsClient:
                     "position": initial_position,
                     "brightness": initial_brightness,
                     "color_temp": initial_color_temp,
+                    "fan_speed": initial_fan_speed,
+                    "temperature": initial_temperature,
                     "properties": item_properties,
                     "endpoint": item.get("endpoint", 0),
                     "status": status_data,

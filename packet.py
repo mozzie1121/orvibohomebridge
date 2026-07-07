@@ -527,6 +527,37 @@ class HomemateJsonData:
         return payload
 
     @classmethod
+    def ssl_control_ventilation(cls, username: str, device_id: str, device_uid: str, value1: int):
+        """新风系统控制（set property 格式，适用于 deviceType=516, classId=1114）。
+        value1: 0=慢, 50=停, 100=快
+        """
+        serial = generate_serial()
+        uniSerial = generate_serial(use_time=True)
+        payload = {
+            "uid": device_uid,
+            "userName": username,
+            "deviceId": device_id,
+            "groupId": "",
+            "order": "set property",
+            "value1": value1,
+            "value2": 0,
+            "value3": 0,
+            "value4": 0,
+            "delayTime": 0,
+            "qualityOfService": 1,
+            "defaultResponse": 1,
+            "propertyResponse": 0,
+            "cmd": CMD_CONTROL,
+            "serial": serial,
+            "clientType": 1,
+            "uniSerial": uniSerial,
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
+        return payload
+
+    @classmethod
     def ssl_control_light_brightness(cls, username: str, device_id: str, device_uid: str, brightness: int):
         """设置灯光亮度（范围：0-255）"""
         serial = generate_serial()

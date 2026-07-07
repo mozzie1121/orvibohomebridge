@@ -42,6 +42,7 @@ class DeviceCategory(Enum):
     TEMP_HUMIDITY_SENSOR = "temp_humidity_sensor"      # deviceTypeId=300 subType=491，温湿度传感器
     DOOR_WINDOW_SENSOR = "door_window_sensor"          # deviceTypeId=46，门窗传感器
     FAST_MOVE_DIM_COLOR_LIGHT = "fast_move_dim_color_light"  # statusType=2, subDeviceType=6，fast move to level调光调色灯
+    VENTILATION_SYSTEM = "ventilation_system"                # deviceType=516, classId=1114，新风系统
     OTHER = "other"
 
 
@@ -227,6 +228,12 @@ _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
         description="statusType=2, subDeviceType=6，fast move to level协议，亮度+色温",
         capabilities=("onoff", "brightness", "color_temp"),
     ),
+    DeviceCategory.VENTILATION_SYSTEM: CategoryInfo(
+        category=DeviceCategory.VENTILATION_SYSTEM,
+        label="新风系统",
+        description="deviceType=516, classId=1114，新风系统（停/慢/快三档）",
+        capabilities=("onoff", "fan_speed", "preset_mode"),
+    ),
     DeviceCategory.OTHER: CategoryInfo(
         category=DeviceCategory.OTHER,
         label="其他设备",
@@ -276,6 +283,7 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     502: DeviceCategory.DIMMABLE_LIGHT,
     0: DeviceCategory.ZIGBEE_DIMMABLE_LIGHT,
     46: DeviceCategory.DOOR_WINDOW_SENSOR,
+    516: DeviceCategory.VENTILATION_SYSTEM,
 }
 
 _UI_MODEL_MAP: Dict[str, DeviceCategory] = {
@@ -292,6 +300,7 @@ _CLASS_ID_MAP: Dict[int, DeviceCategory] = {
     424: DeviceCategory.BACH_SWITCH,
     1107: DeviceCategory.BACH_SWITCH,
     463: DeviceCategory.DOOR_LOCK,
+    1114: DeviceCategory.VENTILATION_SYSTEM,
 }
 
 # 不需要展示、也不需要加入 HA 的设备类别
