@@ -1,0 +1,40 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "登录欧瑞博账号",
+                "description": "请输入您的欧瑞博合作伙伴账号（手机号）和密码",
+                "data": {
+                    "username": "手机号",
+                    "password": "密码"
+                }
+            },
+            "select_family": {
+                "title": "选择家庭",
+                "description": "检测到多个家庭，请选择一个进行管理",
+                "data": {
+                    "family_id": "家庭"
+                }
+            }
+        },
+        "error": {
+            "auth_failed": "登录失败，请检查账号和密码",
+            "empty_username_or_password": "手机号和密码不能为空",
+            "invalid_phone": "手机号格式不正确"
+        },
+        "abort": {
+            "already_configured": "该账号已配置"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "修改配置",
+                "data": {
+                    "username": "手机号",
+                    "password": "密码（留空不修改）"
+                }
+            }
+        }
+    }
+}
