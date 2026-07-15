@@ -329,24 +329,27 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         dev_state["state"] = True
         _LOGGER.debug(f"[门窗传感器] door_state={'OPEN' if dev_state.get('door_state') else 'CLOSED'}, battery={dev_state.get('battery')}%")
 
-    def _parse_status_motion_sensor(self, dev_state: dict, raw_status: dict) -> None:
+    def _parse_status_motion_sensor(self, dev_state: dict, raw_status: dict, device_id: str = None) -> None:
         """解析人体传感器状态 (deviceType 26)
         value3=1为检测到人体, value3=0为无检测; value4为电量百分比
         人体传感器只发送触发信号, 需要软件实现延时恢复(默认30秒)
         """
         value3 = raw_status.get("value3")
         value4 = raw_status.get("value4")
-        device_id = raw_status.get("deviceId", "")
+        # 优先使用外部传入的规范化 device_id（matched_device_id），兜底用 raw_status.deviceId
+        reset_key = device_id or raw_status.get("deviceId", "")
 
         if value3 is not None:
             try:
                 value3 = int(value3)
                 if value3 == 1:
                     dev_state["motion_detected"] = True
-                    asyncio.create_task(self._schedule_motion_reset(device_id))
+                    if reset_key:
+                        asyncio.create_task(self._schedule_motion_reset(reset_key))
                 else:
                     dev_state["motion_detected"] = False
-                    self._cancel_motion_reset(device_id)
+                    if reset_key:
+                        self._cancel_motion_reset(reset_key)
             except (TypeError, ValueError):
                 dev_state["motion_detected"] = False
 
@@ -386,8 +389,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         async def reset_emergency():
             await asyncio.sleep(self.EMERGENCY_RESET_DELAY)
             state = self.device_states.get(device_id)
-            if state and state.get("state"):
-                state["state"] = False
+            if state and state.get("emergency_state"):
+                state["emergency_state"] = False
                 _LOGGER.debug(f"[紧急按钮] {device_id[:12]}... 延时{self.EMERGENCY_RESET_DELAY}秒后恢复为正常")
                 self.async_update_listeners()
 
@@ -432,13 +435,13 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if value1 is not None:
             try:
                 value1 = int(value1)
-                dev_state["state"] = value1 == 1
+                dev_state["emergency_state"] = value1 == 1
                 if value1 == 1 and device_id:
                     asyncio.create_task(self._schedule_emergency_reset(device_id))
                 elif value1 == 0 and device_id:
                     self._cancel_emergency_reset(device_id)
             except (TypeError, ValueError):
-                dev_state["state"] = False
+                dev_state["emergency_state"] = False
 
         if value4 is not None:
             try:
@@ -527,8 +530,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             value4 = int(value4)
             dev_state["value4"] = value4
             try:
-                target_temp = (value4 >> 16) // 100
-                current_temp = (value4 & 0xFFFF) // 100
+                target_temp = (value4 >> 16) / 100.0
+                current_temp = (value4 & 0xFFFF) / 100.0
                 dev_state["temperature"] = target_temp
                 dev_state["target_temperature"] = target_temp
                 dev_state["current_temperature"] = current_temp
@@ -644,7 +647,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         lithium_battery = props.get("batteryManager1", {})
         
         if isinstance(door_lock, dict):
-            dev_state["lock_state"] = door_lock.get("lockState") == "on"
+            # HA BinarySensorDeviceClass.LOCK 语义: is_on=True 表示"未锁/不安全"
+            # 欧瑞博 lockState="on" 表示"已锁"，所以需要取反
+            dev_state["locked"] = door_lock.get("lockState") == "on"
+            dev_state["lock_state"] = door_lock.get("lockState") != "on"  # True=未锁
             dev_state["door_state"] = door_lock.get("doorState") == "on"
             dev_state["inside_lock_state"] = door_lock.get("insideLockState") == "on"
         
@@ -872,7 +878,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 elif category == DeviceCategory.DOOR_WINDOW_SENSOR:
                     self._parse_status_door_window_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.MOTION_SENSOR:
-                    self._parse_status_motion_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")})
+                    self._parse_status_motion_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")}, device_id)
                 elif category == DeviceCategory.SMOKE_SENSOR:
                     self._parse_status_smoke_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.EMERGENCY_BUTTON:
@@ -1003,7 +1009,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             elif device_type == 46:
                 self._parse_status_door_window_sensor(dev_state, raw_status)
             elif device_type == 26:
-                self._parse_status_motion_sensor(dev_state, raw_status)
+                self._parse_status_motion_sensor(dev_state, raw_status, matched_device_id)
             elif device_type == 27:
                 self._parse_status_smoke_sensor(dev_state, raw_status)
             elif device_type == 56:
@@ -1045,7 +1051,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 elif category == DeviceCategory.DOOR_WINDOW_SENSOR:
                     self._parse_status_door_window_sensor(dev_state, raw_status)
                 elif category == DeviceCategory.MOTION_SENSOR:
-                    self._parse_status_motion_sensor(dev_state, raw_status)
+                    self._parse_status_motion_sensor(dev_state, raw_status, matched_device_id)
                 elif category == DeviceCategory.SMOKE_SENSOR:
                     self._parse_status_smoke_sensor(dev_state, raw_status)
                 elif category == DeviceCategory.EMERGENCY_BUTTON:

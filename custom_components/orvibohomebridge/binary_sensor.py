@@ -210,7 +210,7 @@ class OrviboEmergencyButton(CoordinatorEntity, BinarySensorEntity):
     @property
     def is_on(self) -> Optional[bool]:
         state = self.coordinator.get_device_state(self._device_id)
-        return state.get("state", False) if state else False
+        return state.get("emergency_state", False) if state else False
 
     @property
     def device_info(self):

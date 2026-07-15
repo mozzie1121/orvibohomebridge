@@ -54,15 +54,11 @@ class OrviboVentilationFan(CoordinatorEntity, FanEntity):
         self._attr_speed_list = None
 
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, f"device_{self._device_id}")},
+            "identifiers": {(DOMAIN, self._device_id)},
             "name": self._attr_name,
             "model": device.get("model", ""),
             "manufacturer": MANUFACTURER,
         }
-
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self._handle_coordinator_update)
-        )
 
     @property
     def available(self) -> bool:
@@ -116,12 +112,6 @@ class OrviboVentilationFan(CoordinatorEntity, FanEntity):
         else:
             await self.async_turn_on()
 
-    def _handle_coordinator_update(self) -> None:
-        self.async_write_ha_state()
-
     @property
     def should_poll(self) -> bool:
         return False
-
-    async def async_added_to_hass(self):
-        self.async_on_remove(self.coordinator.async_add_listener(self.async_write_ha_state))
