@@ -90,3 +90,4 @@ CLASS_ID_MAP = {
 
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
+CONF_FAMILY_ID = "family_id"
