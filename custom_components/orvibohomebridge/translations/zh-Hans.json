@@ -3,9 +3,9 @@
         "step": {
             "user": {
                 "title": "登录欧瑞博账号",
-                "description": "请输入您的欧瑞博合作伙伴账号（手机号）和密码",
+                "description": "请输入您的欧瑞博合作伙伴账号（手机号或邮箱）和密码",
                 "data": {
-                    "username": "手机号",
+                    "username": "手机号或邮箱",
                     "password": "密码"
                 }
             },
@@ -19,8 +19,8 @@
         },
         "error": {
             "auth_failed": "登录失败，请检查账号和密码",
-            "empty_username_or_password": "手机号和密码不能为空",
-            "invalid_phone": "手机号格式不正确"
+            "empty_username_or_password": "账号和密码不能为空",
+            "invalid_username": "手机号或邮箱格式不正确"
         },
         "abort": {
             "already_configured": "该账号已配置"
@@ -31,7 +31,7 @@
             "init": {
                 "title": "修改配置",
                 "data": {
-                    "username": "手机号",
+                    "username": "手机号或邮箱",
                     "password": "密码（留空不修改）"
                 }
             }
