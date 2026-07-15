@@ -2,8 +2,8 @@
     "config": {
         "step": {
             "user": {
-                "title": "登录欧瑞博账号",
-                "description": "请输入您的欧瑞博合作伙伴账号（手机号或邮箱）和密码",
+                "title": "登录智家365账号",
+                "description": "请输入您的智家365账号（手机号或邮箱）和密码",
                 "data": {
                     "username": "手机号或邮箱",
                     "password": "密码"
