@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/mozzie1121/orvibohomebridge/issues",
   "requirements": ["aiohttp", "cryptography"],
   "version": "0.2.1",
-  "icon": "icon.svg"
+  "icon": "../brand/icon.png"
 }
