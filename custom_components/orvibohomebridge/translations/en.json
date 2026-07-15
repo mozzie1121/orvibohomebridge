@@ -19,8 +19,8 @@
         },
         "error": {
             "auth_failed": "Login failed, check your credentials",
-            "empty_username_or_password": "Phone number and password are required",
-            "invalid_phone": "Invalid phone number format"
+            "empty_username_or_password": "Username and password are required",
+            "invalid_username": "Invalid phone number or email format"
         },
         "abort": {
             "already_configured": "This account is already configured"

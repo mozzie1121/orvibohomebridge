@@ -27,8 +27,8 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not username or not password:
                 errors["base"] = "empty_username_or_password"
-            elif not re.match(r'^1[3-9]\d{9}$', username):
-                errors[CONF_USERNAME] = "invalid_phone"
+            elif not re.match(r'^1[3-9]\d{9}$', username) and not re.match(r'^[^@]+@[^@]+\.[^@]+$', username):
+                errors[CONF_USERNAME] = "invalid_username"
 
             if not errors:
                 try:
