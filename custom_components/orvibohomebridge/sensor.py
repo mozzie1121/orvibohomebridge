@@ -51,7 +51,7 @@ async def async_setup_entry(
         elif category == DeviceCategory.WATER_LEAK_SENSOR:
             entities.append(OrviboWaterLeakBatterySensor(coordinator, device))
         elif category == DeviceCategory.GAS_SENSOR:
-            pass
+            entities.append(OrviboGasBatterySensor(coordinator, device))
         elif category == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboDoorLockDryBatterySensor(coordinator, device))
             entities.append(OrviboDoorLockLithiumBatterySensor(coordinator, device))

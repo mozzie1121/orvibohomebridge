@@ -57,6 +57,7 @@ class SSLClient:
         self.session_id: Optional[str] = None
         self.session_key: Optional[bytes] = None
         self.connected: bool = False
+        self._closed: bool = False
         self._listening_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
 
@@ -155,6 +156,7 @@ class SSLClient:
         self.session_id = None
         self.session_key = None
         self.connected = False
+        self._closed = True
         _LOGGER.debug("SSL连接已断开")
 
     async def _reconnect(self):
@@ -166,7 +168,12 @@ class SSLClient:
         if self.retry_interval > 0:
             _LOGGER.debug(f"{self.retry_interval}秒后尝试重连...")
             await asyncio.sleep(self.retry_interval)
-            await self.connect_and_login()
+            success = await self.connect_and_login()
+            if not success:
+                _LOGGER.error("SSL重连失败，将在下次重试")
+                raise ConnectionError("SSL重连失败")
+        else:
+            raise ConnectionError("重连间隔为0，放弃重连")
 
     async def connect_and_login(self):
         if self.connected:
@@ -580,7 +587,11 @@ class SSLClient:
                 ciphertext = await self.reader.readexactly(length - 42)
                 if self.session_key is None:
                     self.session_key = DEFAULT_KEY.encode("utf-8")
-                packet = HomematePacket(header_data + ciphertext, {self.session_id: self.session_key})
+                try:
+                    packet = HomematePacket(header_data + ciphertext, {self.session_id: self.session_key})
+                except (AssertionError, Exception) as e:
+                    _LOGGER.error(f"坏包解析失败，丢弃: {e}")
+                    continue
                 self.session_id = bytes(packet.session_id).decode("utf-8")
                 data = packet.json_payload
                 if data is None:
@@ -620,7 +631,19 @@ class SSLClient:
                 import traceback
                 _LOGGER.error(f"监听循环异常: {str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(1)
-        await self._reconnect()
+        _LOGGER.debug("SSL监听循环结束，开始重连循环...")
+        while not self._closed:
+            try:
+                await self._reconnect()
+                _LOGGER.debug("SSL重连成功，继续监听")
+                return  # _reconnect 成功后 _connect_and_login 已启动了新的 _listen_loop
+            except ConnectionError:
+                _LOGGER.debug(f"SSL重连失败，{self.retry_interval}秒后重试...")
+                await asyncio.sleep(self.retry_interval)
+            except asyncio.CancelledError:
+                _LOGGER.debug("重连任务被取消")
+                await self._disconnect()
+                return
 
     async def _handle_hello(self, data: dict):
         key = data.get("key")
