@@ -54,9 +54,7 @@ class HomematePacket:
             data_crc = struct.unpack(">I", data[6:10])[0]
             assert self.crc == data_crc
         except AssertionError:
-            _LOGGER.error("Bad packet:")
-            import hexdump
-            hexdump.hexdump(data)
+            _LOGGER.error("Bad packet (len=%d): %s", len(data), data.hex())
             raise
 
         self.session_id = data[10:42]
@@ -751,6 +749,7 @@ class HomemateJsonData:
     @classmethod
     def get_access_token_by_password(cls, username: str, password: str):
         url = f"https://{HTTPS_HOST}/getOauthToken?userName={username}&type=0&password={password}"
+        _LOGGER.debug(f"请求access_token: userName={username}, type=0 (password masked)")
         return {"url": url, "data": None}
 
     @classmethod
