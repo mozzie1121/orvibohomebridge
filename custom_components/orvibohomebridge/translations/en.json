@@ -2,8 +2,8 @@
     "config": {
         "step": {
             "user": {
-                "title": "Orvibo Login",
-                "description": "Enter your Orvibo partner account (phone number) and password",
+                "title": "Login - ZhiJia365",
+                "description": "Enter your ZhiJia365 account (phone number or email) and password",
                 "data": {
                     "username": "Phone Number",
                     "password": "Password"
