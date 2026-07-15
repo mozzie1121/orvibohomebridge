@@ -89,5 +89,4 @@ CLASS_ID_MAP = {
 }
 
 CONF_USERNAME = "username"
-CONF_PASSWORD = "p455w0rd_zhijia365"
-CONF_FAMILY_ID = "family_id"
+CONF_PASSWORD = "password"
