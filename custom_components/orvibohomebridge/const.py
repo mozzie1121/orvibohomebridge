@@ -4,7 +4,7 @@ from datetime import timedelta
 _CERTS_DIR = os.path.join(os.path.dirname(__file__), "certs")
 
 # 设置为 None 禁用自动更新，或设置一个很长的时间
-UPDATE_INTERVAL = None  # timedelta(seconds=60)
+UPDATE_INTERVAL = timedelta(minutes=30)  # 长间隔兜底轮询
 SSL_MAX_RECONNECT_ATTEMPTS = 3
 
 CMD_HELLO = 0

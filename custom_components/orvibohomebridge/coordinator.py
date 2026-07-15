@@ -40,6 +40,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
+        self._last_update_time: Dict[str, float] = {}  # 设备最后更新时间戳
+        self.OFFLINE_TIMEOUT = 600  # 设备离线超时秒数
 
         super().__init__(
             hass,
@@ -593,7 +595,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if position is None:
             position = props.get("percent")
         if position is not None:
-            position = int(position)
+            try:
+                position = int(position)
+            except (TypeError, ValueError):
+                _LOGGER.debug(f"[窗帘] 位置值异常: {position}, 跳过")
+                position = None
         dev_state["position"] = position
         
         # 开关状态基于位置判断：100为全开，0为全关
@@ -979,6 +985,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             dev_state = self.device_states[matched_device_id]
             dev_state["properties"] = raw_status.get("properties", {})
             dev_state["online"] = True
+            self._last_update_time[matched_device_id] = __import__("time").time()
 
             # 获取设备信息，根据 deviceType / category 调用对应的解析方法
             device_info = self.devices.get(matched_device_id)
@@ -1585,7 +1592,16 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         return self.devices.get(device_id)
 
     def get_device_state(self, device_id: str) -> Optional[Dict[str, Any]]:
-        return self.device_states.get(device_id)
+        state = self.device_states.get(device_id)
+        if state is None:
+            return None
+        # 检查离线超时：最后更新超过 OFFLINE_TIMEOUT 秒则标记为离线
+        last_time = self._last_update_time.get(device_id)
+        if last_time is not None:
+            elapsed = __import__("time").time() - last_time
+            if elapsed > self.OFFLINE_TIMEOUT and state.get("online", False):
+                state["online"] = False
+        return state
 
     async def async_cleanup(self):
         if self.ssl_client:

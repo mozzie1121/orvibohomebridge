@@ -250,7 +250,7 @@ _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
 
 
 def get_category_info(category: DeviceCategory) -> CategoryInfo:
-    return _CATEGORY_INFO[category]
+    return _CATEGORY_INFO.get(category, _CATEGORY_INFO[DeviceCategory.UNKNOWN])
 
 
 # deviceTypeId → Category 主映射

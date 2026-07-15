@@ -60,6 +60,8 @@ class SSLClient:
         self._closed: bool = False
         self._listening_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._heartbeat_failures: int = 0
+        self.HEARTBEAT_MAX_FAILURES = 3
 
     @classmethod
     def add_key(cls, session_id: str, key: bytes):
@@ -566,12 +568,19 @@ class SSLClient:
                 if self.session_key and self.session_key != DEFAULT_KEY.encode("utf-8"):
                     payload = HomemateJsonData.ssl_heartbeat()
                     await self._send_packet(payload, self.session_key)
+                    self._heartbeat_failures = 0  # 成功发送重置计数
                     _LOGGER.debug("发送心跳包")
             except asyncio.CancelledError:
                 _LOGGER.debug("心跳任务被取消，退出循环")
                 return
             except Exception as e:
                 _LOGGER.error(f"心跳发送异常: {str(e)}")
+                self._heartbeat_failures += 1
+                if self._heartbeat_failures >= self.HEARTBEAT_MAX_FAILURES:
+                    _LOGGER.error(f"连续{self._heartbeat_failures}次心跳失败，触发重连")
+                    self._heartbeat_failures = 0
+                    self.connected = False
+                    return  # 退出心跳，_listen_loop 会处理重连
                 await asyncio.sleep(1)
         _LOGGER.debug("心跳保活循环结束")
 
