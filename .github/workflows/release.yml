@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (如 v0.2.0)'
+        required: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    name: 校验
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 manifest.json
+        run: |
+          python3 -c "
+          import json
+          with open('custom_components/orvibohomebridge/manifest.json') as f:
+            m = json.load(f)
+          assert 'version' in m, '缺少 version'
+          assert 'domain' in m, '缺少 domain'
+          print(f\"组件: {m['domain']} v{m['version']}\")
+          "
+
+      - name: 校验 Python 语法
+        run: |
+          find custom_components/orvibohomebridge -name '*.py' -exec python3 -m py_compile {} \;
+          echo "所有 Python 文件语法检查通过"
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    name: 打包 HACS 组件
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建组件包
+        run: |
+          TAG=${GITHUB_REF_NAME#v}
+          mkdir -p dist
+          # 只打包 HA 组件目录 + 顶级文件
+          cp -r custom_components dist/
+          cp hacs.json README.md dist/
+          if [ -d brand ]; then cp -r brand dist/; fi
+          if [ -d screenshots ]; then cp -r screenshots dist/; fi
+          if [ -d icon ]; then cp -r icon dist/; fi
+          if [ -f icon.svg ]; then cp icon.svg dist/; fi
+          if [ -f info.md ]; then cp info.md dist/; fi
+
+          cd dist
+          zip -r "../orvibohomebridge-${TAG}.zip" ./*
+          echo "打包完成: orvibohomebridge-${TAG}.zip"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: hacs-package
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    name: 发布 Release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: hacs-package
+          path: dist
+
+      - name: 确定版本号
+        id: version
+        run: |
+          TAG=${GITHUB_REF_NAME#v}
+          if [ -z "$TAG" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          fi
+          TAG=${TAG#v}
+          echo "version=$TAG" >> $GITHUB_OUTPUT
+          echo "filename=orvibohomebridge-${TAG}.zip" >> $GITHUB_OUTPUT
+
+      - name: 生成 Release Notes
+        id: notes
+        run: |
+          PREV_TAG=$(git tag --list 'v*' --sort=-version:refname | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ]; then
+            NOTES="## 初始版本\n\n首次发布。"
+          else
+            NOTES=$(git log --oneline --no-decorate "${PREV_TAG}..${GITHUB_SHA}" 2>/dev/null | \
+              sed 's/^/- /' || echo "## 更新内容\n\n无详细提交记录。")
+            NOTES="## 更新内容\n\n从 \`${PREV_TAG}\` 以来的变更：\n\n${NOTES}"
+          fi
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ORVIBO HomeBridge v${{ steps.version.outputs.version }}
+          body: ${{ steps.notes.outputs.notes }}
+          files: |
+            dist/${{ steps.version.outputs.filename }}
+          generate_release_notes: false
+          draft: false
+          prerelease: false

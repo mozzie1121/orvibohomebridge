@@ -1,0 +1,40 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Orvibo Login",
+                "description": "Enter your Orvibo partner account (phone number) and password",
+                "data": {
+                    "username": "Phone Number",
+                    "password": "Password"
+                }
+            },
+            "select_family": {
+                "title": "Select Family",
+                "description": "Multiple families found, select one to manage",
+                "data": {
+                    "family_id": "Family"
+                }
+            }
+        },
+        "error": {
+            "auth_failed": "Login failed, check your credentials",
+            "empty_username_or_password": "Phone number and password are required",
+            "invalid_phone": "Invalid phone number format"
+        },
+        "abort": {
+            "already_configured": "This account is already configured"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Modify Configuration",
+                "data": {
+                    "username": "Phone Number",
+                    "password": "Password (leave empty to keep current)"
+                }
+            }
+        }
+    }
+}
