@@ -1159,7 +1159,17 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         elif category in (DeviceCategory.ZIGBEE_CURTAIN, DeviceCategory.LEGACY_CURTAIN):
             result = await self.ssl_client.send_control_cover(device_id, device_uid, 100)
         elif category == DeviceCategory.FAN_COIL_AC:
-            result = await self._async_ac_control_raw(device_id, device_uid, value1=0)
+            # 开机：order="on", value1=0, value2=上次模式(默认3=制冷), value3=上次风速(默认1=低), value4=上次温度(默认25°C)
+            dev_state = self.get_device_state(device_id) or {}
+            cur_v2 = dev_state.get("ac_mode_raw", 3)
+            cur_v3 = dev_state.get("fan_speed_raw", 1)
+            cur_v4 = dev_state.get("value4", 0)
+            if not cur_v4:
+                cur_v4 = 2500 << 16  # 默认25°C
+            result = await self._async_ac_control_raw(device_id, device_uid,
+                                                      value1=0, value2=cur_v2,
+                                                      value3=cur_v3, value4=cur_v4,
+                                                      order="on")
         elif category == DeviceCategory.CLOTHES_HORSE:
             result = await self.async_clothes_horse_control(device_id, "main_switch", "on")
         elif category == DeviceCategory.VENTILATION_SYSTEM:
@@ -1219,7 +1229,17 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         elif category in (DeviceCategory.ZIGBEE_CURTAIN, DeviceCategory.LEGACY_CURTAIN):
             result = await self.ssl_client.send_control_cover(device_id, device_uid, 0)
         elif category == DeviceCategory.FAN_COIL_AC:
-            result = await self._async_ac_control_raw(device_id, device_uid, value1=1)
+            # 关机：order="off", value1=1, 保留当前模式/风速/温度
+            dev_state = self.get_device_state(device_id) or {}
+            cur_v2 = dev_state.get("ac_mode_raw", 3)
+            cur_v3 = dev_state.get("fan_speed_raw", 1)
+            cur_v4 = dev_state.get("value4", 0)
+            if not cur_v4:
+                cur_v4 = 2500 << 16
+            result = await self._async_ac_control_raw(device_id, device_uid,
+                                                      value1=1, value2=cur_v2,
+                                                      value3=cur_v3, value4=cur_v4,
+                                                      order="off")
         elif category == DeviceCategory.CLOTHES_HORSE:
             result = await self.async_clothes_horse_control(device_id, "main_switch", "off")
         elif category == DeviceCategory.VENTILATION_SYSTEM:
@@ -1382,8 +1402,17 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     # 空调控制（deviceType=36，cmd=15 set property）
     # ------------------------------------------------------------------
     async def _async_ac_control_raw(self, device_id: str, device_uid: str,
-                                    value1=None, value2=None, value3=None, value4=None) -> bool:
-        """下发空调原始指令（value1~value4）。"""
+                                    value1=None, value2=None, value3=None, value4=None,
+                                    order: str = "set property") -> bool:
+        """下发空调原始指令（value1~value4）。
+
+        根据智家365 App 抓包实测（2026-07-17），AC 控制使用以下 order：
+          - 开机:     order="on",               value1=0, value2=模式, value3=风速, value4=温度<<16
+          - 关机:     order="off",              value1=1, value2=模式, value3=风速, value4=温度<<16
+          - 切模式:   order="mode setting",     value1=0, value2=模式
+          - 设温度:   order="temperature setting",  value1=0, value2=模式, value3=风速, value4=(temp*100)<<16
+          - 设风速:   order="wind setting",     value1=0, value2=模式, value3=风速, value4=温度<<16
+        """
         if not self.ssl_client:
             _LOGGER.error("SSL客户端未初始化")
             return False
@@ -1402,7 +1431,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "userName": self.username,
             "deviceId": device_id,
             "groupId": "",
-            "order": "set property",
+            "order": order,
             "value1": value1 if value1 is not None else 0,
             "value2": value2 if value2 is not None else 0,
             "value3": value3 if value3 is not None else 0,
@@ -1420,7 +1449,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "debugInfo": DEBUG_INFO,
         }
 
-        _LOGGER.debug(f"下发空调控制 {device_id} value1={value1}, value2={value2}, value3={value3}, value4={value4}")
+        _LOGGER.debug(f"下发空调控制 {device_id} order={order} v1={value1}, v2={value2}, v3={value3}, v4={value4}")
         await self.ssl_client._send_packet(payload, self.ssl_client.session_key)
 
         dev_state = self.get_device_state(device_id)
@@ -1436,8 +1465,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
                 dev_state["fan_speed_raw"] = value3
             if value4 is not None:
+                # value4 高16位=目标温度×100
                 try:
-                    dev_state["temperature"] = round(value4 / 10000.0, 1)
+                    temp_raw = value4 >> 16
+                    dev_state["temperature"] = round(temp_raw / 100.0, 1) if temp_raw else 0
                 except (TypeError, ValueError):
                     dev_state["temperature"] = value4
             self.async_set_updated_data(self.device_states)
@@ -1453,7 +1484,16 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if mode_value is None:
             _LOGGER.error(f"无效的空调模式: {ac_mode}")
             return False
-        return await self._async_ac_control_raw(device_id, device.get("uid", ""), value2=mode_value)
+        # 切模式：order="mode setting", value1=0, value2=模式码
+        # 并继承当前温度
+        dev_state = self.get_device_state(device_id) or {}
+        cur_v4 = dev_state.get("value4", 0)
+        if not cur_v4:
+            cur_v4 = 2500 << 16
+        return await self._async_ac_control_raw(device_id, device.get("uid", ""),
+                                                value1=0, value2=mode_value,
+                                                value4=cur_v4,
+                                                order="mode setting")
 
     async def async_set_ac_temperature(self, device_id: str, temperature: float) -> bool:
         """控制空调温度（摄氏度）"""
@@ -1461,15 +1501,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if not device:
             return False
         
+        # 温度设定：order="temperature setting", value2=当前模式, value3=当前风速, value4=(temp*100)<<16
         dev_state = self.get_device_state(device_id) or {}
-        current_value4 = dev_state.get("value4", 0)
-        indoor_temp = (current_value4 & 0xFFFF) // 100
+        cur_v2 = dev_state.get("ac_mode_raw", 3)
+        cur_v3 = dev_state.get("fan_speed_raw", 1)
         
         target_temp_scaled = int(temperature * 100)
-        indoor_temp_scaled = int(indoor_temp * 100)
-        value4 = (target_temp_scaled << 16) | indoor_temp_scaled
+        value4 = target_temp_scaled << 16
         
-        return await self._async_ac_control_raw(device_id, device.get("uid", ""), value4=value4)
+        return await self._async_ac_control_raw(device_id, device.get("uid", ""),
+                                                value1=0, value2=cur_v2,
+                                                value3=cur_v3, value4=value4,
+                                                order="temperature setting")
 
     async def async_set_ac_fan_speed(self, device_id: str, fan_speed: str) -> bool:
         """控制空调风速（low/medium/high）"""
@@ -1481,7 +1524,16 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if speed_value is None:
             _LOGGER.error(f"无效的风速: {fan_speed}")
             return False
-        return await self._async_ac_control_raw(device_id, device.get("uid", ""), value3=speed_value)
+        # 风速设定：order="wind setting", value2=当前模式, value3=风速, value4=当前温度<<16
+        dev_state = self.get_device_state(device_id) or {}
+        cur_v2 = dev_state.get("ac_mode_raw", 3)
+        cur_v4 = dev_state.get("value4", 0)
+        if not cur_v4:
+            cur_v4 = 2500 << 16
+        return await self._async_ac_control_raw(device_id, device.get("uid", ""),
+                                                value1=0, value2=cur_v2,
+                                                value3=speed_value, value4=cur_v4,
+                                                order="wind setting")
 
     # ------------------------------------------------------------------
     # 新风系统控制（deviceType=516, cmd=15 set property）
