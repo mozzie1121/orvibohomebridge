@@ -5,8 +5,8 @@
                 "title": "Login - ZhiJia365",
                 "description": "Enter your ZhiJia365 account (phone number or email) and password",
                 "data": {
-                    "username": "Phone Number",
-                    "password": "Password"
+                    "username": "Phone / Email",
+                    "password": "***"
                 }
             },
             "select_family": {
@@ -15,12 +15,29 @@
                 "data": {
                     "family_id": "Family"
                 }
+            },
+            "devices": {
+                "title": "Select Devices",
+                "description": "Only checked devices will be added to Home Assistant.",
+                "data": {
+                    "selected_device_ids": "Devices"
+                }
+            },
+            "area": {
+                "title": "Assign Area ({position}/{total})",
+                "description": "Select HA area for «{device_name}». ORVIBO room is «{room}». Leave empty for no area.",
+                "data": {
+                    "area_id": "Area"
+                }
             }
         },
         "error": {
             "auth_failed": "Login failed, check your credentials",
             "empty_username_or_password": "Username and password are required",
-            "invalid_username": "Invalid phone number or email format"
+            "invalid_username": "Invalid phone number or email format",
+            "no_devices_selected": "Select at least one device",
+            "no_devices": "No devices found in this family",
+            "cannot_connect": "Cannot connect to ORVIBO cloud"
         },
         "abort": {
             "already_configured": "This account is already configured"
@@ -28,13 +45,24 @@
     },
     "options": {
         "step": {
-            "init": {
-                "title": "Modify Configuration",
+            "devices": {
+                "title": "Select Devices",
+                "description": "Only checked devices will be added to Home Assistant.",
                 "data": {
-                    "username": "Phone Number",
-                    "password": "Password (leave empty to keep current)"
+                    "selected_device_ids": "Devices"
+                }
+            },
+            "area": {
+                "title": "Assign Area ({position}/{total})",
+                "description": "Select HA area for «{device_name}». ORVIBO room is «{room}».",
+                "data": {
+                    "area_id": "Area"
                 }
             }
+        },
+        "error": {
+            "no_devices_selected": "Select at least one device",
+            "cannot_connect": "Cannot connect to ORVIBO cloud"
         }
     }
 }

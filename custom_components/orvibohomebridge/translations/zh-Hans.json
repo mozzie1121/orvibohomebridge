@@ -6,7 +6,7 @@
                 "description": "请输入您的智家365账号（手机号或邮箱）和密码",
                 "data": {
                     "username": "手机号或邮箱",
-                    "password": "密码"
+                    "password": "***"
                 }
             },
             "select_family": {
@@ -15,12 +15,29 @@
                 "data": {
                     "family_id": "家庭"
                 }
+            },
+            "devices": {
+                "title": "选择设备",
+                "description": "只有勾选的设备才会添加到 Home Assistant。不勾选后续无法使用。",
+                "data": {
+                    "selected_device_ids": "设备"
+                }
+            },
+            "area": {
+                "title": "指定设备区域（{position}/{total}）",
+                "description": "为「{device_name}」选择区域。欧瑞博中的房间为「{room}」。留空不设区域。",
+                "data": {
+                    "area_id": "区域"
+                }
             }
         },
         "error": {
             "auth_failed": "登录失败，请检查账号和密码",
             "empty_username_or_password": "账号和密码不能为空",
-            "invalid_username": "手机号或邮箱格式不正确"
+            "invalid_username": "手机号或邮箱格式不正确",
+            "no_devices_selected": "请至少勾选一台设备",
+            "no_devices": "该家庭中没有发现设备",
+            "cannot_connect": "无法连接欧瑞博云"
         },
         "abort": {
             "already_configured": "该账号已配置"
@@ -28,13 +45,24 @@
     },
     "options": {
         "step": {
-            "init": {
-                "title": "修改配置",
+            "devices": {
+                "title": "选择设备",
+                "description": "只有勾选的设备才会添加到 Home Assistant。",
                 "data": {
-                    "username": "手机号或邮箱",
-                    "password": "密码（留空不修改）"
+                    "selected_device_ids": "设备"
+                }
+            },
+            "area": {
+                "title": "指定设备区域（{position}/{total}）",
+                "description": "为「{device_name}」选择区域。欧瑞博中的房间为「{room}」。",
+                "data": {
+                    "area_id": "区域"
                 }
             }
+        },
+        "error": {
+            "no_devices_selected": "请至少勾选一台设备",
+            "cannot_connect": "无法连接欧瑞博云"
         }
     }
 }
