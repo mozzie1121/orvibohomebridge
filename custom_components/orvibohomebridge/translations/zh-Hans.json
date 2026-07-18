@@ -24,8 +24,8 @@
                 }
             },
             "area": {
-                "title": "指定设备区域（{position}/{total}）",
-                "description": "为「{device_name}」选择区域。欧瑞博中的房间为「{room}」。留空不设区域。",
+                "title": "指定设备区域",
+                "description": "为 {device} 选择区域（第 {position}/{total} 台）。欧瑞博中的房间为 {room}。留空不设区域。",
                 "data": {
                     "area_id": "区域"
                 }
@@ -53,8 +53,8 @@
                 }
             },
             "area": {
-                "title": "指定设备区域（{position}/{total}）",
-                "description": "为「{device_name}」选择区域。欧瑞博中的房间为「{room}」。",
+                "title": "指定设备区域",
+                "description": "为 {device} 选择区域（第 {position}/{total} 台）。欧瑞博中的房间为 {room}。",
                 "data": {
                     "area_id": "区域"
                 }
