@@ -6,12 +6,12 @@
                 "description": "请输入您的智家365账号（手机号或邮箱）和密码",
                 "data": {
                     "username": "手机号或邮箱",
-                    "password": "***"
+                    "password": "密码"
                 }
             },
             "select_family": {
                 "title": "选择家庭",
-                "description": "检测到多个家庭，请选择一个进行管理",
+                "description": "您的账号下存在多个家庭，请选择一个家庭添加进Home Assistant",
                 "data": {
                     "family_id": "家庭"
                 }
@@ -25,7 +25,7 @@
             },
             "area": {
                 "title": "指定设备区域",
-                "description": "为 {device} 选择区域（第 {position}/{total} 台）。欧瑞博中的房间为 {room}。留空不设区域。",
+                "description": "为 {device} 选择区域（第 {position}/{total} 台）。智家365中的房间为 {room}。留空不设区域。",
                 "data": {
                     "area_id": "区域"
                 }

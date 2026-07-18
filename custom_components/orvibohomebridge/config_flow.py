@@ -46,7 +46,7 @@ def _device_schema(
     """多选设备表单。"""
     options = [
         selector.SelectOptionDict(
-            value=dev["device_id"],
+            value=str(dev["device_id"]),
             label=_device_label(
                 dev["device_id"],
                 dev.get("device_name", ""),
@@ -85,7 +85,7 @@ def _default_area_id(
 ) -> str | None:
     """根据 ORVIBO 房间名确定默认 HA 区域。"""
     registry = ar.async_get(hass)
-    device_id = device["device_id"]
+    device_id = str(device["device_id"])
     if device_id in configured_areas:
         area_id = configured_areas[device_id]
         if area_id is None or area_id in registry.areas:
@@ -208,16 +208,30 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not errors:
                 errors["base"] = "no_devices"
         elif user_input is not None and CONF_SELECTED_DEVICE_IDS in user_input:
-            available = {dev["device_id"] for dev in self._pending_devices}
+            _LOGGER.debug(f"async_step_devices: user_input={user_input}")
+            _LOGGER.debug(f"async_step_devices: CONF_SELECTED_DEVICE_IDS={user_input.get(CONF_SELECTED_DEVICE_IDS)}")
+            _LOGGER.debug(f"async_step_devices: type of selected_ids={type(user_input.get(CONF_SELECTED_DEVICE_IDS))}")
+            for idx, did in enumerate(user_input.get(CONF_SELECTED_DEVICE_IDS, [])):
+                _LOGGER.debug(f"async_step_devices: selected_id[{idx}]={did}, type={type(did)}")
+            
+            available = {str(dev["device_id"]) for dev in self._pending_devices}
+            _LOGGER.debug(f"async_step_devices: available={available}")
+            
             requested = {
                 str(device_id)
                 for device_id in user_input[CONF_SELECTED_DEVICE_IDS]
             }
+            _LOGGER.debug(f"async_step_devices: requested={requested}")
+            
+            intersection = requested & available
+            _LOGGER.debug(f"async_step_devices: intersection={intersection}")
+            
             self._pending_selected_ids = [
-                dev["device_id"]
+                str(dev["device_id"])
                 for dev in self._pending_devices
-                if dev["device_id"] in requested & available
+                if str(dev["device_id"]) in intersection
             ]
+            _LOGGER.debug(f"async_step_devices: _pending_selected_ids={self._pending_selected_ids}")
             if not self._pending_selected_ids:
                 errors["base"] = "no_devices_selected"
             else:
@@ -241,28 +255,37 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """逐个设备设置区域。"""
+        _LOGGER.debug(f"async_step_area: _pending_selected_ids={self._pending_selected_ids}")
+        _LOGGER.debug(f"async_step_area: _pending_devices count={len(self._pending_devices)}")
+        _LOGGER.debug(f"async_step_area: _area_index={self._area_index}")
+        
         selected = {
-            dev["device_id"]: dev
+            str(dev["device_id"]): dev
             for dev in self._pending_devices
-            if dev["device_id"] in self._pending_selected_ids
+            if str(dev["device_id"]) in self._pending_selected_ids
         }
+        _LOGGER.debug(f"async_step_area: selected keys={list(selected.keys())}")
+        
         devices = [selected[device_id] for device_id in self._pending_selected_ids]
+        _LOGGER.debug(f"async_step_area: devices count={len(devices)}")
         if not devices or self._area_index >= len(devices):
             return self._finish()
 
         device = devices[self._area_index]
+        device_id_str = str(device["device_id"])
         if user_input is not None:
-            self._pending_device_areas[device["device_id"]] = user_input.get(ATTR_AREA_ID)
+            self._pending_device_areas[device_id_str] = user_input.get(ATTR_AREA_ID)
             self._area_index += 1
             if self._area_index >= len(devices):
                 return self._finish()
             device = devices[self._area_index]
+            device_id_str = str(device["device_id"])
 
         default_area_id = _default_area_id(self.hass, device, self._pending_device_areas)
 
         device_label = _device_label(
-            device["device_id"],
-            device.get("device_name", "") or device["device_id"],
+            device_id_str,
+            device.get("device_name", "") or device_id_str,
             device.get("room_name", ""),
         )
         room_name = device.get("room_name", "") or "-"
@@ -271,6 +294,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "区域步骤: 设备=%s, 房间=%s, 序号=%d/%d",
             device_label, room_name, self._area_index + 1, len(devices),
         )
+
+        _LOGGER.debug(f"async_step_area: device_label={device_label}, room_name={room_name}, position={self._area_index + 1}, total={len(devices)}")
+        _LOGGER.debug(f"async_step_area: default_area_id={default_area_id}")
 
         return self.async_show_form(
             step_id="area",
@@ -297,6 +323,10 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for device_id, area_id in self._pending_device_areas.items()
             if device_id in selected_set
         }
+
+        _LOGGER.debug(f"_finish: _pending_selected_ids={self._pending_selected_ids}")
+        _LOGGER.debug(f"_finish: _pending_device_areas={self._pending_device_areas}")
+        _LOGGER.debug(f"_finish: filtered_areas={filtered_areas}")
 
         return self.async_create_entry(
             title=title,
@@ -346,13 +376,21 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = "cannot_connect"
 
         if user_input is not None and CONF_SELECTED_DEVICE_IDS in user_input:
+            _LOGGER.debug(f"OptionsFlow async_step_devices: user_input={user_input}")
+            _LOGGER.debug(f"OptionsFlow async_step_devices: CONF_SELECTED_DEVICE_IDS={user_input.get(CONF_SELECTED_DEVICE_IDS)}")
+            for idx, did in enumerate(user_input.get(CONF_SELECTED_DEVICE_IDS, [])):
+                _LOGGER.debug(f"OptionsFlow async_step_devices: selected_id[{idx}]={did}, type={type(did)}")
+            
             requested = {
                 str(device_id)
                 for device_id in user_input[CONF_SELECTED_DEVICE_IDS]
             }
+            _LOGGER.debug(f"OptionsFlow async_step_devices: requested={requested}")
+            
             self._selected_ids = [
-                dev["device_id"] for dev in self._devices if dev["device_id"] in requested
+                str(dev["device_id"]) for dev in self._devices if str(dev["device_id"]) in requested
             ]
+            _LOGGER.debug(f"OptionsFlow async_step_devices: _selected_ids={self._selected_ids}")
             if not self._selected_ids:
                 errors["base"] = "no_devices_selected"
             else:
@@ -376,30 +414,35 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """逐个设备更新区域。"""
         selected = {
-            dev["device_id"]: dev
+            str(dev["device_id"]): dev
             for dev in self._devices
-            if dev["device_id"] in self._selected_ids
+            if str(dev["device_id"]) in self._selected_ids
         }
         devices = [selected[device_id] for device_id in self._selected_ids]
         if not devices or self._area_index >= len(devices):
             return self._finish()
 
         device = devices[self._area_index]
+        device_id_str = str(device["device_id"])
         if user_input is not None:
-            self._device_areas[device["device_id"]] = user_input.get(ATTR_AREA_ID)
+            self._device_areas[device_id_str] = user_input.get(ATTR_AREA_ID)
             self._area_index += 1
             if self._area_index >= len(devices):
                 return self._finish()
             device = devices[self._area_index]
+            device_id_str = str(device["device_id"])
 
         default_area_id = _default_area_id(self.hass, device, self._device_areas)
 
         device_label = _device_label(
-            device["device_id"],
-            device.get("device_name", "") or device["device_id"],
+            device_id_str,
+            device.get("device_name", "") or device_id_str,
             device.get("room_name", ""),
         )
         room_name = device.get("room_name", "") or "-"
+
+        _LOGGER.debug(f"OptionsFlow async_step_area: device_label={device_label}, room_name={room_name}, position={self._area_index + 1}, total={len(devices)}")
+        _LOGGER.debug(f"OptionsFlow async_step_area: default_area_id={default_area_id}")
 
         return self.async_show_form(
             step_id="area",

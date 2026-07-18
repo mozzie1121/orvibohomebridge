@@ -4,9 +4,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, CONF_FAMILY_ID
 from .coordinator import OrviboMeshCoordinator
+from .selection import CONF_DEVICE_AREAS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,8 +61,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # 使用 async_forward_entry_setups 一次性加载所有平台
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    async def _apply_after_refresh():
+        """等待 coordinator 第一次刷新完成后再应用区域映射。"""
+        if not coordinator.last_update_success:
+            await coordinator.async_refresh()
+        await _apply_device_areas(hass, entry)
+    
+    hass.async_create_task(_apply_after_refresh())
+
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     _LOGGER.info("Orvibo Mesh 设置完成")
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry):
+    """当配置条目更新时重新应用区域映射。"""
+    _LOGGER.info("配置条目已更新，重新应用设备区域映射")
+    await _apply_device_areas(hass, entry)
+
+
+async def _apply_device_areas(hass: HomeAssistant, entry: ConfigEntry):
+    """将配置的区域映射应用到 HA 设备注册表。"""
+    device_areas = entry.options.get(CONF_DEVICE_AREAS, {})
+    if not device_areas:
+        _LOGGER.debug("未配置设备区域映射")
+        return
+
+    _LOGGER.debug(f"应用设备区域映射: {device_areas}")
+    
+    device_registry = dr.async_get(hass)
+    
+    for device_id, area_id in device_areas.items():
+        if not area_id:
+            continue
+        
+        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
+        if device:
+            _LOGGER.info(f"设置设备 {device_id} 的区域为 {area_id}")
+            device_registry.async_update_device(
+                device.id,
+                area_id=area_id,
+            )
+        else:
+            _LOGGER.warning(f"未找到设备: {device_id}")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):

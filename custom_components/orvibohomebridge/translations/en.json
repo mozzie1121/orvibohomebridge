@@ -2,11 +2,11 @@
     "config": {
         "step": {
             "user": {
-                "title": "Login - ZhiJia365",
-                "description": "Enter your ZhiJia365 account (phone number or email) and password",
+                "title": "Login - HomeMate",
+                "description": "Enter your HomeMate account (phone number or email) and password",
                 "data": {
                     "username": "Phone / Email",
-                    "password": "***"
+                    "password": "Password"
                 }
             },
             "select_family": {
@@ -25,7 +25,7 @@
             },
             "area": {
                 "title": "Assign Area",
-                "description": "Select HA area for {device} ({position}/{total}). ORVIBO room is {room}. Leave empty for no area.",
+                "description": "Select HA area for {device} ({position}/{total}). The room from HomeMate is {room}. Leave empty for no area.",
                 "data": {
                     "area_id": "Area"
                 }
