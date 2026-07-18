@@ -402,9 +402,10 @@ class HttpsClient:
         """从 /v2/cmd/app/readtable 返回的数据中解析设备列表
 
         注：内部解析逻辑已迁移到 protocol.py，此处为保持接口兼容的包装。
+        device_status_data 是 fetch_device_status() 返回的 resp["data"]（readtable 的内层 data）。
         """
-        from .protocol import parse_readtable_to_device_dicts, _safe_int
-        
+        from .protocol import parse_readtable_devices, device_to_dict, _safe_int
+
         raw_devices = device_status_data.get("device", [])
         if isinstance(raw_devices, dict):
             # dict 格式：key=deviceId, value=item
@@ -432,10 +433,13 @@ class HttpsClient:
             return result
 
         # 列表格式 → 使用 protocol.py 解析
-        devices = parse_readtable_to_device_dicts(device_status_data)
+        # 注意：device_status_data 已经是 resp["data"]，不能再套一层 payload.get("data")
+        # 所以直接构造一个模拟 payload 传给 parse_readtable_devices
+        wrapped = {"code": 0, "data": device_status_data}
+        devices = [device_to_dict(d) for d in parse_readtable_devices(wrapped)]
         
-        # 补充额外字段（coordinator 需要的 status/properties/gateway_id 等）
-        # 构建 deviceStatus 映射
+        # protocol.parse_readtable_devices 已经做了 room/status 联合查询
+        # 但仍需补充 properties（从 deviceStatus 获取额外的 properties）
         raw_statuses = device_status_data.get("deviceStatus", [])
         status_map: dict[str, dict] = {}
         if isinstance(raw_statuses, list):
@@ -463,7 +467,6 @@ class HttpsClient:
                 if isinstance(props, dict) and len(props) == 0:
                     _LOGGER.info(f"跳过父开关设备: deviceId={dev['device_id']}, name={dev.get('device_name')}")
                     continue
-            filtered.append(dev)
             filtered.append(dev)
         
         _LOGGER.info(f"从 device_status 解析到 {len(filtered)} 个设备")
