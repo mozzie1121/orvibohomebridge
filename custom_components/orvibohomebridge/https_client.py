@@ -399,411 +399,26 @@ class HttpsClient:
         return device_status_map
 
     def parse_device_status_list(self, device_status_data: dict) -> List[Dict[str, Any]]:
-        """从 /v2/cmd/app/readtable 返回的数据中解析设备列表"""
-        devices = []
+        """从 /v2/cmd/app/readtable 返回的数据中解析设备列表
 
-        # deviceStatus 可能包含设备状态信息，格式可能为 {deviceId: status} 或 list
-        raw_device_status = device_status_data.get("deviceStatus", {})
+        注：内部解析逻辑已迁移到 protocol.py，此处为保持接口兼容的包装。
+        """
+        from .protocol import parse_readtable_to_device_dicts, _safe_int
         
-        # 打印 deviceStatus 的结构以便调试
-        _LOGGER.info(f"deviceStatus 类型: {type(raw_device_status)}")
-        if isinstance(raw_device_status, dict):
-            _LOGGER.info(f"deviceStatus 键数量: {len(raw_device_status)}")
-            # 打印前3个键值对
-            count = 0
-            for k, v in raw_device_status.items():
-                if count >= 3:
-                    break
-                _LOGGER.info(f"deviceStatus[{k}]: {type(v)}")
-                if isinstance(v, dict):
-                    _LOGGER.info(f"  keys: {list(v.keys())[:10]}")
-                    if "properties" in v:
-                        _LOGGER.info(f"  properties: {v['properties']}")
-                count += 1
-        elif isinstance(raw_device_status, list):
-            _LOGGER.info(f"deviceStatus 列表长度: {len(raw_device_status)}")
-            if len(raw_device_status) > 0:
-                _LOGGER.info(f"第一个元素类型: {type(raw_device_status[0])}")
-                if isinstance(raw_device_status[0], dict):
-                    _LOGGER.info(f"  keys: {list(raw_device_status[0].keys())[:10]}")
-        
-        # 建立 deviceStatus 映射
-        device_status_map = {}
-        if isinstance(raw_device_status, dict):
-            device_status_map = raw_device_status
-        elif isinstance(raw_device_status, list):
-            for status_item in raw_device_status:
-                if isinstance(status_item, dict):
-                    status_device_id = status_item.get("deviceId", "")
-                    if status_device_id:
-                        device_status_map[status_device_id] = status_item
-        
-        _LOGGER.info(f"device_status_map 构建完成，共 {len(device_status_map)} 个设备状态")
-        
-        # device 包含设备基本信息
-        device_info_list = device_status_data.get("device", [])
-
-        # 如果 device 是列表
-        if isinstance(device_info_list, list):
-            for item in device_info_list:
-                # 确保 item 是字典
+        raw_devices = device_status_data.get("device", [])
+        if isinstance(raw_devices, dict):
+            # dict 格式：key=deviceId, value=item
+            result = []
+            for device_id, item in raw_devices.items():
                 if not isinstance(item, dict):
-                    _LOGGER.warning(f"跳过无效的设备项: {type(item)}")
                     continue
-
-                device_id = item.get("deviceId", "")
-                if not device_id:
-                    continue
-                
-                # 尝试从多个来源获取 deviceType 和 classId
-                # 1. 从 item 本身获取
-                device_type_raw = item.get("deviceType")
-                class_id = item.get("classId")
-                
-                # 2. 从 deviceStatus 获取（优先）
-                status_data = device_status_map.get(device_id, {})
-                if not device_type_raw:
-                    device_type_raw = status_data.get("deviceType")
-                if not class_id:
-                    class_id = status_data.get("classId")
-                    # classId 可能是 subDeviceType 字段
-                    if not class_id:
-                        class_id = status_data.get("subDeviceType")
-                
-                # 3. 从 properties.Descriptor 获取（备用）
-                if not class_id:
-                    properties = item.get("properties", {})
-                    if isinstance(properties, dict):
-                        descriptor = properties.get("Descriptor", {})
-                        if isinstance(descriptor, dict):
-                            class_id = descriptor.get("classId")
-                
-                # 转换为整数
-                try:
-                    device_type_raw = int(device_type_raw) if device_type_raw is not None else None
-                    class_id = int(class_id) if class_id is not None else None
-                except (TypeError, ValueError):
-                    device_type_raw = None
-                    class_id = None
-                
-                _LOGGER.info(f"设备 {device_id}: deviceType={device_type_raw}, classId={class_id}, status_deviceType={status_data.get('deviceType')}")
-                
-                # 跳过 deviceType=135/136 的父开关设备（物理容器，properties为空，不可控）
-                # 只有其子设备(deviceType=102等)才应创建为实体
-                if device_type_raw in (135, 136):
-                    properties = item.get("properties", {})
-                    if isinstance(properties, dict) and len(properties) == 0:
-                        _LOGGER.info(f"跳过父开关设备: deviceId={device_id}, deviceType={device_type_raw}, name={item.get('deviceName')}")
-                        continue
-                
-                # 构造临时 item 用于类型判断
-                temp_item = {
-                    "deviceType": device_type_raw,
-                    "classId": class_id,
-                }
-                
-                device_type = self._get_device_type(temp_item)
-                if device_type is None:
-                    # 如果无法通过 deviceType 或 classId 识别，尝试通过设备名称或其他特征推断
-                    device_name = item.get("deviceName", "")
-                    properties = item.get("properties", {})
-                    
-                    # 通过设备名称关键词推断
-                    if any(keyword in device_name for keyword in ["灯", "light", "吸顶灯", "平板灯", "主灯", "射灯", "筒灯", "灯泡", "led", "LED"]):
-                        device_type = DEVICE_TYPE_LIGHT
-                        _LOGGER.info(f"通过名称推断为灯: {device_name}")
-                        # 如果是调光灯且 subDeviceType=-2，设置 device_type_raw=0
-                        sub_type_raw = item.get("subDeviceType") or status_data.get("subDeviceType")
-                        try:
-                            sub_type_raw = int(sub_type_raw) if sub_type_raw is not None else None
-                        except (TypeError, ValueError):
-                            sub_type_raw = None
-                        if "调光" in device_name and sub_type_raw == -2:
-                            device_type_raw = 0
-                            _LOGGER.info(f"通过名称'调光灯'和 subDeviceType=-2 设置 device_type_raw=0")
-                    elif any(keyword in device_name for keyword in ["窗帘", "窗帘机", "遮阳帘", "百叶窗", "卷帘", "curtain", "blind", "shade"]):
-                        device_type = DEVICE_TYPE_COVER
-                        _LOGGER.info(f"通过名称推断为窗帘: {device_name}")
-                    elif any(keyword in device_name for keyword in ["开关", "插座", "switch", "socket", "排插"]):
-                        device_type = DEVICE_TYPE_SWITCH
-                        _LOGGER.info(f"通过名称推断为开关: {device_name}")
-                    elif any(keyword in device_name for keyword in ["晾衣架", "晾衣机", "晾衣"]):
-                        device_type = DEVICE_TYPE_COVER
-                        _LOGGER.info(f"通过名称推断为晾衣架: {device_name}")
-                    elif any(keyword in device_name for keyword in ["紧急按钮", "emergency"]):
-                        device_type = DEVICE_TYPE_SENSOR
-                        _LOGGER.info(f"通过名称推断为紧急按钮: {device_name}")
-                    elif any(keyword in device_name for keyword in ["水浸", "漏水", "water leak", "water"]):
-                        device_type = DEVICE_TYPE_SENSOR
-                        _LOGGER.info(f"通过名称推断为水浸探测器: {device_name}")
-                    elif any(keyword in device_name for keyword in ["可燃气体", "气体", "燃气", "gas", "煤气"]):
-                        device_type = DEVICE_TYPE_SENSOR
-                        _LOGGER.info(f"通过名称推断为气体探测器: {device_name}")
-                    # 通过 properties 中的特征推断
-                    elif isinstance(properties, dict):
-                        # 有 percent 属性 -> 窗帘或晾衣架
-                        if "percent" in properties:
-                            device_type = DEVICE_TYPE_COVER
-                            _LOGGER.info(f"通过 percent 属性推断为窗帘/晾衣架: {device_id}")
-                        # 有 onoff 属性但无其他属性 -> 开关灯
-                        elif "onoff" in properties and not any(k in properties for k in ["brightness", "colortemp", "percent"]):
-                            device_type = DEVICE_TYPE_LIGHT
-                            _LOGGER.info(f"通过 onoff 属性推断为灯: {device_id}")
-                        # 有 brightness 或 colortemp 属性 -> 调光灯
-                        elif "brightness" in properties or "colortemp" in properties:
-                            device_type = DEVICE_TYPE_LIGHT
-                            _LOGGER.info(f"通过 brightness/colortemp 属性推断为灯: {device_id}")
-                    
-                    if device_type is None:
-                        _LOGGER.warning(f"设备类型未识别，跳过: {device_id}, name={device_name}, deviceType={device_type_raw}, classId={class_id}")
-                        continue
-
-                uid = item.get("uid", "")
-                status_id = item.get("statusId", "")
-                gateway_id = item.get("gatewayId", "")
-                ext_addr = item.get("extAddr", "")
-                
-                # 获取设备名称（可能在多个位置）
-                device_name = item.get("deviceName", "")
-                if not device_name:
-                    properties = item.get("properties", {})
-                    descriptor = properties.get("Descriptor", {}) if isinstance(properties, dict) else {}
-                    device_name = descriptor.get("deviceName", "")
-                
-                # 获取 ui.model（用于判断灯的类型）
-                ui = item.get("ui", {})
-                ui_model = ui.get("model", "") if isinstance(ui, dict) else ""
-                
-                _LOGGER.info(f"解析设备: deviceId={device_id}, uid={uid}, ui.model={ui_model}, name={device_name}, online_raw={item.get('online')}")
-                
-                # 从 deviceStatus 中获取状态数据（优先）
-                status_data = device_status_map.get(device_id, {})
-                status_properties = status_data.get("properties", {})
-
-                # 从 item.properties 获取备用状态
-                item_properties = item.get("properties", {})
-                if isinstance(item_properties, str):
-                    item_properties = {}
-
-                # online 状态：优先从 deviceStatus 取（readtable 的 device 列表没有 online 字段）
-                online_val = status_data.get("online")
-                if online_val is None:
-                    online_val = item.get("online")
-                online = self._parse_online_status(online_val)
-
-                # 初始状态：优先用 deviceStatus 的 value1~value4（readtable 接口主要格式）
-                value1 = status_data.get("value1")
-                value2 = status_data.get("value2")
-                value3 = status_data.get("value3")
-                sub_type_raw = item.get("subDeviceType") or status_data.get("subDeviceType")
-
-                initial_state = False
-                initial_position = None
-                initial_brightness = None
-                initial_color_temp = None
-                initial_fan_speed = "停"
-                initial_temperature = None
-
-                # 根据 deviceType 推断 value1~value3 的语义
-                if device_type_raw in (1, 102):
-                    if value1 is not None:
-                        v1 = int(value1)
-                        initial_state = v1 == 0
-                elif device_type_raw == 501:
-                    pass
-                elif device_type_raw in (135, 136, 137, 143, 518):
-                    if value1 is not None:
-                        v1 = int(value1)
-                        initial_state = v1 == 1
-                elif device_type_raw in (34, 52):
-                    if value1 is not None:
-                        v1 = int(value1)
-                        initial_position = v1
-                        initial_state = v1 > 0
-                elif device_type_raw == 503:
-                    if value1 is not None:
-                        initial_state = int(value1) == 0
-                    if value2 is not None and int(value2) >= 0:
-                        initial_brightness = int(value2)
-                    if value3 is not None and int(value3) > 0:
-                        ct = int(value3)
-                        if 150 <= ct <= 400:
-                            ct = 1000000 // ct
-                        initial_color_temp = ct
-                elif device_type_raw == 38:
-                    # deviceType=38: value2 是 0-255 原始亮度值
-                    if value1 is not None:
-                        initial_state = int(value1) == 0
-                    if value2 is not None and int(value2) >= 0:
-                        initial_brightness = int(value2)
-                    if value3 is not None and int(value3) > 0:
-                        ct = int(value3)
-                        if 150 <= ct <= 400:
-                            ct = 1000000 // ct
-                        initial_color_temp = ct
-                elif device_type_raw == 0:
-                    # deviceType=0, subDeviceType=-2: Zigbee调光灯
-                    # value1=0 为开, value1=1 为关（subDeviceType=-2 时反转）
-                    # value2 为亮度 (0-255)
-                    if value1 is not None:
-                        v1 = int(value1)
-                        if sub_type_raw == -2:
-                            initial_state = v1 == 0
-                        else:
-                            initial_state = v1 == 1
-                    if value2 is not None:
-                        initial_brightness = int(value2)
-                elif device_type_raw == 516:
-                    # deviceType=516: 新风系统
-                    # fanControl.fanMode: off/low/high -> 停/慢/快
-                    fan_control = item_properties.get("fanControl", {}) if isinstance(item_properties, dict) else {}
-                    if not fan_control:
-                        fan_control = status_properties.get("fanControl", {}) if isinstance(status_properties, dict) else {}
-                    fan_mode = fan_control.get("fanMode", "off") if isinstance(fan_control, dict) else "off"
-                    
-                    # fan_speed 映射: off -> 停, low -> 慢, high -> 快
-                    fan_speed_map = {"off": "停", "low": "慢", "high": "快"}
-                    initial_fan_speed = fan_speed_map.get(fan_mode, "停")
-                    initial_state = fan_mode != "off"
-                    
-                    # 温度
-                    temp_obj = item_properties.get("temperature", {}) if isinstance(item_properties, dict) else {}
-                    if not temp_obj:
-                        temp_obj = status_properties.get("temperature", {}) if isinstance(status_properties, dict) else {}
-                    if isinstance(temp_obj, dict):
-                        temp_val = temp_obj.get("value")
-                        if temp_val is not None:
-                            try:
-                                initial_temperature = float(temp_val)
-                            except (TypeError, ValueError):
-                                initial_temperature = None
-                        else:
-                            initial_temperature = None
-                    else:
-                        initial_temperature = None
-
-                # 兜底：从 properties 取（SSL 推送或其他接口可能返回 properties 格式）
-                onoff_value = None
-                if "onoff" in item_properties:
-                    onoff_value = item_properties["onoff"]
-                elif "onoff" in status_properties:
-                    onoff_value = status_properties["onoff"]
-
-                if onoff_value is not None:
-                    if isinstance(onoff_value, dict):
-                        initial_state = onoff_value.get("status", "off") == "on"
-                    elif isinstance(onoff_value, str):
-                        initial_state = onoff_value == "on"
-                    elif isinstance(onoff_value, bool):
-                        initial_state = onoff_value
-                    elif isinstance(onoff_value, int):
-                        initial_state = onoff_value == 1
-
-                if not initial_state and isinstance(item_properties.get("onoff_status"), str):
-                    initial_state = item_properties["onoff_status"] == "on"
-                if not initial_state and isinstance(status_properties.get("onoff_status"), str):
-                    initial_state = status_properties["onoff_status"] == "on"
-
-                if initial_position is None:
-                    if "percent" in item_properties:
-                        percent_val = item_properties["percent"]
-                        initial_position = int(percent_val) if isinstance(percent_val, (int, float)) else 0
-                    elif "percent" in status_properties:
-                        percent_val = status_properties["percent"]
-                        initial_position = int(percent_val) if isinstance(percent_val, (int, float)) else 0
-                    else:
-                        initial_position = 0
-
-                if initial_brightness is None:
-                    brightness_val = None
-                    if "brightness" in item_properties:
-                        brightness_val = item_properties["brightness"]
-                    elif "brightness" in status_properties:
-                        brightness_val = status_properties["brightness"]
-                    if brightness_val is not None:
-                        if isinstance(brightness_val, dict):
-                            bri = brightness_val.get("brightness", brightness_val.get("value"))
-                        else:
-                            bri = int(brightness_val) if isinstance(brightness_val, (int, float)) else None
-                        if bri is not None:
-                            # deviceType=0 (ZIGBEE_DIMMABLE_LIGHT, subDeviceType=-2)
-                            # 的 properties.brightness 是百分比(0-100)，需要转成 0-255
-                            if device_type_raw == 0:
-                                initial_brightness = round(bri * 255 / 100)
-                            else:
-                                initial_brightness = bri
-
-                if initial_color_temp is None:
-                    colortemp_val = None
-                    if "colortemp" in item_properties:
-                        colortemp_val = item_properties["colortemp"]
-                    elif "colortemp" in status_properties:
-                        colortemp_val = status_properties["colortemp"]
-                    if colortemp_val is not None:
-                        if isinstance(colortemp_val, dict):
-                            ct = colortemp_val.get("colortemp", colortemp_val.get("value"))
-                            if ct and ct > 0:
-                                initial_color_temp = int(ct)
-                        else:
-                            if isinstance(colortemp_val, (int, float)) and colortemp_val > 0:
-                                initial_color_temp = int(colortemp_val)
-
-                _LOGGER.info(f"设备 {device_id} 初始状态: online={online}, state={initial_state}, brightness={initial_brightness}, color_temp={initial_color_temp}, position={initial_position}, fan_speed={initial_fan_speed}, temperature={initial_temperature}")
-
-                devices.append({
-                    "device_id": device_id,
-                    "device_name": device_name,
-                    "device_type": device_type,
-                    "device_type_raw": device_type_raw,
-                    "class_id": class_id,
-                    "sub_device_type": sub_type_raw,
-                    "uid": uid,
-                    "status_id": status_id,
-                    "gateway_id": gateway_id,
-                    "ext_addr": ext_addr,
-                    "model": item.get("model", ""),
-                    "ui_model": ui_model,
-                    "room_id": item.get("roomId", ""),
-                    "room_name": item.get("roomName", ""),
-                    "online": online,
-                    "state": initial_state,
-                    "position": initial_position,
-                    "brightness": initial_brightness,
-                    "color_temp": initial_color_temp,
-                    "fan_speed": initial_fan_speed,
-                    "temperature": initial_temperature,
-                    "properties": item_properties,
-                    "endpoint": item.get("endpoint", 0),
-                    "status": status_data,
-                })
-        # 如果 device 是字典
-        elif isinstance(device_info_list, dict):
-            for device_id, item in device_info_list.items():
-                if not device_id:
-                    continue
-                if isinstance(item, str):
-                    continue
-
-                # 转换 deviceType 和 classId 为整数
-                device_type_raw = item.get("deviceType")
-                class_id = item.get("classId")
-                try:
-                    device_type_raw = int(device_type_raw) if device_type_raw is not None else None
-                    class_id = int(class_id) if class_id is not None else None
-                except (TypeError, ValueError):
-                    device_type_raw = None
-                    class_id = None
-
-                device_type = self._get_device_type(item)
-                if device_type is None:
-                    continue
-
-                devices.append({
+                device_type_raw = _safe_int(item.get("deviceType"))
+                result.append({
                     "device_id": device_id,
                     "device_name": item.get("deviceName", ""),
-                    "device_type": device_type,
+                    "device_type": self._get_device_type(item) or "light",
                     "device_type_raw": device_type_raw,
-                    "class_id": class_id,
+                    "class_id": _safe_int(item.get("classId")),
                     "uid": item.get("uid", ""),
                     "model": item.get("model", ""),
                     "room_id": item.get("roomId", ""),
@@ -811,11 +426,48 @@ class HttpsClient:
                     "online": self._parse_online_status(item.get("online")),
                     "properties": item.get("properties", {}),
                     "endpoint": item.get("endpoint", 0),
-                    "status": device_status.get(device_id, {}) if isinstance(device_status, dict) else {},
+                    "status": item.get("status", {}),
                 })
+            _LOGGER.info(f"从 device_status dict 解析到 {len(result)} 个设备")
+            return result
 
-        _LOGGER.info(f"从 device_status 解析到 {len(devices)} 个设备")
-        return devices
+        # 列表格式 → 使用 protocol.py 解析
+        devices = parse_readtable_to_device_dicts(device_status_data)
+        
+        # 补充额外字段（coordinator 需要的 status/properties/gateway_id 等）
+        # 构建 deviceStatus 映射
+        raw_statuses = device_status_data.get("deviceStatus", [])
+        status_map: dict[str, dict] = {}
+        if isinstance(raw_statuses, list):
+            for s in raw_statuses:
+                if isinstance(s, dict):
+                    sid = s.get("deviceId", "")
+                    if sid:
+                        status_map[sid] = s
+        elif isinstance(raw_statuses, dict):
+            status_map = raw_statuses
+        
+        result = []
+        for dev in devices:
+            status_data = status_map.get(dev["device_id"], {})
+            dev["status"] = status_data
+            dev["properties"] = dev.get("properties") or status_data.get("properties", {})
+            result.append(dev)
+        
+        # 跳过父开关设备（type=135/136，properties 为空）
+        filtered = []
+        for dev in result:
+            dt = dev.get("device_type_raw")
+            if dt in (135, 136):
+                props = dev.get("properties", {})
+                if isinstance(props, dict) and len(props) == 0:
+                    _LOGGER.info(f"跳过父开关设备: deviceId={dev['device_id']}, name={dev.get('device_name')}")
+                    continue
+            filtered.append(dev)
+            filtered.append(dev)
+        
+        _LOGGER.info(f"从 device_status 解析到 {len(filtered)} 个设备")
+        return filtered
 
     async def fetch_homepage_data(self) -> Optional[Dict[str, Any]]:
         try:
