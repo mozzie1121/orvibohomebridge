@@ -10,7 +10,7 @@ from .coordinator import OrviboMeshCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan"]
+PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan")
 
 SERVICE_REFRESH = "refresh_devices"
 
@@ -71,7 +71,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         await coordinator.async_cleanup()
         _LOGGER.info("Coordinator 清理完成")
 
-    unload_ok = await hass.config_entries.async_forward_entry_unload(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_forward_entry_unload(entry, list(PLATFORMS))
     _LOGGER.info(f"卸载结果: {unload_ok}")
 
     if unload_ok:
