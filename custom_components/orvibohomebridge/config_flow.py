@@ -1,7 +1,7 @@
 """Config flow for Orvibo HomeBridge.
 
-支持三步配置：登录 → 选家庭 → 选设备+设区域（可选）。
-现有已配置用户不受影响。
+支持三步配置：登录 → 选家庭 → 选设备（可选设区域）。
+向下兼容现有已配置条目。
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from homeassistant.helpers import area_registry as ar, selector
 
 from .const import DOMAIN, CONF_FAMILY_ID
 from .https_client import HttpsClient
-from .protocol import OrviboDevice, parse_readtable_to_device_dicts
 from .selection import (
     CONF_DEVICE_AREAS,
     CONF_SELECTED_DEVICE_IDS,
@@ -31,11 +30,13 @@ from .selection import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _device_label(device_id: str, name: str, room: str, model: str) -> str:
-    """构建设备选单标签。"""
-    details = [v for v in (room, model) if v and v != name]
-    details.append(device_id[-6:])
-    return " | ".join((name or device_id, *details))
+# ── 设备标签（尽量短，在一行内看得清） ──
+
+def _device_label(device_id: str, name: str, room: str) -> str:
+    """简短的设备标签：设备名（房间名）"""
+    if room and room != name:
+        return f"{name} ({room})"
+    return name or device_id
 
 
 def _device_schema(
@@ -50,7 +51,6 @@ def _device_schema(
                 dev["device_id"],
                 dev.get("device_name", ""),
                 dev.get("room_name", ""),
-                dev.get("model", ""),
             ),
         )
         for dev in devices
@@ -95,6 +95,8 @@ def _default_area_id(
         return None
     return registry.async_get_or_create(room_name).id
 
+
+# ── ConfigFlow（首次配置） ──
 
 class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -160,7 +162,6 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_select_family(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        errors: dict[str, str] = {}
         if self._https_client is None:
             return self.async_abort(reason="unknown")
 
@@ -181,7 +182,6 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({
                 vol.Required(CONF_FAMILY_ID): vol.In(family_choices),
             }),
-            errors=errors,
             description_placeholders={
                 "family_count": str(len(family_choices)),
             },
@@ -259,17 +259,16 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             device = devices[self._area_index]
 
         default_area_id = _default_area_id(self.hass, device, self._pending_device_areas)
+
+        device_name = device.get("device_name", "") or device["device_id"]
+        room_name = device.get("room_name", "") or "-"
+
         return self.async_show_form(
             step_id="area",
             data_schema=_area_schema(default_area_id),
             description_placeholders={
-                "device": _device_label(
-                    device["device_id"],
-                    device.get("device_name", ""),
-                    device.get("room_name", ""),
-                    device.get("model", ""),
-                ),
-                "room": device.get("room_name", "-"),
+                "device_name": device_name,
+                "room": room_name,
                 "position": str(self._area_index + 1),
                 "total": str(len(devices)),
             },
@@ -282,21 +281,25 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if client and client.family_name:
             title = f"{client.username} - {client.family_name}"
 
-        entry_data = {
-            **self._pending_data,
-        }
-
-        options = {
-            CONF_SELECTED_DEVICE_IDS: self._pending_selected_ids,
-            CONF_DEVICE_AREAS: self._pending_device_areas,
+        # 只保存选中的设备和区域映射
+        selected_set = set(self._pending_selected_ids)
+        filtered_areas = {
+            device_id: area_id
+            for device_id, area_id in self._pending_device_areas.items()
+            if device_id in selected_set
         }
 
         return self.async_create_entry(
             title=title,
-            data=entry_data,
-            options=options,
+            data=self._pending_data,
+            options={
+                CONF_SELECTED_DEVICE_IDS: self._pending_selected_ids,
+                CONF_DEVICE_AREAS: filtered_areas,
+            },
         )
 
+
+# ── OptionsFlow（配置→选项） ──
 
 class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
     def __init__(self) -> None:
@@ -370,51 +373,43 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         }
         devices = [selected[device_id] for device_id in self._selected_ids]
         if not devices or self._area_index >= len(devices):
-            selected_set = set(self._selected_ids)
-            return self.async_create_entry(
-                title="",
-                data={
-                    CONF_SELECTED_DEVICE_IDS: self._selected_ids,
-                    CONF_DEVICE_AREAS: {
-                        device_id: area_id
-                        for device_id, area_id in self._device_areas.items()
-                        if device_id in selected_set
-                    },
-                },
-            )
+            return self._finish()
 
         device = devices[self._area_index]
         if user_input is not None:
             self._device_areas[device["device_id"]] = user_input.get(ATTR_AREA_ID)
             self._area_index += 1
             if self._area_index >= len(devices):
-                selected_set = set(self._selected_ids)
-                return self.async_create_entry(
-                    title="",
-                    data={
-                        CONF_SELECTED_DEVICE_IDS: self._selected_ids,
-                        CONF_DEVICE_AREAS: {
-                            device_id: area_id
-                            for device_id, area_id in self._device_areas.items()
-                            if device_id in selected_set
-                        },
-                    },
-                )
+                return self._finish()
             device = devices[self._area_index]
 
         default_area_id = _default_area_id(self.hass, device, self._device_areas)
+
+        device_name = device.get("device_name", "") or device["device_id"]
+        room_name = device.get("room_name", "") or "-"
+
         return self.async_show_form(
             step_id="area",
             data_schema=_area_schema(default_area_id),
             description_placeholders={
-                "device": _device_label(
-                    device["device_id"],
-                    device.get("device_name", ""),
-                    device.get("room_name", ""),
-                    device.get("model", ""),
-                ),
-                "room": device.get("room_name", "-"),
+                "device_name": device_name,
+                "room": room_name,
                 "position": str(self._area_index + 1),
                 "total": str(len(devices)),
+            },
+        )
+
+    def _finish(self) -> FlowResult:
+        selected_set = set(self._selected_ids)
+        filtered_areas = {
+            device_id: area_id
+            for device_id, area_id in self._device_areas.items()
+            if device_id in selected_set
+        }
+        return self.async_create_entry(
+            title="",
+            data={
+                CONF_SELECTED_DEVICE_IDS: self._selected_ids,
+                CONF_DEVICE_AREAS: filtered_areas,
             },
         )
