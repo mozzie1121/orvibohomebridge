@@ -33,10 +33,10 @@ _LOGGER = logging.getLogger(__name__)
 # ── 设备标签（尽量短，在一行内看得清） ──
 
 def _device_label(device_id: str, name: str, room: str) -> str:
-    """简短的设备标签：设备名（房间名）"""
+    """短标签：设备名 + 房间名"""
     if room and room != name:
-        return f"{name} ({room})"
-    return name or device_id
+        return f"{name} [{room}]"
+    return name or device_id[-8:]
 
 
 def _device_schema(
@@ -263,6 +263,11 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         device_name = device.get("device_name", "") or device["device_id"]
         room_name = device.get("room_name", "") or "-"
 
+        _LOGGER.info(
+            "区域步骤: 设备=%s, 房间=%s, 序号=%d/%d",
+            device_name, room_name, self._area_index + 1, len(devices),
+        )
+
         return self.async_show_form(
             step_id="area",
             data_schema=_area_schema(default_area_id),
@@ -289,6 +294,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if device_id in selected_set
         }
 
+        # 如果用户选了设备但没设区域，直接跳完成
         return self.async_create_entry(
             title=title,
             data=self._pending_data,
