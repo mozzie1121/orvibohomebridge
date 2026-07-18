@@ -66,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     _LOGGER.info("开始卸载 Orvibo Mesh...")
     
-    coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if coordinator:
         await coordinator.async_cleanup()
         _LOGGER.info("Coordinator 清理完成")
@@ -75,7 +75,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     _LOGGER.info(f"卸载结果: {unload_ok}")
 
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        hass_data = hass.data.get(DOMAIN, {})
+        hass_data.pop(entry.entry_id, None)
         _LOGGER.info("已从 hass.data 移除")
 
     return unload_ok
