@@ -24,8 +24,8 @@
                 }
             },
             "area": {
-                "title": "Assign Area ({position}/{total})",
-                "description": "Select HA area for «{device_name}». ORVIBO room is «{room}». Leave empty for no area.",
+                "title": "Assign Area",
+                "description": "Select HA area for {device} ({position}/{total}). ORVIBO room is {room}. Leave empty for no area.",
                 "data": {
                     "area_id": "Area"
                 }
@@ -53,8 +53,8 @@
                 }
             },
             "area": {
-                "title": "Assign Area ({position}/{total})",
-                "description": "Select HA area for «{device_name}». ORVIBO room is «{room}».",
+                "title": "Assign Area",
+                "description": "Select HA area for {device} ({position}/{total}). ORVIBO room is {room}.",
                 "data": {
                     "area_id": "Area"
                 }

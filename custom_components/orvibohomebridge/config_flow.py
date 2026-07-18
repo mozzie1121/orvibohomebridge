@@ -260,19 +260,23 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         default_area_id = _default_area_id(self.hass, device, self._pending_device_areas)
 
-        device_name = device.get("device_name", "") or device["device_id"]
+        device_label = _device_label(
+            device["device_id"],
+            device.get("device_name", "") or device["device_id"],
+            device.get("room_name", ""),
+        )
         room_name = device.get("room_name", "") or "-"
 
         _LOGGER.info(
             "区域步骤: 设备=%s, 房间=%s, 序号=%d/%d",
-            device_name, room_name, self._area_index + 1, len(devices),
+            device_label, room_name, self._area_index + 1, len(devices),
         )
 
         return self.async_show_form(
             step_id="area",
             data_schema=_area_schema(default_area_id),
             description_placeholders={
-                "device_name": device_name,
+                "device": device_label,
                 "room": room_name,
                 "position": str(self._area_index + 1),
                 "total": str(len(devices)),
@@ -294,7 +298,6 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if device_id in selected_set
         }
 
-        # 如果用户选了设备但没设区域，直接跳完成
         return self.async_create_entry(
             title=title,
             data=self._pending_data,
@@ -391,14 +394,18 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
 
         default_area_id = _default_area_id(self.hass, device, self._device_areas)
 
-        device_name = device.get("device_name", "") or device["device_id"]
+        device_label = _device_label(
+            device["device_id"],
+            device.get("device_name", "") or device["device_id"],
+            device.get("room_name", ""),
+        )
         room_name = device.get("room_name", "") or "-"
 
         return self.async_show_form(
             step_id="area",
             data_schema=_area_schema(default_area_id),
             description_placeholders={
-                "device_name": device_name,
+                "device": device_label,
                 "room": room_name,
                 "position": str(self._area_index + 1),
                 "total": str(len(devices)),
