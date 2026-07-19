@@ -37,7 +37,6 @@ async def async_setup_entry(
 
 class OrviboCover(CoordinatorEntity, CoverEntity):
     _attr_has_entity_name = True
-    _attr_device_class = CoverDeviceClass.CURTAIN
     _attr_supported_features = (
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
@@ -51,6 +50,13 @@ class OrviboCover(CoordinatorEntity, CoverEntity):
         self._device_id = device["device_id"]
         self._attr_unique_id = f"orvibohomebridge_cover_{self._device_id}"
         self._attr_name = device.get("device_name", self._device_id)
+        # 判断是否是卷帘（type=35），使用 SHUTTER 图标
+        device_type_raw = device.get("device_type_raw", 0)
+        if device_type_raw == 35:
+            self._attr_device_class = CoverDeviceClass.SHUTTER
+            self._attr_icon = "mdi:roller-shade"
+        else:
+            self._attr_device_class = CoverDeviceClass.CURTAIN
 
     @property
     def current_cover_position(self) -> int:
