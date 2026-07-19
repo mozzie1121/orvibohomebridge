@@ -15,6 +15,7 @@ class DeviceCategory(Enum):
     UNKNOWN = "unknown"
     SIMPLE_ZIGBEE_LIGHT = "simple_zigbee_light"        # deviceTypeId=1
     ZIGBEE_CURTAIN = "zigbee_curtain"                  # deviceTypeId=34
+    ZIGBEE_ROLLING_SHUTTER = "zigbee_rolling_shutter"   # deviceTypeId=35
     FAN_COIL_AC = "fan_coil_ac"                        # deviceTypeId=36
     MIXPAD_GATEWAY = "mixpad_gateway"                  # deviceTypeId=114
     MUSIC_HOST = "music_host"                          # deviceTypeId=128
@@ -66,6 +67,12 @@ _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
         category=DeviceCategory.ZIGBEE_CURTAIN,
         label="Zigbee 开合窗帘",
         description="deviceTypeId=34, subType=-2，开度 0~100%",
+        capabilities=("position",),
+    ),
+    DeviceCategory.ZIGBEE_ROLLING_SHUTTER: CategoryInfo(
+        category=DeviceCategory.ZIGBEE_ROLLING_SHUTTER,
+        label="Zigbee 卷帘",
+        description="deviceTypeId=35，卷帘控制，同开合窗帘协议",
         capabilities=("position",),
     ),
     DeviceCategory.FAN_COIL_AC: CategoryInfo(
@@ -257,7 +264,9 @@ def get_category_info(category: DeviceCategory) -> CategoryInfo:
 _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     1: DeviceCategory.SIMPLE_ZIGBEE_LIGHT,
     34: DeviceCategory.ZIGBEE_CURTAIN,
+    35: DeviceCategory.ZIGBEE_ROLLING_SHUTTER,
     36: DeviceCategory.FAN_COIL_AC,
+    81: DeviceCategory.FAN_COIL_AC,
     114: DeviceCategory.MIXPAD_GATEWAY,
     128: DeviceCategory.MUSIC_HOST,
     135: DeviceCategory.MIX_SWITCH,
@@ -286,6 +295,8 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     0: DeviceCategory.ZIGBEE_DIMMABLE_LIGHT,
     46: DeviceCategory.DOOR_WINDOW_SENSOR,
     516: DeviceCategory.VENTILATION_SYSTEM,
+    22: DeviceCategory.TEMP_HUMIDITY_SENSOR,
+    23: DeviceCategory.TEMP_HUMIDITY_SENSOR,
 }
 
 _UI_MODEL_MAP: Dict[str, DeviceCategory] = {

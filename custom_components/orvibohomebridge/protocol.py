@@ -476,12 +476,14 @@ def _infer_ha_device_type(device: OrviboDevice) -> str:
     需要同步更新 const.py 的 DEVICE_TYPE_MAP 时也更新这里。
     """
     _DEVICE_TYPE_MAP_INLINE = {
-        1: "light", 34: "cover", 36: "climate", 38: "light",
+        1: "light", 34: "cover", 35: "cover", 36: "climate", 38: "light",
         46: "sensor", 52: "clothes_horse", 102: "light",
         25: "sensor", 26: "sensor", 27: "sensor", 56: "sensor",
         54: "sensor", 300: "sensor", 501: "light", 502: "light",
         503: "light", 516: "fan", 522: "sensor", 10086: "light",
         0: "light",
+        22: "sensor", 23: "sensor",
+        81: "climate",
     }
     _CLASS_ID_MAP_INLINE = {
         426: "light", 429: "light", 436: "light", 1114: "fan",
