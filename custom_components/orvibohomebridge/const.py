@@ -32,6 +32,9 @@ DOMAIN = "orvibohomebridge"
 MANUFACTURER = "ORVIBO"
 
 HTTPS_HOST = "china.orvibo.com"
+# 国际区集群（Orvibo Home 海外用户，数据与中国区独立分区）
+HTTPS_HOST_GLOBAL = "homemate.orvibo.com"
+SSL_HOST_GLOBAL = "homemate.orvibo.com"
 HTTP_HEADERS = {
     "Content-Type": "application/json; charset=utf-8",
     "User-Agent": "okhttp/3.12.8",
@@ -74,6 +77,7 @@ DEVICE_TYPE_MAP = {
     54: DEVICE_TYPE_SENSOR,         # WATER_LEAK_SENSOR
     300: DEVICE_TYPE_SENSOR,        # TEMP_HUMIDITY_SENSOR / DOOR_LOCK
     522: DEVICE_TYPE_SENSOR,        # DOOR_LOCK (V5 Eyes)
+    107: DEVICE_TYPE_SENSOR,        # DOOR_LOCK (Smart Lock T1, WiFi直连)
     10086: DEVICE_TYPE_LIGHT,       # LIGHT_VIRTUAL_GROUP
     502: DEVICE_TYPE_LIGHT,         # DIMMABLE_LIGHT
     0: DEVICE_TYPE_LIGHT,           # 0-10V调光灯模块 调光模式 (deviceType=0, subDeviceType=-2)

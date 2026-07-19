@@ -268,6 +268,8 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     503: DeviceCategory.CCT_LIGHT,
     518: DeviceCategory.BACH_SWITCH,
     522: DeviceCategory.DOOR_LOCK,
+    107: DeviceCategory.DOOR_LOCK,  # Smart Lock T1 (WiFi直连)
+    45: DeviceCategory.MIXPAD_GATEWAY,  # Zigbee Mini Hub (Hub100)，隐藏
     14: DeviceCategory.WIFI_CAMERA,
     10086: DeviceCategory.LIGHT_VIRTUAL_GROUP,
     38: DeviceCategory.DIM_COLOR_LIGHT,

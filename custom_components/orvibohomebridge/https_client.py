@@ -182,36 +182,84 @@ class HttpsClient:
                 break
         _LOGGER.info(f"切换到家庭: {self.family_name} ({self.family_id})")
 
+    async def switch_host(self, host: str) -> None:
+        """切换云端主机（中国区/国际区数据独立分区），清空登录态以便重新认证"""
+        from .packet import set_api_host
+        set_api_host(host)
+        self.access_token = None
+        self.user_id = None
+        self.session_id = None
+        self.family_id = None
+        self.family_name = None
+        self.family_list = []
+        _LOGGER.warning(f"已切换云端主机为 {host}，将重新登录")
+
+    async def _readtable(self, device_flag: int) -> Optional[Dict[str, Any]]:
+        """发送一次 readtable 请求并返回合并后的数据字典"""
+        ret = HomemateJsonData.get_devices_status(
+            access_token=self.access_token,
+            session_id=self.session_id or "",
+            user_id=self.user_id,
+            user_name=self.username,
+            family_id=self.family_id,
+            device_flag=device_flag
+        )
+        resp = await self._send_request(ret['url'], ret['data'])
+
+        if "message" in resp:
+            _LOGGER.error(f"readtable(deviceFlag={device_flag}) 失败: {resp['message']}")
+            return None
+        if "data" not in resp:
+            _LOGGER.error(f"readtable(deviceFlag={device_flag}) 响应包中未找到[data]")
+            return None
+
+        data = resp["data"]
+        # data 可能是列表：服务器按表分块返回，必须合并全部块
+        if isinstance(data, list):
+            _LOGGER.info(f"readtable(deviceFlag={device_flag}) 返回 {len(data)} 个数据块")
+            merged: Dict[str, Any] = {}
+            for element in data:
+                if not isinstance(element, dict):
+                    continue
+                for key, value in element.items():
+                    if key not in merged:
+                        merged[key] = value
+                    elif isinstance(merged[key], list) and isinstance(value, list):
+                        merged[key] = merged[key] + value
+                    elif isinstance(merged[key], dict) and isinstance(value, dict):
+                        merged[key] = {**merged[key], **value}
+            data = merged
+
+        _LOGGER.info(f"readtable(deviceFlag={device_flag}) 数据keys: "
+                     f"{list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+        return data if isinstance(data, dict) else None
+
     async def fetch_device_status(self) -> Optional[Dict[str, Any]]:
-        """通过 /v2/cmd/app/readtable API 获取设备状态列表"""
+        """通过 /v2/cmd/app/readtable API 获取设备状态列表
+
+        deviceFlag=0 可能只返回账户级表(account/userGatewayBind/gateway)，
+        此时用 deviceFlag=1 再次请求设备级表(device/deviceStatus)并合并。
+        """
         try:
             if not await self.ensure_login():
                 _LOGGER.error("HTTPS 未登录")
                 return None
 
-            ret = HomemateJsonData.get_devices_status(
-                access_token=self.access_token,
-                session_id=self.session_id or "",
-                user_id=self.user_id,
-                user_name=self.username,
-                family_id=self.family_id
-            )
-            resp = await self._send_request(ret['url'], ret['data'])
-
-            if "message" in resp:
-                _LOGGER.error(resp["message"])
-                return None
-            if "data" not in resp:
-                _LOGGER.error("响应包中未找到[data]")
+            data = await self._readtable(device_flag=0)
+            if data is None:
                 return None
 
-            # 解析设备状态数据
-            data = resp["data"]
-            # 如果 data 是列表，取第一个元素
-            if isinstance(data, list) and len(data) > 0:
-                data = data[0]
+            if "device" not in data:
+                _LOGGER.warning("readtable(deviceFlag=0) 未返回 device 表，尝试 deviceFlag=1 ...")
+                data_flag1 = await self._readtable(device_flag=1)
+                if data_flag1:
+                    data = {**data, **data_flag1}
 
-            _LOGGER.info(f"获取到原始设备数据，keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+            if "device" not in data:
+                _LOGGER.warning(
+                    f"readtable 响应中始终缺少 device 表: gateway表={data.get('gateway')}, "
+                    f"userGatewayBind表={data.get('userGatewayBind')}"
+                )
             return data
         except Exception as e:
             _LOGGER.error("获取设备状态失败: %s", e)
@@ -228,7 +276,8 @@ class HttpsClient:
                 _LOGGER.error("accessToken 为空")
                 return None
 
-            url = f"https://china.orvibo.com/getDeviceDesc?source=ZhiJia365&lastUpdateTime={last_update_time}&accessToken={self.access_token}"
+            from .packet import get_api_host
+            url = f"https://{get_api_host()}/getDeviceDesc?source=ZhiJia365&lastUpdateTime={last_update_time}&accessToken={self.access_token}"
             
             headers = {
                 **HTTP_HEADERS,
@@ -546,6 +595,61 @@ class HttpsClient:
             return DEVICE_TYPE_MAP[device_type_raw]
 
         return None
+
+    async def fetch_homepage_data(self) -> Optional[Dict[str, Any]]:
+        try:
+            if not await self.ensure_login():
+                _LOGGER.error("HTTPS 未登录")
+                return None
+
+            ret = HomemateJsonData.get_homepage_data(self.family_id, self.user_id, self.access_token)
+            resp = await self._send_request(ret['url'], ret['data'])
+
+            if "message" in resp:
+                _LOGGER.error(resp["message"])
+                return None
+            if "data" not in resp:
+                _LOGGER.error("响应包中未找到[data]")
+                return None
+
+            return resp["data"]
+        except Exception as e:
+            _LOGGER.error("获取主页数据失败: %s", e)
+            return None
+
+    def parse_device_list(self, homepage_data: dict) -> List[Dict[str, Any]]:
+        devices = []
+        device_data = homepage_data.get("deviceList", []) or homepage_data.get("device", []) or []
+        if not isinstance(device_data, list):
+            device_data = []
+
+        for item in device_data:
+            device_id = item.get("deviceId", "")
+            if not device_id:
+                continue
+
+            device_type = self._get_device_type(item)
+            if device_type is None:
+                _LOGGER.debug(f"未识别的设备类型: deviceType={item.get('deviceType')}, classId={item.get('classId')}")
+                continue
+
+            devices.append({
+                "device_id": device_id,
+                "device_name": item.get("deviceName", ""),
+                "device_type": device_type,
+                "device_type_raw": item.get("deviceType"),
+                "class_id": item.get("classId"),
+                "uid": item.get("uid", ""),
+                "model": item.get("model", ""),
+                "room_id": item.get("roomId", ""),
+                "room_name": item.get("roomName", ""),
+                "online": self._parse_online_status(item.get("online")),
+                "properties": item.get("properties", {}),
+                "endpoint": item.get("endpoint", 0),
+            })
+
+        _LOGGER.info(f"从家庭主页解析到 {len(devices)} 个设备")
+        return devices
 
     def _parse_online_status(self, online_value) -> bool:
         """解析 online 状态，支持多种格式"""
