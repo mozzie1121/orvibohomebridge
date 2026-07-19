@@ -26,7 +26,17 @@ from .const import (
     CMD_CLOTHES_HORSE_CONTROL, CMD_CLOTHES_HORSE_QUERY,
 )
 
+# 当前 HTTPS API 主机（模块级，可在运行时切换：中国区/国际区）
+_api_host = HTTPS_HOST
 
+
+def set_api_host(host: str) -> None:
+    global _api_host
+    _api_host = host
+
+
+def get_api_host() -> str:
+    return _api_host
 class HomematePacket:
     def __init__(self, data: bytes, keys: dict):
         self.raw = data
@@ -748,18 +758,18 @@ class HomemateJsonData:
 
     @classmethod
     def get_access_token_by_password(cls, username: str, password: str):
-        url = f"https://{HTTPS_HOST}/getOauthToken?userName={username}&type=0&password={password}"
+        url = f"https://{get_api_host()}/getOauthToken?userName={username}&type=0&password={password}"
         _LOGGER.debug(f"请求access_token: userName={username}, type=0 (password masked)")
         return {"url": url, "data": None}
 
     @classmethod
     def get_access_token_by_session_id(cls, session_id):
-        url = f"https://{HTTPS_HOST}/getOauthToken?type=0&sessionId={session_id}"
+        url = f"https://{get_api_host()}/getOauthToken?type=0&sessionId={session_id}"
         return {"url": url, "data": None}
 
     @classmethod
     def get_family_statistics_users(cls, user_id, access_token):
-        url = f"https://{HTTPS_HOST}/v2/family/statistics/users"
+        url = f"https://{get_api_host()}/v2/family/statistics/users"
 
         timestamp = generate_timestamp()
         random_str = generate_uuid()
@@ -786,7 +796,7 @@ class HomemateJsonData:
 
     @classmethod
     def get_homepage_data(cls, family_id, user_id, access_token):
-        url = f"https://{HTTPS_HOST}/v2/family/config/queryHomepageData"
+        url = f"https://{get_api_host()}/v2/family/config/queryHomepageData"
 
         timestamp = generate_timestamp()
         random_str = generate_uuid()
@@ -815,9 +825,9 @@ class HomemateJsonData:
         return {"url": url, "data": postData_str}
 
     @classmethod
-    def get_devices_status(cls, access_token, session_id, user_id, user_name, family_id):
+    def get_devices_status(cls, access_token, session_id, user_id, user_name, family_id, device_flag=0):
         """获取设备状态列表，通过 /v2/cmd/app/readtable API"""
-        url = f"https://{HTTPS_HOST}/v2/cmd/app/readtable"
+        url = f"https://{get_api_host()}/v2/cmd/app/readtable"
 
         random_str = generate_uuid()
         serial = generate_serial()
@@ -837,7 +847,7 @@ class HomemateJsonData:
             "sign": "1234567890",
             "timestamp": timestamp,
             "sessionId": session_id,
-            "deviceFlag": 0,
+            "deviceFlag": device_flag,
             "familyId": family_id,
             "pageIndex": 0,
             "dataType": "all"

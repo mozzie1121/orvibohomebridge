@@ -10,8 +10,10 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from .ssl_client import SSLClient
 from .https_client import HttpsClient
 from .device_types import DeviceCategory, classify_device, is_hidden_category
+from .packet import get_api_host
 from .const import (
     SSL_HOST, SSL_PORT,
+    HTTPS_HOST, HTTPS_HOST_GLOBAL, SSL_HOST_GLOBAL,
     UPDATE_INTERVAL,
     DEVICE_TYPE_SWITCH,
     DEVICE_TYPE_LIGHT,
@@ -760,6 +762,37 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             f"main={dev_state['main_switch_state']}"
         )
 
+    async def _discover_devices(self):
+        """拉取并解析设备列表：readtable → getDeviceDesc → queryHomepageData 三层回退"""
+        device_status_data = await self.https_client.fetch_device_status()
+        if not device_status_data:
+            return None, []
+
+        devices = self.https_client.parse_device_status_list(device_status_data)
+        if not devices:
+            _LOGGER.warning("readtable 未解析到设备，回退到 getDeviceDesc 构建设备列表...")
+            desc_data = await self.https_client.fetch_device_desc(last_update_time=0)
+            if desc_data:
+                desc_devices = desc_data.get("deviceDescList", desc_data.get("devices", []))
+                if isinstance(desc_devices, list) and desc_devices:
+                    devices = self.https_client.parse_device_status_list(
+                        {"device": desc_devices, "deviceStatus": {}}
+                    )
+                    _LOGGER.info(f"getDeviceDesc 回退解析到 {len(devices)} 个设备")
+
+        if not devices:
+            _LOGGER.warning("getDeviceDesc 未构建到设备，回退到 queryHomepageData...")
+            homepage_data = await self.https_client.fetch_homepage_data()
+            if isinstance(homepage_data, dict):
+                homepage_devices = homepage_data.get("deviceList", homepage_data.get("device", [])) or []
+                if isinstance(homepage_devices, list) and homepage_devices:
+                    devices = self.https_client.parse_device_status_list(
+                        {"device": homepage_devices, "deviceStatus": {}}
+                    )
+                    _LOGGER.info(f"queryHomepageData 回退解析到 {len(devices)} 个设备")
+
+        return device_status_data, devices
+
     async def _async_setup(self):
         try:
             if self.family_id:
@@ -769,14 +802,21 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if not await self.https_client.ensure_login():
                 raise UpdateFailed("HTTPS登录失败")
 
-            _LOGGER.debug("第一步：拉取设备列表...")
-            device_status_data = await self.https_client.fetch_device_status()
-            if not device_status_data:
-                raise UpdateFailed("获取设备列表失败")
+            _LOGGER.debug("第一步：拉取设备列表（三层回退）...")
+            device_status_data, devices = await self._discover_devices()
 
-            devices = self.https_client.parse_device_status_list(device_status_data)
-            if not devices:
-                raise UpdateFailed("未解析到任何设备")
+            if not devices and get_api_host() == HTTPS_HOST:
+                _LOGGER.warning(f"中国区云端未发现任何设备，尝试国际区服务器 {HTTPS_HOST_GLOBAL} ...")
+                await self.https_client.switch_host(HTTPS_HOST_GLOBAL)
+                if await self.https_client.ensure_login():
+                    device_status_data, devices = await self._discover_devices()
+                    if devices:
+                        _LOGGER.warning(f"国际区服务器发现 {len(devices)} 个设备，本实例将使用国际区云端")
+                else:
+                    _LOGGER.error("国际区服务器登录失败")
+
+            if device_status_data is None and not devices:
+                raise UpdateFailed("获取设备列表失败")
 
             for device in devices:
                 device_id = device["device_id"]
@@ -1074,9 +1114,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self.hass.add_job(self.async_set_updated_data, self.device_states)
             _LOGGER.debug(f"[{matched_device_id}] MQTT状态同步完成: state={dev_state.get('state')}, bri={dev_state.get('brightness')}, ct={dev_state.get('color_temp')}, pos={dev_state.get('position')}")
 
+        # SSL 控制通道跟随 HTTPS API 所在区域（中国区/国际区）
+        ssl_host = SSL_HOST_GLOBAL if get_api_host() == HTTPS_HOST_GLOBAL else SSL_HOST
         self.ssl_client = SSLClient(
             hass=self.hass,
-            ssl_host=SSL_HOST,
+            ssl_host=ssl_host,
             ssl_port=SSL_PORT,
             username=self.username,
             password=self.password,
