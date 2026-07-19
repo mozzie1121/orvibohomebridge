@@ -20,6 +20,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_SENSOR
 from .coordinator import OrviboMeshCoordinator
 from .device_types import DeviceCategory, classify_device
+from .selection import selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,8 +32,12 @@ async def async_setup_entry(
 ) -> None:
     coordinator: OrviboMeshCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
+    selected_ids = selected_device_ids(config_entry.options, coordinator.devices)
+
     entities = []
     for device_id, device in coordinator.devices.items():
+        if device_id not in selected_ids:
+            continue
         if device.get("device_type") != DEVICE_TYPE_SENSOR:
             continue
         category = classify_device(device)

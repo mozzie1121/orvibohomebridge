@@ -272,5 +272,37 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(control.clamp_brightness(255, max_val=100), 100)
 
 
+    # ---- 空调控制 order 验证（v0.2.0 修复：对齐抓包 order） ----
+
+    def test_ac_power_on_uses_order_on(self) -> None:
+        """AC 开机使用 order='on'（非 'set property'）。"""
+        cmd = control.fan_coil_ac_power_command(True, 3, 1, 2500 << 16)
+        self.assertEqual(cmd.order, "on")
+        self.assertEqual(cmd.value1, 0)
+
+    def test_ac_power_off_uses_order_off(self) -> None:
+        """AC 关机使用 order='off'（非 'set property'）。"""
+        cmd = control.fan_coil_ac_power_command(False, 3, 1, 2500 << 16)
+        self.assertEqual(cmd.order, "off")
+        self.assertEqual(cmd.value1, 1)
+
+    def test_ac_mode_setting_order(self) -> None:
+        """AC 切模式使用 order='mode setting'。"""
+        cmd = control.fan_coil_ac_mode_command(4, 2800 << 16)
+        self.assertEqual(cmd.order, "mode setting")
+        self.assertEqual(cmd.value2, 4)
+
+    def test_ac_temperature_setting_order(self) -> None:
+        """AC 设温使用 order='temperature setting'。"""
+        cmd = control.fan_coil_ac_temperature_command(3, 1, 2500 << 16)
+        self.assertEqual(cmd.order, "temperature setting")
+
+    def test_ac_fan_speed_setting_order(self) -> None:
+        """AC 风速使用 order='wind setting'。"""
+        cmd = control.fan_coil_ac_fan_speed_command(3, 2, 2500 << 16)
+        self.assertEqual(cmd.order, "wind setting")
+        self.assertEqual(cmd.value3, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
