@@ -476,7 +476,6 @@ class HomemateJsonData:
             "uid": device_uid,
             "userName": username,
             "deviceId": device_id,
-            "groupId": "",
             "order": "on" if state else "off",
             "value1": 0 if state else 1,
             "value2": brightness,

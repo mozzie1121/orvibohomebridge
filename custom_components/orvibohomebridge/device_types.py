@@ -284,6 +284,7 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     38: DeviceCategory.DIM_COLOR_LIGHT,
     102: DeviceCategory.LEGACY_LIGHT,
     52: DeviceCategory.CLOTHES_HORSE,
+    43: DeviceCategory.SIMPLE_ZIGBEE_LIGHT,   # COCO智能插线板 (order=on/off格式，同light控制)
     26: DeviceCategory.MOTION_SENSOR,
     27: DeviceCategory.SMOKE_SENSOR,
     25: DeviceCategory.GAS_SENSOR,
