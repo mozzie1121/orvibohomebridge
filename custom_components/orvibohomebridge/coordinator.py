@@ -42,6 +42,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
+        
+        # 调试信息：记录最近收到的原始状态推送
+        self._cmd42_log: list[dict] = []
         self._last_update_time: Dict[str, float] = {}  # 设备最后更新时间戳
         self.OFFLINE_TIMEOUT = 600  # 设备离线超时秒数
 
@@ -997,6 +1000,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         def on_status_update(device_id: str, raw_status: dict):
             """处理MQTT状态推送，根据设备类型调用对应的解析方法"""
             _LOGGER.debug(f"收到MQTT状态更新: deviceId={device_id}, raw_status={raw_status}")
+            
+            # 记录原始推送到调试日志（最多200条）
+            self._cmd42_log.append({
+                "ts": __import__("time").time(),
+                "device_id": device_id,
+                "raw": dict(raw_status),
+            })
+            if len(self._cmd42_log) > 200:
+                self._cmd42_log = self._cmd42_log[-200:]
             
             # 多重匹配逻辑
             matched_device_id = None
