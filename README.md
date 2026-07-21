@@ -219,6 +219,8 @@ MIT License
 
 ## 🙏 致谢
 
+yecao@hassbian 提供coco插座插排测试
+
 https://github.com/jzgods/ORVIBO_Device_Control
 
 https://github.com/abb3421/orvibo_switch
