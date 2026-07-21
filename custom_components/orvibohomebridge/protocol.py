@@ -477,6 +477,7 @@ def _infer_ha_device_type(device: OrviboDevice) -> str:
     """
     _DEVICE_TYPE_MAP_INLINE = {
         1: "light", 34: "cover", 35: "cover", 36: "climate", 38: "light",
+        43: "switch",  # COCO智能插线板
         46: "sensor", 52: "clothes_horse", 102: "light",
         25: "sensor", 26: "sensor", 27: "sensor", 56: "sensor",
         54: "sensor", 300: "sensor", 501: "light", 502: "light",
@@ -503,7 +504,7 @@ def _infer_initial_state(device: OrviboDevice) -> bool:
     v1 = device.value1
     if v1 is None:
         return False
-    if dt in (1, 102, 38, 503, 0):
+    if dt in (1, 102, 38, 503, 0, 43):  # 43=COCO插线板 active-low
         return int(v1) == 0  # active-low
     if dt in (135, 136, 137, 143, 518):
         return int(v1) == 1  # active-high
