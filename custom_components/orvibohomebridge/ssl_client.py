@@ -32,7 +32,7 @@ class SSLClient:
         family_id: str,
         on_session_id_obtained: Callable[[str], None],
         on_status_update: Callable[[str, dict], None],
-        heartbeat_interval: int = 30,
+        heartbeat_interval: int = 120,
         retry_interval: int = 5
     ):
         self.hass = hass
@@ -61,7 +61,14 @@ class SSLClient:
         self._listening_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_failures: int = 0
-        self.HEARTBEAT_MAX_FAILURES = 3
+        self.HEARTBEAT_MAX_FAILURES = 2
+
+        # 控制等待响应机制：device_id → asyncio.Event（等待 cmd=42 回复）
+        self._pending_control: dict[str, asyncio.Event] = {}
+        # device_id → 完整的 cmd=42 dict
+        self._pending_results: dict[str, dict] = {}
+        # 控制响应超时（秒）
+        self._control_response_timeout: float = 3.0
 
     @classmethod
     def add_key(cls, session_id: str, key: bytes):
@@ -159,6 +166,11 @@ class SSLClient:
         self.session_key = None
         self.connected = False
         self._closed = True
+        # 清空控制等待
+        for event in self._pending_control.values():
+            event.set()
+        self._pending_control.clear()
+        self._pending_results.clear()
         _LOGGER.debug("SSL连接已断开")
 
     async def _reconnect(self):
@@ -557,6 +569,35 @@ class SSLClient:
         await self._send_packet(payload, self.session_key)
         return True
 
+    async def _wait_for_control_response(self, device_id: str, timeout: float | None = None) -> dict | None:
+        """发送控制后等待设备返回 cmd=42 状态响应。
+
+        在对应的 send_control_* 方法之后调用。如果设备在超时内返回了 cmd=42，
+        返回完整的数据包 dict（含 value1~4 / properties 等），否则返回 None。
+        """
+        if device_id in self._pending_control:
+            _LOGGER.debug(f"设备 {device_id} 已有等待中的控制响应，跳过")
+            return None
+
+        event = asyncio.Event()
+        self._pending_control[device_id] = event
+        effective_timeout = timeout if timeout is not None else self._control_response_timeout
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=effective_timeout)
+            result = self._pending_results.pop(device_id, None)
+            if result:
+                _LOGGER.debug(f"[控制响应] device={device_id} 在 {effective_timeout}s 内收到响应: "
+                              f"value1={result.get('value1')}, value2={result.get('value2')}, "
+                              f"value3={result.get('value3')}, value4={result.get('value4')}")
+            return result
+        except asyncio.TimeoutError:
+            _LOGGER.debug(f"[控制响应] device={device_id} 在 {effective_timeout}s 内未收到响应")
+            return None
+        finally:
+            self._pending_control.pop(device_id, None)
+            self._pending_results.pop(device_id, None)
+
     async def _heartbeat_loop(self):
         """心跳保活循环，每隔 heartbeat_interval 秒发送一次心跳包。"""
         _LOGGER.debug("心跳保活循环启动，间隔%d秒", self.heartbeat_interval)
@@ -658,7 +699,7 @@ class SSLClient:
         key = data.get("key")
         self.session_key = str(key).encode("utf-8") if key else DEFAULT_KEY.encode("utf-8")
         SSLClient.add_key(self.session_id, self.session_key)
-        _LOGGER.debug(f"Hello响应成功，会话ID:{self.session_id} 密钥:{key}")
+        _LOGGER.debug(f"Hello响应成功，会话ID:{self.session_id} 密钥:{key} hex={self.session_key.hex()} len={len(self.session_key)}")
         self.on_session_id_obtained(self.session_id)
 
     async def _handle_login(self, data: dict):
@@ -726,6 +767,12 @@ class SSLClient:
         
         dev_id = data.get("deviceId", "")
         uid = data.get("uid", "")
+        
+        # ★ 检查：是否有控制操作正在等这个设备的响应
+        if dev_id in self._pending_control:
+            _LOGGER.debug(f"[控制响应匹配] device={dev_id} 收到控制响应，唤醒等待")
+            self._pending_results[dev_id] = data
+            self._pending_control[dev_id].set()
         
         # 只提取原始数据，不做解析（解析逻辑由 coordinator 根据设备类型处理）
         raw_status = {
