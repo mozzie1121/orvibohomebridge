@@ -871,46 +871,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
             _LOGGER.info(f"设备列表拉取完成，共 {len(self.devices)} 个设备")
 
-            _LOGGER.debug("第二步：通过 getDeviceDesc API 拉取全量设备状态...")
-            device_desc_data = await self.https_client.fetch_device_desc(last_update_time=0)
-
-            if device_desc_data:
-                device_desc_status_map = self.https_client.parse_device_desc(device_desc_data)
-
-                if device_desc_status_map:
-                    _LOGGER.debug(f"getDeviceDesc 解析到 {len(device_desc_status_map)} 个设备状态，开始更新...")
-
-                    for device_id, status_info in device_desc_status_map.items():
-                        matched_device_id = None
-
-                        if device_id in self.device_states:
-                            matched_device_id = device_id
-                        elif device_id.startswith("w-"):
-                            stripped_id = device_id[2:]
-                            if stripped_id in self.device_states:
-                                matched_device_id = stripped_id
-                            else:
-                                for stored_id in self.device_states:
-                                    if stored_id.startswith("w-") and stored_id[2:] == device_id:
-                                        matched_device_id = stored_id
-                                        break
-                        else:
-                            for stored_id in self.device_states:
-                                if stored_id.startswith("w-") and stored_id[2:] == device_id:
-                                    matched_device_id = stored_id
-                                    break
-
-                        if matched_device_id:
-                            old_state = self.device_states[matched_device_id]
-                            new_state = {**old_state, **status_info}
-                            self.device_states[matched_device_id] = new_state
-                        else:
-                            _LOGGER.debug(f"getDeviceDesc 中的设备 {device_id} 未匹配到设备列表中的设备")
-                else:
-                    _LOGGER.warning("getDeviceDesc 未解析到任何设备状态")
-            else:
-                _LOGGER.warning("getDeviceDesc API 未返回数据")
-
             await self._init_ssl_client()
 
             if self.ssl_client:
@@ -1153,6 +1113,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             except Exception as e:
                 _LOGGER.warning(f"[晾衣架初始查询] {device_id} 失败: {e}")
 
+    async def _wait_for_control_response(self, device_id: str) -> dict | None:
+        """发送控制后等待设备返回状态，3秒超时兜底。"""
+        if not self.ssl_client:
+            return None
+        return await self.ssl_client._wait_for_control_response(device_id)
+
     async def async_turn_on(self, device_id: str, brightness: int = None, color_temp: int = None) -> bool:
         """打开设备（基于 category 路由控制命令）。
 
@@ -1233,11 +1199,19 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             result = await self.ssl_client.send_control_light(device_id, device_uid, True)
 
         if result:
-            self.device_states.setdefault(device_id, {})["state"] = True
-            if brightness is not None:
-                self.device_states[device_id]["brightness"] = brightness
-            if color_temp is not None:
-                self.device_states[device_id]["color_temp"] = color_temp
+            # ★ 等待设备响应来更新状态
+            response = await self._wait_for_control_response(device_id)
+            if response:
+                # 让 SSL 推送过来的数据通过 on_status_update 更新 coordinator
+                # _update_device_state 已经在 on_status_update 回调中被调用
+                pass
+            else:
+                # 超时，保留乐观更新兜底
+                self.device_states.setdefault(device_id, {})["state"] = True
+                if brightness is not None:
+                    self.device_states[device_id]["brightness"] = brightness
+                if color_temp is not None:
+                    self.device_states[device_id]["color_temp"] = color_temp
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -1302,7 +1276,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             result = await self.ssl_client.send_control_light(device_id, device_uid, False)
 
         if result:
-            self.device_states.setdefault(device_id, {})["state"] = False
+            # ★ 等待设备响应
+            response = await self._wait_for_control_response(device_id)
+            if not response:
+                # 超时，保留乐观更新兜底
+                self.device_states.setdefault(device_id, {})["state"] = False
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -1318,8 +1296,16 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         _LOGGER.debug(f"设置窗帘位置: {device_id} position={position}")
         result = await self.ssl_client.send_control_cover(device_id, device_uid, position)
         if result:
-            self.device_states.setdefault(device_id, {})["position"] = position
-            self.device_states[device_id]["state"] = position > 0
+            # ★ 等待设备响应
+            response = await self._wait_for_control_response(device_id)
+            if response:
+                pos = response.get("value1")
+                if pos is not None and 0 <= pos <= 100:
+                    self.device_states.setdefault(device_id, {})["position"] = pos
+                    self.device_states[device_id]["state"] = pos > 0
+            else:
+                self.device_states.setdefault(device_id, {})["position"] = position
+                self.device_states[device_id]["state"] = position > 0
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -1353,8 +1339,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.debug(f"设置可调光灯亮度 {device_id} HA={brightness} → {brightness_percent}%")
             result = await self.ssl_client.send_control_dimmable_light_brightness(device_id, uid, brightness_percent)
             if result:
-                self.device_states.setdefault(device_id, {})["brightness"] = brightness_percent
-                self.device_states[device_id]["state"] = True
+                response = await self._wait_for_control_response(device_id)
+                if not response:
+                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_percent
+                    self.device_states[device_id]["state"] = True
                 self.async_set_updated_data(self.device_states)
             return result
 
@@ -1363,8 +1351,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.debug(f"[ZIGBEE_DIMMABLE_LIGHT] 设置亮度 {device_id} HA_0-255={brightness} → 设备值={brightness_255}/255")
             result = await self.ssl_client.send_control_zigbee_dimmable_light_brightness(device_id, uid, brightness_255)
             if result:
-                self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
-                self.device_states[device_id]["state"] = True
+                response = await self._wait_for_control_response(device_id)
+                if not response:
+                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
+                    self.device_states[device_id]["state"] = True
                 self.async_set_updated_data(self.device_states)
             return result
 
@@ -1377,8 +1367,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 设置亮度 {device_id} HA_0-255={brightness} → 设备值={brightness_255}/255, ct={color_temp_k}K ({ct_mired} mired)")
             result = await self.ssl_client.send_control_fast_move_dim_color_light_brightness(device_id, uid, brightness_255, colortemp_mired=ct_mired)
             if result:
-                self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
-                self.device_states[device_id]["state"] = True
+                response = await self._wait_for_control_response(device_id)
+                if not response:
+                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
+                    self.device_states[device_id]["state"] = True
                 self.async_set_updated_data(self.device_states)
             return result
 
@@ -1400,8 +1392,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 _LOGGER.debug(f"下发亮度 {device_id} bri={brightness} color_temp={color_temp_k}K (fast color temperature)")
                 result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness)
         if result:
-            self.device_states.setdefault(device_id, {})["brightness"] = brightness
-            self.device_states[device_id]["state"] = True
+            response = await self._wait_for_control_response(device_id)
+            if not response:
+                self.device_states.setdefault(device_id, {})["brightness"] = brightness
+                self.device_states[device_id]["state"] = True
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -1436,7 +1430,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 _LOGGER.debug(f"设置色温 {color_temp_k}K, brightness={brightness}")
                 result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness)
         if result:
-            self.device_states.setdefault(device_id, {})["color_temp"] = color_temp_k
+            response = await self._wait_for_control_response(device_id)
+            if not response:
+                self.device_states.setdefault(device_id, {})["color_temp"] = color_temp_k
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -1506,26 +1502,34 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         _LOGGER.debug(f"下发空调控制 {device_id} order={order} v1={value1}, v2={value2}, v3={value3}, v4={value4}")
         await self.ssl_client._send_packet(payload, self.ssl_client.session_key)
 
-        dev_state = self.get_device_state(device_id)
-        if dev_state:
-            if value1 is not None:
-                dev_state["state"] = value1 == 0
-            if value2 is not None:
-                ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
-                dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
-                dev_state["ac_mode_raw"] = value2
-            if value3 is not None:
-                fan_speed_map = {1: "low", 2: "medium", 3: "high"}
-                dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
-                dev_state["fan_speed_raw"] = value3
-            if value4 is not None:
-                # value4 高16位=目标温度×100
-                try:
-                    temp_raw = value4 >> 16
-                    dev_state["temperature"] = round(temp_raw / 100.0, 1) if temp_raw else 0
-                except (TypeError, ValueError):
-                    dev_state["temperature"] = value4
-            self.async_set_updated_data(self.device_states)
+        # ★ 等待空调设备响应
+        response = await self._wait_for_control_response(device_id)
+        if not response:
+            # 超时，保留乐观更新兜底
+            dev_state = self.get_device_state(device_id)
+            if dev_state:
+                if value1 is not None:
+                    dev_state["state"] = value1 == 0
+                if value2 is not None:
+                    ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
+                    dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
+                    dev_state["ac_mode_raw"] = value2
+                if value3 is not None:
+                    fan_speed_map = {1: "low", 2: "medium", 3: "high"}
+                    dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
+                    dev_state["fan_speed_raw"] = value3
+                if value4 is not None:
+                    try:
+                        temp_raw = value4 >> 16
+                        dev_state["temperature"] = round(temp_raw / 100.0, 1) if temp_raw else 0
+                    except (TypeError, ValueError):
+                        dev_state["temperature"] = value4
+                self.async_set_updated_data(self.device_states)
+        else:
+            # 有响应就触发 coordinator 更新（SSL 推送会回调 on_status_update）
+            dev_state = self.get_device_state(device_id)
+            if dev_state:
+                self.async_set_updated_data(self.device_states)
         return True
 
     async def async_set_ac_mode(self, device_id: str, ac_mode: str) -> bool:
@@ -1607,17 +1611,19 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         result = await self.ssl_client.send_control_ventilation(device_id, device_uid, value1)
         if result:
-            dev_state = self.device_states.setdefault(device_id, {})
-            if value1 == 0:
-                dev_state["fan_speed"] = "慢"
-                dev_state["state"] = True
-            elif value1 == 50:
-                dev_state["fan_speed"] = "停"
-                dev_state["state"] = False
-            elif value1 == 100:
-                dev_state["fan_speed"] = "快"
-                dev_state["state"] = True
-            dev_state["value1"] = value1
+            response = await self._wait_for_control_response(device_id)
+            if not response:
+                dev_state = self.device_states.setdefault(device_id, {})
+                if value1 == 0:
+                    dev_state["fan_speed"] = "慢"
+                    dev_state["state"] = True
+                elif value1 == 50:
+                    dev_state["fan_speed"] = "停"
+                    dev_state["state"] = False
+                elif value1 == 100:
+                    dev_state["fan_speed"] = "快"
+                    dev_state["state"] = True
+                dev_state["value1"] = value1
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -1681,6 +1687,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         )
 
         if result:
+            # 晾衣架控制返回 cmd=99，不是 cmd=42，所以不等待标准控制响应，保留乐观更新
             dev_state = self.device_states.get(device_id)
             if dev_state:
                 if feature == "motor":
