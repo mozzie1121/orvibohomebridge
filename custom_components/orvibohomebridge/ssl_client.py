@@ -266,55 +266,59 @@ class SSLClient:
         成功后重置为 0
         """
         _LOGGER.debug("重连调度协程启动")
-        while not self._closed:
-            try:
-                # 从队列取任务（阻塞直到有任务）
-                trigger_source = await asyncio.wait_for(
-                    self._reconnect_queue.get(),
-                    timeout=self._reconnect_backoff if self._reconnect_backoff > 0 else None
-                )
-            except asyncio.CancelledError:
-                _LOGGER.debug("重连调度协程被取消")
-                return
-            except asyncio.TimeoutError:
-                # 退避超时 → 没有新任务入队 → 重置退避并继续等待
-                _LOGGER.debug(f"退避结束，继续等待重连任务...")
-                continue
-            except Exception:
-                continue
+        try:
+            while not self._closed:
+                try:
+                    # 从队列取任务（阻塞直到有任务）
+                    trigger_source = await asyncio.wait_for(
+                        self._reconnect_queue.get(),
+                        timeout=self._reconnect_backoff if self._reconnect_backoff > 0 else None
+                    )
+                except asyncio.CancelledError:
+                    _LOGGER.debug("重连调度协程被取消")
+                    return
+                except asyncio.TimeoutError:
+                    # 退避超时 → 没有新任务入队 → 重置退避并继续等待
+                    _LOGGER.debug(f"退避结束，继续等待重连任务...")
+                    continue
+                except Exception:
+                    continue
 
-            # Sentinel 信号 → 优雅退出
-            if trigger_source is None:
-                _LOGGER.debug("重连调度协程收到退出信号")
-                return
+                # Sentinel 信号 → 优雅退出
+                if trigger_source is None:
+                    _LOGGER.debug("重连调度协程收到退出信号")
+                    return
 
-            if self._closed:
-                return
+                if self._closed:
+                    return
 
-            self._reconnect_in_progress = True
-            self._reconnect_trigger_source = trigger_source
-            _LOGGER.debug(f"调度器开始处理重连（触发源: {trigger_source}）")
+                self._reconnect_in_progress = True
+                self._reconnect_trigger_source = trigger_source
+                _LOGGER.debug(f"调度器开始处理重连（触发源: {trigger_source}）")
 
-            # 执行重连
-            result = await self._do_reconnect(trigger_source)
+                # 执行重连
+                result = await self._do_reconnect(trigger_source)
 
-            self._reconnect_result = result
+                self._reconnect_result = result
+                self._reconnect_in_progress = False
+                self._reconnect_event.set()
+
+                if result:
+                    _LOGGER.debug("调度器重连成功")
+                    self._reconnect_backoff = 0.0
+                    self._reconnect_count = 0
+                else:
+                    # 失败 → 设置退避
+                    backoff = min(1.0 * (2 ** self._reconnect_count), 60.0)
+                    self._reconnect_backoff = backoff
+                    self._reconnect_count += 1
+                    _LOGGER.error(f"调度器重连失败，退避 {backoff:.0f}秒（累计失败 {self._reconnect_count} 次）" + 
+                                  ("，已达上限，不再自动重试" if self._reconnect_count >= 5 else ""))
+                    if self._reconnect_count >= 5:
+                        self._reconnect_backoff = 0.0  # 清退避等待，后续有新任务才再试
+        finally:
+            _LOGGER.debug("重连调度协程退出，清理标识")
             self._reconnect_in_progress = False
-            self._reconnect_event.set()
-
-            if result:
-                _LOGGER.debug("调度器重连成功")
-                self._reconnect_backoff = 0.0
-                self._reconnect_count = 0
-            else:
-                # 失败 → 设置退避
-                backoff = min(1.0 * (2 ** self._reconnect_count), 60.0)
-                self._reconnect_backoff = backoff
-                self._reconnect_count += 1
-                _LOGGER.error(f"调度器重连失败，退避 {backoff:.0f}秒（累计失败 {self._reconnect_count} 次）" + 
-                              ("，已达上限，不再自动重试" if self._reconnect_count >= 5 else ""))
-                if self._reconnect_count >= 5:
-                    self._reconnect_backoff = 0.0  # 清退避等待，后续有新任务才再试
 
     async def _schedule_reconnect(self, trigger_source: str = ""):
         """外部调用：入队一个重连请求（去重保护 + 自愈复位）。
