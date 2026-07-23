@@ -309,6 +309,7 @@ class SSLClient:
         payload = HomemateJsonData.ssl_login(
             username=self.username,
             password_md5=password_md5,
+            family_id=self.family_id,
         )
         if self.session_key and self.session_key != DEFAULT_KEY.encode("utf-8"):
             # 设置登录等待事件
