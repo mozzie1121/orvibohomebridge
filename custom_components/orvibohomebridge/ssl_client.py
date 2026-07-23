@@ -22,8 +22,10 @@ _LOGGER = logging.getLogger(__name__)
 class SSLClient:
     _initial_keys = {}
 
-    _reconnect_lock = asyncio.Lock()
-    RECONNECT_TIMEOUT = 30
+    # 重连调度器
+    RECONNECT_TIMEOUT = 30          # 单次重连超时（秒）
+    RECONNECT_HEARTBEAT_TIMEOUT = 5 # 心跳探测超时（秒）
+    MAX_RECONNECT_RETRIES = 3       # connect_and_login 内部重试次数
 
     def __init__(
         self,
@@ -78,7 +80,14 @@ class SSLClient:
         self._login_status: Optional[int] = None
         self._login_msg: Optional[str] = None
 
-    @classmethod
+        # 重连调度器
+        self._reconnect_queue: asyncio.Queue = asyncio.Queue()
+        self._reconnect_worker_task: Optional[asyncio.Task] = None
+        self._reconnect_in_progress: bool = False
+        self._reconnect_result: Optional[bool] = None
+        self._reconnect_event: asyncio.Event = asyncio.Event()
+        self._reconnect_count: int = 0           # 连续重连失败计数
+        self._reconnect_trigger_source: str = "" # 触发源标记
     def add_key(cls, session_id: str, key: bytes):
         cls._initial_keys[session_id] = key
 
@@ -173,7 +182,7 @@ class SSLClient:
         self.session_id = None
         self.session_key = None
         self.connected = False
-        self._closed = True
+        # 不设置 _closed = True — _closed 仅用于显式停用
         # 清空控制等待
         for event in self._pending_control.values():
             event.set()
@@ -181,32 +190,128 @@ class SSLClient:
         self._pending_results.clear()
         _LOGGER.debug("SSL连接已断开")
 
-    async def _reconnect(self):
-        async with self._reconnect_lock:
-            if self.connected:
+    async def _probe_heartbeat(self) -> bool:
+        """心跳探测：发一个心跳包确认连接是否真的活着。
+        对应 App 的 'Test hub heartbeat is ok?' / 'Test server heartbeat is ok?'。
+        """
+        if not self.connected or not self.writer or self.writer.is_closing():
+            return False
+        try:
+            if self.session_key and self.session_key != DEFAULT_KEY.encode("utf-8"):
+                payload = HomemateJsonData.ssl_heartbeat()
+                await asyncio.wait_for(
+                    self._send_packet(payload, self.session_key),
+                    timeout=self.RECONNECT_HEARTBEAT_TIMEOUT
+                )
+                _LOGGER.debug("心跳探测发送成功")
                 return True
-            try:
-                await self._disconnect()
-            except Exception as e:
-                _LOGGER.error("断开连接异常: %s", e)
+            return False
+        except Exception as e:
+            _LOGGER.debug(f"心跳探测失败: {e}")
+            return False
 
-            if self.retry_interval > 0:
-                _LOGGER.debug(f"{self.retry_interval}秒后尝试重连...")
-                await asyncio.sleep(self.retry_interval)
-                try:
-                    success = await asyncio.wait_for(
-                        self.connect_and_login(),
-                        timeout=self.RECONNECT_TIMEOUT
-                    )
-                except asyncio.TimeoutError:
-                    _LOGGER.error(f"SSL重连超时({self.RECONNECT_TIMEOUT}秒)，放弃本次重连")
-                    raise ConnectionError("SSL重连超时")
-                if not success:
-                    _LOGGER.error("SSL重连失败，将在下次重试")
-                    raise ConnectionError("SSL重连失败")
-                return True
+    async def _do_reconnect(self, trigger_source: str = "") -> bool:
+        """执行一次完整重连流程：心跳探测→断开→connect_and_login。
+        返回 True 表示重连成功，False 表示失败。
+        """
+        _LOGGER.debug(f"重连触发源: {trigger_source}，执行重连流程...")
+
+        # Step 1: 心跳探测 — 如果连接还活着就不真断
+        if await self._probe_heartbeat():
+            _LOGGER.debug("心跳探测成功，连接仍然有效，跳过重连")
+            return True
+
+        # Step 2: 断开
+        try:
+            await self._disconnect()
+        except Exception as e:
+            _LOGGER.error("断开连接异常: %s", e)
+
+        # Step 3: 重连（带超时）
+        if self.retry_interval <= 0:
+            _LOGGER.error("重连间隔为0，放弃重连")
+            return False
+
+        _LOGGER.debug(f"{self.retry_interval}秒后尝试重连...")
+        await asyncio.sleep(self.retry_interval)
+        try:
+            success = await asyncio.wait_for(
+                self.connect_and_login(),
+                timeout=self.RECONNECT_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.error(f"SSL重连超时({self.RECONNECT_TIMEOUT}秒)")
+            return False
+
+        if success:
+            self._reconnect_count = 0
+            return True
+        else:
+            _LOGGER.error("SSL重连失败")
+            self._reconnect_count += 1
+            return False
+
+    async def _reconnect_worker(self):
+        """重连调度协程：对应 App 的 ReconnectManager。
+        死循环，从队列取任务，一次只处理一个，带超时保护。
+        """
+        _LOGGER.debug("重连调度协程启动")
+        while not self._closed:
+            try:
+                # 从队列取任务（阻塞直到有任务）
+                trigger_source = await asyncio.wait_for(
+                    self._reconnect_queue.get(),
+                    timeout=None
+                )
+            except asyncio.CancelledError:
+                _LOGGER.debug("重连调度协程被取消")
+                return
+            except Exception:
+                continue
+
+            if self._closed:
+                return
+
+            self._reconnect_in_progress = True
+            self._reconnect_trigger_source = trigger_source
+            _LOGGER.debug(f"调度器开始处理重连（触发源: {trigger_source}）")
+
+            # 执行重连
+            result = await self._do_reconnect(trigger_source)
+
+            self._reconnect_result = result
+            self._reconnect_in_progress = False
+            self._reconnect_event.set()
+
+            if result:
+                _LOGGER.debug("调度器重连成功")
             else:
-                raise ConnectionError("重连间隔为0，放弃重连")
+                _LOGGER.error("调度器重连失败")
+
+    async def _schedule_reconnect(self, trigger_source: str = ""):
+        """外部调用：入队一个重连请求。"""
+        if self._closed:
+            return
+        await self._reconnect_queue.put(trigger_source)
+
+    async def _wait_reconnect(self, timeout: float = 30.0) -> bool:
+        """外部调用：等待当前的调度重连完成。"""
+        if not self._reconnect_in_progress:
+            return self.connected
+        self._reconnect_event.clear()
+        try:
+            await asyncio.wait_for(self._reconnect_event.wait(), timeout=timeout)
+            return self._reconnect_result if self._reconnect_result is not None else self.connected
+        except asyncio.TimeoutError:
+            _LOGGER.error(f"等待调度重连超时({timeout}秒)")
+            return False
+
+    async def _reconnect(self):
+        """向下兼容入口：对外部调用方保持 API 不变。
+        现在改为入队调度 + 等待结果。
+        """
+        await self._schedule_reconnect("direct_call")
+        return await self._wait_reconnect(timeout=self.RECONNECT_TIMEOUT + 5)
 
     async def connect_and_login(self):
         if self.connected:
@@ -234,6 +339,12 @@ class SSLClient:
                             self._heartbeat_loop(),
                             name="orvibohomebridge_heartbeat"
                         )
+                        # 确保重连调度协程已启动
+                        if not self._reconnect_worker_task or self._reconnect_worker_task.done():
+                            self._reconnect_worker_task = self.hass.async_create_background_task(
+                                self._reconnect_worker(),
+                                name="orvibohomebridge_reconnect_worker"
+                            )
                         return True
                     else:
                         _LOGGER.error("SSL登录失败，断开连接等待重试")
@@ -259,7 +370,8 @@ class SSLClient:
                 payload=data
             )
             if not self.writer:
-                await self._reconnect()
+                await self._schedule_reconnect("send_packet_no_writer")
+                await self._wait_reconnect(timeout=self.RECONNECT_TIMEOUT + 5)
                 return
 
             self.writer.write(ciphertext)
@@ -268,7 +380,8 @@ class SSLClient:
         except Exception as e:
             _LOGGER.error("发送数据包失败: %s", e)
             if "lost" in str(e) or "close" in str(e):
-                await self._reconnect()
+                await self._schedule_reconnect("send_packet_lost")
+                await self._wait_reconnect(timeout=self.RECONNECT_TIMEOUT + 5)
 
     async def _send_hello(self):
         payload = HomemateJsonData.ssl_get_session()
@@ -656,7 +769,8 @@ class SSLClient:
                     _LOGGER.error(f"连续{self._heartbeat_failures}次心跳失败，触发重连")
                     self._heartbeat_failures = 0
                     self.connected = False
-                    return  # 退出心跳，_listen_loop 会处理重连
+                    await self._schedule_reconnect("heartbeat_failure")
+                    return
                 await asyncio.sleep(1)
         _LOGGER.debug("心跳保活循环结束")
 
@@ -716,26 +830,9 @@ class SSLClient:
                 import traceback
                 _LOGGER.error(f"监听循环异常: {str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(1)
-        _LOGGER.debug("SSL监听循环结束，开始重连循环...")
-        max_reconnects = 5
-        _reconnect_attempt = 0
-        while not self._closed:
-            try:
-                await self._reconnect()
-                _LOGGER.debug("SSL重连成功，继续监听")
-                return  # _reconnect 成功后 _connect_and_login 已启动了新的 _listen_loop
-            except ConnectionError:
-                _reconnect_attempt += 1
-                wait = min(self.retry_interval * (2 ** (_reconnect_attempt - 1)), 60)
-                _LOGGER.debug(f"SSL重连失败({_reconnect_attempt}/{max_reconnects})，{wait}秒后重试...")
-                if _reconnect_attempt >= max_reconnects:
-                    _LOGGER.error(f"SSL重连已达上限({max_reconnects}次)，停止重连，等待上层调度")
-                    break
-                await asyncio.sleep(wait)
-            except asyncio.CancelledError:
-                _LOGGER.debug("重连任务被取消")
-                await self._disconnect()
-                return
+        _LOGGER.debug("SSL监听循环结束，调度重连...")
+        await self._schedule_reconnect("listen_loop_exit")
+        # 不阻塞等待 — 调度器会处理重连，_connect_and_login 成功后会启动新的 _listen_loop
 
     async def _handle_hello(self, data: dict):
         key = data.get("key")
