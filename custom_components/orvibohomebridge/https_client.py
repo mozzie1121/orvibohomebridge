@@ -32,6 +32,7 @@ class HttpsClient:
         self.family_list: List[Dict[str, str]] = []  # 所有家庭列表
 
         self.session: aiohttp.ClientSession = None
+        self._connector: aiohttp.TCPConnector = None
         self.ssl_context: ssl.SSLContext = None
 
     @property
@@ -54,9 +55,9 @@ class HttpsClient:
             return
 
         await self._create_ssl_context()
-        connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+        self._connector = aiohttp.TCPConnector(ssl=self.ssl_context)
 
-        self.session = aiohttp.ClientSession(connector=connector)
+        self.session = aiohttp.ClientSession(connector=self._connector)
         _LOGGER.info("HTTPS 会话创建成功")
 
     async def _disconnect(self):
@@ -66,7 +67,13 @@ class HttpsClient:
             except Exception:
                 pass
             self.session = None
-            _LOGGER.info("HTTPS 会话关闭")
+        if self._connector:
+            try:
+                await self._connector.close()
+            except Exception:
+                pass
+            self._connector = None
+            _LOGGER.info("HTTPS 会话和连接器已关闭")
         self.access_token = None
 
     def set_session_id(self, session_id: str):
