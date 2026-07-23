@@ -22,6 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 class SSLClient:
     _initial_keys = {}
 
+    _reconnect_lock = asyncio.Lock()
+    RECONNECT_TIMEOUT = 30
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -179,20 +182,31 @@ class SSLClient:
         _LOGGER.debug("SSL连接已断开")
 
     async def _reconnect(self):
-        try:
-            await self._disconnect()
-        except Exception as e:
-            _LOGGER.error("断开连接异常: %s", e)
+        async with self._reconnect_lock:
+            if self.connected:
+                return True
+            try:
+                await self._disconnect()
+            except Exception as e:
+                _LOGGER.error("断开连接异常: %s", e)
 
-        if self.retry_interval > 0:
-            _LOGGER.debug(f"{self.retry_interval}秒后尝试重连...")
-            await asyncio.sleep(self.retry_interval)
-            success = await self.connect_and_login()
-            if not success:
-                _LOGGER.error("SSL重连失败，将在下次重试")
-                raise ConnectionError("SSL重连失败")
-        else:
-            raise ConnectionError("重连间隔为0，放弃重连")
+            if self.retry_interval > 0:
+                _LOGGER.debug(f"{self.retry_interval}秒后尝试重连...")
+                await asyncio.sleep(self.retry_interval)
+                try:
+                    success = await asyncio.wait_for(
+                        self.connect_and_login(),
+                        timeout=self.RECONNECT_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    _LOGGER.error(f"SSL重连超时({self.RECONNECT_TIMEOUT}秒)，放弃本次重连")
+                    raise ConnectionError("SSL重连超时")
+                if not success:
+                    _LOGGER.error("SSL重连失败，将在下次重试")
+                    raise ConnectionError("SSL重连失败")
+                return True
+            else:
+                raise ConnectionError("重连间隔为0，放弃重连")
 
     async def connect_and_login(self):
         if self.connected:
@@ -703,14 +717,21 @@ class SSLClient:
                 _LOGGER.error(f"监听循环异常: {str(e)}\n{traceback.format_exc()}")
                 await asyncio.sleep(1)
         _LOGGER.debug("SSL监听循环结束，开始重连循环...")
+        max_reconnects = 5
+        _reconnect_attempt = 0
         while not self._closed:
             try:
                 await self._reconnect()
                 _LOGGER.debug("SSL重连成功，继续监听")
                 return  # _reconnect 成功后 _connect_and_login 已启动了新的 _listen_loop
             except ConnectionError:
-                _LOGGER.debug(f"SSL重连失败，{self.retry_interval}秒后重试...")
-                await asyncio.sleep(self.retry_interval)
+                _reconnect_attempt += 1
+                wait = min(self.retry_interval * (2 ** (_reconnect_attempt - 1)), 60)
+                _LOGGER.debug(f"SSL重连失败({_reconnect_attempt}/{max_reconnects})，{wait}秒后重试...")
+                if _reconnect_attempt >= max_reconnects:
+                    _LOGGER.error(f"SSL重连已达上限({max_reconnects}次)，停止重连，等待上层调度")
+                    break
+                await asyncio.sleep(wait)
             except asyncio.CancelledError:
                 _LOGGER.debug("重连任务被取消")
                 await self._disconnect()
