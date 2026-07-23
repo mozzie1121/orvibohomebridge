@@ -69,6 +69,11 @@ class SSLClient:
         self._pending_results: dict[str, dict] = {}
         # 控制响应超时（秒）
         self._control_response_timeout: float = 3.0
+        # 登录等待机制
+        self._login_event: Optional[asyncio.Event] = None
+        self._login_result: bool = False
+        self._login_status: Optional[int] = None
+        self._login_msg: Optional[str] = None
 
     @classmethod
     def add_key(cls, session_id: str, key: bytes):
@@ -215,7 +220,11 @@ class SSLClient:
                             self._heartbeat_loop(),
                             name="orvibohomebridge_heartbeat"
                         )
-                    return login_result
+                        return True
+                    else:
+                        _LOGGER.error("SSL登录失败，断开连接等待重试")
+                        await self._disconnect()
+                        raise ConnectionError("SSL登录失败")
             except Exception as e:
                 _LOGGER.debug(f"连接/登录重试 {retry+1}/{SSL_MAX_RECONNECT_ATTEMPTS}: {e}")
                 await asyncio.sleep(self.retry_interval * (retry + 1))
@@ -264,8 +273,20 @@ class SSLClient:
             family_id=self.family_id
         )
         if self.session_key and self.session_key != DEFAULT_KEY.encode("utf-8"):
+            # 设置登录等待事件
+            self._login_event = asyncio.Event()
             await self._send_packet(payload, self.session_key)
-            return True
+            try:
+                await asyncio.wait_for(self._login_event.wait(), timeout=10)
+                login_ok = self._login_result
+                if not login_ok:
+                    _LOGGER.error(f"服务器返回登录失败 status={self._login_status} msg={self._login_msg}")
+                return login_ok
+            except asyncio.TimeoutError:
+                _LOGGER.error("等待登录响应超时")
+                return False
+            finally:
+                self._login_event = None
         else:
             _LOGGER.debug("会话密钥未获取，暂不发送登录包")
             return False
@@ -670,8 +691,8 @@ class SSLClient:
                 break
             except asyncio.TimeoutError:
                 continue
-            except ConnectionError:
-                _LOGGER.debug("网络连接中断")
+            except (ConnectionError, OSError) as e:
+                _LOGGER.debug(f"网络连接中断: {type(e).__name__}: {e}")
                 break
             except asyncio.CancelledError:
                 _LOGGER.debug("监听任务被取消，退出循环")
@@ -705,11 +726,18 @@ class SSLClient:
     async def _handle_login(self, data: dict):
         status = data.get("status")
         user_id = data.get("userId")
-        if status == 0 or user_id:
+        result = bool(status == 0 or user_id)
+        # 保存结果供 _send_login 获取
+        self._login_result = result
+        self._login_status = status
+        self._login_msg = data.get("msg")
+        if self._login_event:
+            self._login_event.set()
+        if result:
             _LOGGER.debug(f"SSL登录成功 userId={user_id}")
-            return True
-        _LOGGER.error(f"登录失败 status={status} msg={data.get('msg')}")
-        return False
+        else:
+            _LOGGER.error(f"登录失败 status={status} msg={data.get('msg')}")
+        return result
 
     async def _handle_upload_device_list(self, data: dict):
         device_list = data.get("data", {}).get("deviceList", [])
