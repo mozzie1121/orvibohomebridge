@@ -60,8 +60,11 @@ class HttpsClient:
         _LOGGER.info("HTTPS 会话创建成功")
 
     async def _disconnect(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
+        if self.session:
+            try:
+                await self.session.close()
+            except Exception:
+                pass
             self.session = None
             _LOGGER.info("HTTPS 会话关闭")
         self.access_token = None
