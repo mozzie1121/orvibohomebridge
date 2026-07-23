@@ -1,7 +1,5 @@
 import logging
 import json
-import ssl
-import asyncio
 import aiohttp
 from typing import Optional, Any, Dict, List
 from .packet import HomemateJsonData
@@ -31,78 +29,42 @@ class HttpsClient:
         self.family_name: Optional[str] = None
         self.family_list: List[Dict[str, str]] = []  # 所有家庭列表
 
-        self.session: aiohttp.ClientSession = None
-        self.ssl_context: ssl.SSLContext = None
-
     @property
     def is_logged_in(self) -> bool:
         return self.access_token is not None and self.user_id is not None
 
-    async def _create_ssl_context(self):
-        if self.ssl_context:
-            return self.ssl_context
-        def _sync_create_context():
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            return ssl_context
-        self.ssl_context = await asyncio.to_thread(_sync_create_context)
-        return self.ssl_context
-
-    async def _connect(self):
-        if self.session:
-            return
-
-        await self._create_ssl_context()
-        connector = aiohttp.TCPConnector(ssl=self.ssl_context)
-
-        self.session = aiohttp.ClientSession(connector=connector)
-        _LOGGER.info("HTTPS 会话创建成功")
-
-    async def _disconnect(self):
-        if self.session and not self.session.closed:
-            connector = self.session.connector
-            await self.session.close()
-            if connector and not connector.closed:
-                await connector.close()
-            self.session = None
-            _LOGGER.info("HTTPS 会话关闭")
-        self.access_token = None
-
     async def close(self):
         """关闭客户端，释放资源"""
-        await self._disconnect()
+        self.access_token = None
 
     def set_session_id(self, session_id: str):
         self.session_id = session_id
 
     async def _send_request(self, url, data):
-        if not self.session:
-            raise ConnectionError("客户端未连接")
-        if not data:
-            resp = await self.session.get(
-                url=url,
-                headers=HTTP_HEADERS,
-                skip_auto_headers=["Accept", "Connection"],
-                ssl=False
-            )
-        else:
-            resp = await self.session.post(
-                url=url,
-                timeout=aiohttp.ClientTimeout(total=10),
-                data=data,
-                headers=HTTP_HEADERS,
-                skip_auto_headers=["Accept", "Connection"],
-                ssl=False
-            )
-        resp.raise_for_status()
-        data = await resp.text()
-        return json.loads(data)
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(ssl=False)
+        ) as session:
+            if not data:
+                resp = await session.get(
+                    url=url,
+                    headers=HTTP_HEADERS,
+                    skip_auto_headers=["Accept", "Connection"],
+                    ssl=False
+                )
+            else:
+                resp = await session.post(
+                    url=url,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    data=data,
+                    headers=HTTP_HEADERS,
+                    skip_auto_headers=["Accept", "Connection"],
+                    ssl=False
+                )
+            resp.raise_for_status()
+            data = await resp.text()
+            return json.loads(data)
 
     async def ensure_login(self) -> bool:
-        if not self.session:
-            await self._connect()
-
         if not self.access_token or not self.user_id:
             data = await self._fetch_access_token()
             if data:
@@ -285,36 +247,39 @@ class HttpsClient:
 
             from .packet import get_api_host
             url = f"https://{get_api_host()}/getDeviceDesc?source=ZhiJia365&lastUpdateTime={last_update_time}&accessToken={self.access_token}"
-            
+
             headers = {
                 **HTTP_HEADERS,
             }
 
             _LOGGER.info(f"请求 getDeviceDesc API: {url}")
-            
-            async with self.session.get(url, headers=headers, ssl=self.ssl_context) as response:
-                if response.status != 200:
-                    _LOGGER.error(f"getDeviceDesc API 失败: {response.status}")
-                    try:
-                        error_text = await response.text()
-                        _LOGGER.error(f"getDeviceDesc 错误响应: {error_text}")
-                    except Exception as e:
-                        _LOGGER.error(f"获取错误响应失败: {e}")
-                    return None
-                
-                data = await response.json()
-                _LOGGER.info(f"getDeviceDesc API 返回数据类型: {type(data)}")
-                if isinstance(data, dict):
-                    _LOGGER.info(f"getDeviceDesc 返回键: {list(data.keys())}")
-                    if "devices" in data:
-                        devices = data.get("devices", [])
-                        _LOGGER.info(f"设备数量: {len(devices)}")
-                        if len(devices) > 0 and isinstance(devices[0], dict):
-                            _LOGGER.info(f"第一个设备键: {list(devices[0].keys())[:15]}")
-                    if "status" in data:
-                        _LOGGER.info(f"status: {data.get('status')}")
-                
-                return data
+
+            async with aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(ssl=False)
+            ) as session:
+                async with session.get(url, headers=headers, ssl=False) as response:
+                    if response.status != 200:
+                        _LOGGER.error(f"getDeviceDesc API 失败: {response.status}")
+                        try:
+                            error_text = await response.text()
+                            _LOGGER.error(f"getDeviceDesc 错误响应: {error_text}")
+                        except Exception as e:
+                            _LOGGER.error(f"获取错误响应失败: {e}")
+                        return None
+                    
+                    data = await response.json()
+                    _LOGGER.info(f"getDeviceDesc API 返回数据类型: {type(data)}")
+                    if isinstance(data, dict):
+                        _LOGGER.info(f"getDeviceDesc 返回键: {list(data.keys())}")
+                        if "devices" in data:
+                            devices = data.get("devices", [])
+                            _LOGGER.info(f"设备数量: {len(devices)}")
+                            if len(devices) > 0 and isinstance(devices[0], dict):
+                                _LOGGER.info(f"第一个设备键: {list(devices[0].keys())[:15]}")
+                        if "status" in data:
+                            _LOGGER.info(f"status: {data.get('status')}")
+                    
+                    return data
         except Exception as e:
             _LOGGER.error(f"getDeviceDesc API 调用失败: {e}")
             return None

@@ -1720,6 +1720,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if self.ssl_client:
             await self.ssl_client._disconnect()
             _LOGGER.debug("SSL连接已断开清理")
-        if self.https_client and hasattr(self.https_client, "session"):
-            await self.https_client._disconnect()
-            _LOGGER.debug("HTTPS会话已清理")
+        if self.https_client:
+            await self.https_client.close()
+            _LOGGER.debug("HTTPS客户端已清理")
