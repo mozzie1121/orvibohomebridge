@@ -709,20 +709,13 @@ class HomemateJsonData:
     @classmethod
     def ssl_login(cls, username: str, password_md5: str, family_id: str):
         serial = generate_serial()
-        uniSerial = generate_serial(use_time=True)
         payload = {
             "userName": username,
             "password": password_md5,
-            "familyId": family_id,
-            "type": 4,
-            "needAccountDetailError": True,
             "cmd": CMD_LOGIN,
             "serial": serial,
             "clientType": 1,
-            "uniSerial": uniSerial,
-            "serverRecord": False,
-            "ver": SOFTWARE_VER,
-            "debugInfo": DEBUG_INFO,
+            "source": SOFTWARE_VER,
         }
         return payload
 

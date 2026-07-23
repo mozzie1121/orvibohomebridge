@@ -78,6 +78,14 @@ class SSLClient:
         self._login_status: Optional[int] = None
         self._login_msg: Optional[str] = None
 
+    def _get_key(self) -> bytes:
+        """获取实例自己的 session_key，降级到类变量或默认 key"""
+        if self.session_key:
+            return self.session_key
+        if self.session_id and self.session_id in self._initial_keys:
+            return self._initial_keys[self.session_id]
+        return DEFAULT_KEY.encode("utf-8")
+
     @classmethod
     def add_key(cls, session_id: str, key: bytes):
         cls._initial_keys[session_id] = key
@@ -301,7 +309,6 @@ class SSLClient:
         payload = HomemateJsonData.ssl_login(
             username=self.username,
             password_md5=password_md5,
-            family_id=self.family_id
         )
         if self.session_key and self.session_key != DEFAULT_KEY.encode("utf-8"):
             # 设置登录等待事件
