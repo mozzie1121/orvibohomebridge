@@ -89,6 +89,7 @@ class SSLClient:
         self._reconnect_count: int = 0           # 连续重连失败计数
         self._reconnect_backoff: float = 0.0     # 当前退避等待时间
         self._reconnect_trigger_source: str = "" # 触发源标记
+    @classmethod
     def add_key(cls, session_id: str, key: bytes):
         cls._initial_keys[session_id] = key
 
