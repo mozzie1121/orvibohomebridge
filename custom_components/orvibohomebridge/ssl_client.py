@@ -211,6 +211,23 @@ class SSLClient:
     async def connect_and_login(self):
         if self.connected:
             return True
+        
+        # 取消旧的 listen/heartbeat 任务，避免并发 listener
+        if self._listening_task and not self._listening_task.done():
+            self._listening_task.cancel()
+            try:
+                await self._listening_task
+            except asyncio.CancelledError:
+                pass
+            self._listening_task = None
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+        
         for retry in range(SSL_MAX_RECONNECT_ATTEMPTS):
             try:
                 _LOGGER.debug("SSL正在连接和登录...")
@@ -715,27 +732,32 @@ class SSLClient:
             except Exception as e:
                 import traceback
                 _LOGGER.error(f"监听循环异常: {str(e)}\n{traceback.format_exc()}")
+                if self.reader is None:
+                    _LOGGER.debug("reader 已丢失，跳出监听循环")
+                    break
                 await asyncio.sleep(1)
         _LOGGER.debug("SSL监听循环结束，开始重连循环...")
-        max_reconnects = 5
-        _reconnect_attempt = 0
-        while not self._closed:
+        reconnect_count = 0
+        max_reconnect = 5
+        while not self._closed and reconnect_count < max_reconnect:
+            if self.reader is None:
+                _LOGGER.debug("reader 已丢失，放弃重连")
+                return
             try:
                 await self._reconnect()
                 _LOGGER.debug("SSL重连成功，继续监听")
-                return  # _reconnect 成功后 _connect_and_login 已启动了新的 _listen_loop
+                return  # _reconnect 成功后 connect_and_login 已启动了新的 _listen_loop
             except ConnectionError:
-                _reconnect_attempt += 1
-                wait = min(self.retry_interval * (2 ** (_reconnect_attempt - 1)), 60)
-                _LOGGER.debug(f"SSL重连失败({_reconnect_attempt}/{max_reconnects})，{wait}秒后重试...")
-                if _reconnect_attempt >= max_reconnects:
-                    _LOGGER.error(f"SSL重连已达上限({max_reconnects}次)，停止重连，等待上层调度")
-                    break
-                await asyncio.sleep(wait)
+                reconnect_count += 1
+                backoff = min(self.retry_interval * (2 ** (reconnect_count - 1)), 60)
+                _LOGGER.debug(f"SSL重连失败（{reconnect_count}/{max_reconnect}），{backoff}秒后重试...")
+                await asyncio.sleep(backoff)
             except asyncio.CancelledError:
                 _LOGGER.debug("重连任务被取消")
                 await self._disconnect()
                 return
+        if reconnect_count >= max_reconnect:
+            _LOGGER.warning(f"SSL重连已达上限 {max_reconnect} 次，停止重连")
 
     async def _handle_hello(self, data: dict):
         key = data.get("key")
