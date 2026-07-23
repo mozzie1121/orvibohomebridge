@@ -80,13 +80,14 @@ class SSLClient:
         self._login_status: Optional[int] = None
         self._login_msg: Optional[str] = None
 
-        # 重连调度器
-        self._reconnect_queue: asyncio.Queue = asyncio.Queue()
+        # 重连调度器（App-style ReconnectManager）
+        self._reconnect_queue: asyncio.Queue = asyncio.Queue(maxsize=1)  # 最多一个待办
         self._reconnect_worker_task: Optional[asyncio.Task] = None
         self._reconnect_in_progress: bool = False
         self._reconnect_result: Optional[bool] = None
         self._reconnect_event: asyncio.Event = asyncio.Event()
         self._reconnect_count: int = 0           # 连续重连失败计数
+        self._reconnect_backoff: float = 0.0     # 当前退避等待时间
         self._reconnect_trigger_source: str = "" # 触发源标记
     def add_key(cls, session_id: str, key: bytes):
         cls._initial_keys[session_id] = key
@@ -167,6 +168,15 @@ class SSLClient:
             except asyncio.CancelledError:
                 pass
 
+        if self._reconnect_worker_task and not self._reconnect_worker_task.done():
+            # 发送 Sentinel 信号让 worker 优雅退出
+            await self._schedule_reconnect(None)
+            self._reconnect_worker_task.cancel()
+            try:
+                await self._reconnect_worker_task
+            except asyncio.CancelledError:
+                pass
+
         if self.writer and not self.writer.is_closing():
             _LOGGER.debug("SSL正在断开已有连接...")
             self.writer.close()
@@ -244,16 +254,18 @@ class SSLClient:
             return False
 
         if success:
-            self._reconnect_count = 0
             return True
         else:
             _LOGGER.error("SSL重连失败")
-            self._reconnect_count += 1
             return False
 
     async def _reconnect_worker(self):
         """重连调度协程：对应 App 的 ReconnectManager。
-        死循环，从队列取任务，一次只处理一个，带超时保护。
+        队列调度 + 指数退避 + 优雅退出。
+
+        退避策略（App 的 reconnectCounts 递增）：
+        失败 → 1s → 2s → 4s → 8s → ... → 60s cap
+        成功后重置为 0
         """
         _LOGGER.debug("重连调度协程启动")
         while not self._closed:
@@ -261,13 +273,22 @@ class SSLClient:
                 # 从队列取任务（阻塞直到有任务）
                 trigger_source = await asyncio.wait_for(
                     self._reconnect_queue.get(),
-                    timeout=None
+                    timeout=self._reconnect_backoff if self._reconnect_backoff > 0 else None
                 )
             except asyncio.CancelledError:
                 _LOGGER.debug("重连调度协程被取消")
                 return
+            except asyncio.TimeoutError:
+                # 退避超时 → 没有新任务入队 → 重置退避并继续等待
+                _LOGGER.debug(f"退避结束，继续等待重连任务...")
+                continue
             except Exception:
                 continue
+
+            # Sentinel 信号 → 优雅退出
+            if trigger_source is None:
+                _LOGGER.debug("重连调度协程收到退出信号")
+                return
 
             if self._closed:
                 return
@@ -285,17 +306,52 @@ class SSLClient:
 
             if result:
                 _LOGGER.debug("调度器重连成功")
+                self._reconnect_backoff = 0.0
+                self._reconnect_count = 0
             else:
-                _LOGGER.error("调度器重连失败")
+                # 失败 → 设置退避
+                backoff = min(1.0 * (2 ** self._reconnect_count), 60.0)
+                self._reconnect_backoff = backoff
+                self._reconnect_count += 1
+                _LOGGER.error(f"调度器重连失败，退避 {backoff:.0f}秒（累计失败 {self._reconnect_count} 次）" + 
+                              ("，已达上限，不再自动重试" if self._reconnect_count >= 5 else ""))
+                if self._reconnect_count >= 5:
+                    self._reconnect_backoff = 0.0  # 清退避等待，后续有新任务才再试
 
     async def _schedule_reconnect(self, trigger_source: str = ""):
-        """外部调用：入队一个重连请求。"""
+        """外部调用：入队一个重连请求（去重保护）。
+        - 如果已经在执行重连 → 直接复用当前任务，不入队
+        - 如果队列已有待办 → 不入队（maxsize=1 更安全）
+        - 发送 None 信号 → 唤醒 worker 但不执行重连（用于优雅退出）
+        """
         if self._closed:
             return
-        await self._reconnect_queue.put(trigger_source)
+        if self._reconnect_in_progress:
+            _LOGGER.debug(f"重连已在进行中（触发: {trigger_source}），跳过入队")
+            return
+        if trigger_source is not None:
+            try:
+                await asyncio.wait_for(
+                    self._reconnect_queue.put(trigger_source),
+                    timeout=0.1
+                )
+            except (asyncio.TimeoutError, asyncio.QueueFull):
+                _LOGGER.debug(f"队列已有待办重连（触发: {trigger_source}），跳过入队")
+        else:
+            # Sentinel 信号不会触发重连
+            try:
+                await asyncio.wait_for(
+                    self._reconnect_queue.put(None),
+                    timeout=0.1
+                )
+            except (asyncio.TimeoutError, asyncio.QueueFull):
+                pass
 
-    async def _wait_reconnect(self, timeout: float = 30.0) -> bool:
-        """外部调用：等待当前的调度重连完成。"""
+    async def _wait_reconnect(self, timeout: float = 8.0) -> bool:
+        """外部调用：等待当前的调度重连完成（短超时，防止控制卡死）。
+        - 默认 8 秒：合理等待一次重连尝试
+        - 超时返回 False，调用方应放弃（网络不可用）
+        """
         if not self._reconnect_in_progress:
             return self.connected
         self._reconnect_event.clear()
@@ -303,15 +359,15 @@ class SSLClient:
             await asyncio.wait_for(self._reconnect_event.wait(), timeout=timeout)
             return self._reconnect_result if self._reconnect_result is not None else self.connected
         except asyncio.TimeoutError:
-            _LOGGER.error(f"等待调度重连超时({timeout}秒)")
+            _LOGGER.warning(f"等待重连超时({timeout}秒)，放弃等待（网络不可用）")
             return False
 
     async def _reconnect(self):
         """向下兼容入口：对外部调用方保持 API 不变。
-        现在改为入队调度 + 等待结果。
+        入队调度 + 等待（短超时，8s）。
         """
         await self._schedule_reconnect("direct_call")
-        return await self._wait_reconnect(timeout=self.RECONNECT_TIMEOUT + 5)
+        return await self._wait_reconnect(timeout=8.0)
 
     async def connect_and_login(self):
         if self.connected:
