@@ -716,6 +716,9 @@ class HomemateJsonData:
             "serial": serial,
             "clientType": 1,
             "source": SOFTWARE_VER,
+            "familyId": family_id,
+            "type": 4,
+            "needAccountDetailError": True,
         }
         return payload
 
