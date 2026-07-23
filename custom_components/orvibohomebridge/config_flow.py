@@ -1,154 +1,63 @@
-"""Config flow for Orvibo HomeBridge.
-
-支持三步配置：登录 → 选家庭 → 选设备（可选设区域）。
-向下兼容现有已配置条目。
-"""
-
-from __future__ import annotations
-
 import logging
 import re
-from typing import Any, Optional
-
+from typing import Optional
 import voluptuous as vol
-
 from homeassistant import config_entries
-from homeassistant.const import ATTR_AREA_ID, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import area_registry as ar, selector
-
-from .const import DOMAIN, CONF_FAMILY_ID
 from .https_client import HttpsClient
-from .selection import (
-    CONF_DEVICE_AREAS,
-    CONF_SELECTED_DEVICE_IDS,
-    configured_device_areas,
-    selected_device_ids,
+from .const import (
+    DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_FAMILY_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
-# ── 设备标签（尽量短，在一行内看得清） ──
-
-def _device_label(device_id: str, name: str, room: str) -> str:
-    """短标签：设备名 + 房间名"""
-    if room and room != name:
-        return f"{name} [{room}]"
-    return name or device_id[-8:]
-
-
-def _device_schema(
-    devices: list[dict[str, Any]],
-    default_ids: list[str],
-) -> vol.Schema:
-    """多选设备表单。"""
-    options = [
-        selector.SelectOptionDict(
-            value=str(dev["device_id"]),
-            label=_device_label(
-                dev["device_id"],
-                dev.get("device_name", ""),
-                dev.get("room_name", ""),
-            ),
-        )
-        for dev in devices
-    ]
-    return vol.Schema({
-        vol.Required(CONF_SELECTED_DEVICE_IDS, default=default_ids): (
-            selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=options,
-                    multiple=True,
-                    mode=selector.SelectSelectorMode.LIST,
-                )
-            )
-        )
-    })
-
-
-def _area_schema(default_area_id: str | None) -> vol.Schema:
-    """单个设备区域选择表单。"""
-    key = (
-        vol.Optional(ATTR_AREA_ID, default=default_area_id)
-        if default_area_id
-        else vol.Optional(ATTR_AREA_ID)
-    )
-    return vol.Schema({key: selector.AreaSelector()})
-
-
-def _default_area_id(
-    hass: HomeAssistant,
-    device: dict[str, Any],
-    configured_areas: dict[str, str | None],
-) -> str | None:
-    """根据 ORVIBO 房间名确定默认 HA 区域。"""
-    registry = ar.async_get(hass)
-    device_id = str(device["device_id"])
-    if device_id in configured_areas:
-        area_id = configured_areas[device_id]
-        if area_id is None or area_id in registry.areas:
-            return area_id
-    room_name = device.get("room_name", "")
-    if not room_name:
-        return None
-    return registry.async_get_or_create(room_name).id
-
-
-# ── ConfigFlow（首次配置） ──
-
 class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
-    def __init__(self) -> None:
-        self._https_client: HttpsClient | None = None
-        self._pending_data: dict[str, Any] = {}
-        self._pending_devices: list[dict[str, Any]] = []
-        self._pending_selected_ids: list[str] = []
-        self._pending_device_areas: dict[str, str | None] = {}
-        self._area_index = 0
-        self._devices_loaded = False
-
-    @staticmethod
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
-        return OrviboMeshOptionsFlow()
-
     async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
+        self, user_input: Optional[dict] = None
     ) -> FlowResult:
         errors: dict[str, str] = {}
+
         if user_input is not None:
-            username = user_input[CONF_USERNAME].strip()
+            username = user_input[CONF_USERNAME]
             password = user_input[CONF_PASSWORD]
 
             if not username or not password:
                 errors["base"] = "empty_username_or_password"
             elif not re.match(r'^1[3-9]\d{9}$', username) and not re.match(r'^[^@]+@[^@]+\.[^@]+$', username):
                 errors[CONF_USERNAME] = "invalid_username"
-            else:
+
+            if not errors:
+                # 临时 client 用于验证登录并获取家庭列表
+                temp_client = None
                 try:
-                    client = HttpsClient(username=username, password=password)
-                    success = await client.ensure_login()
+                    temp_client = HttpsClient(username=username, password=password)
+                    success = await temp_client.ensure_login()
+
                     if success:
-                        self._https_client = client
-                        self._pending_data = {
-                            CONF_USERNAME: username,
-                            CONF_PASSWORD: password,
-                        }
-                        if len(client.family_list) <= 1:
-                            if client.family_list:
-                                client.set_family(client.family_list[0]["familyId"])
-                            self._pending_data[CONF_FAMILY_ID] = client.family_id
-                            return await self.async_step_devices()
-                        return await self.async_step_select_family()
+                        # 保存数据到 self，后续步骤使用
+                        self._username = username
+                        self._password = password
+                        self._family_list = temp_client.family_list
+                        self._family_id = temp_client.family_id
+                        self._family_name = temp_client.family_name
+
+                        # 如果只有一个家庭，直接使用；否则让用户选择
+                        if len(self._family_list) <= 1:
+                            return await self._create_entry()
+                        else:
+                            return await self.async_step_select_family()
                     else:
                         errors["base"] = "auth_failed"
                 except Exception as e:
                     _LOGGER.error(f"登录验证失败: {e}")
                     errors["base"] = "auth_failed"
+                finally:
+                    if temp_client:
+                        await temp_client.close()
 
         return self.async_show_form(
             step_id="user",
@@ -159,313 +68,81 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_select_family(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        if self._https_client is None:
-            return self.async_abort(reason="unknown")
-
-        family_choices = {
-            f["familyId"]: f"{f['familyName']} ({f['familyId'][:8]}...)"
-            for f in self._https_client.family_list
-        }
-
+    async def async_step_select_family(self, user_input: Optional[dict] = None) -> FlowResult:
+        """选择家庭步骤"""
+        errors: dict[str, str] = {}
+        
         if user_input is not None:
             family_id = user_input.get(CONF_FAMILY_ID)
             if family_id:
-                self._https_client.set_family(family_id)
-                self._pending_data[CONF_FAMILY_ID] = family_id
-                return await self.async_step_devices()
+                self._family_id = family_id
+                for f in self._family_list:
+                    if f["familyId"] == family_id:
+                        self._family_name = f["familyName"]
+                        break
+                return await self._create_entry()
+
+        # 构建家庭选择列表
+        family_choices = {
+            f["familyId"]: f"{f['familyName']} ({f['familyId'][:8]}...)"
+            for f in self._family_list
+        }
+        
+        if len(family_choices) == 1:
+            # 只有一个家庭，直接使用
+            self._family_id = list(family_choices.keys())[0]
+            return await self._create_entry()
 
         return self.async_show_form(
             step_id="select_family",
             data_schema=vol.Schema({
                 vol.Required(CONF_FAMILY_ID): vol.In(family_choices),
             }),
+            errors=errors,
             description_placeholders={
                 "family_count": str(len(family_choices)),
-            },
-        )
-
-    async def async_step_devices(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        errors: dict[str, str] = {}
-        if self._https_client is None:
-            return self.async_abort(reason="unknown")
-
-        if not self._devices_loaded:
-            try:
-                device_data = await self._https_client.fetch_device_status()
-                if device_data:
-                    self._pending_devices = self._https_client.parse_device_status_list(device_data)
-                    self._devices_loaded = True
-            except Exception as e:
-                _LOGGER.error(f"获取设备列表失败: {e}")
-                errors["base"] = "cannot_connect"
-
-        if not self._pending_devices:
-            if not errors:
-                errors["base"] = "no_devices"
-        elif user_input is not None and CONF_SELECTED_DEVICE_IDS in user_input:
-            _LOGGER.debug(f"async_step_devices: user_input={user_input}")
-            _LOGGER.debug(f"async_step_devices: CONF_SELECTED_DEVICE_IDS={user_input.get(CONF_SELECTED_DEVICE_IDS)}")
-            _LOGGER.debug(f"async_step_devices: type of selected_ids={type(user_input.get(CONF_SELECTED_DEVICE_IDS))}")
-            for idx, did in enumerate(user_input.get(CONF_SELECTED_DEVICE_IDS, [])):
-                _LOGGER.debug(f"async_step_devices: selected_id[{idx}]={did}, type={type(did)}")
-            
-            available = {str(dev["device_id"]) for dev in self._pending_devices}
-            _LOGGER.debug(f"async_step_devices: available={available}")
-            
-            requested = {
-                str(device_id)
-                for device_id in user_input[CONF_SELECTED_DEVICE_IDS]
             }
-            _LOGGER.debug(f"async_step_devices: requested={requested}")
-            
-            intersection = requested & available
-            _LOGGER.debug(f"async_step_devices: intersection={intersection}")
-            
-            self._pending_selected_ids = [
-                str(dev["device_id"])
-                for dev in self._pending_devices
-                if str(dev["device_id"]) in intersection
-            ]
-            _LOGGER.debug(f"async_step_devices: _pending_selected_ids={self._pending_selected_ids}")
-            if not self._pending_selected_ids:
-                errors["base"] = "no_devices_selected"
-            else:
-                self._area_index = 0
-                self._pending_device_areas = {}
-                return await self.async_step_area()
-
-        defaults = list(
-            selected_device_ids(
-                {},
-                (dev["device_id"] for dev in self._pending_devices),
-            )
-        )
-        return self.async_show_form(
-            step_id="devices",
-            data_schema=_device_schema(self._pending_devices, defaults),
-            errors=errors,
         )
 
-    async def async_step_area(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """逐个设备设置区域。"""
-        _LOGGER.debug(f"async_step_area: _pending_selected_ids={self._pending_selected_ids}")
-        _LOGGER.debug(f"async_step_area: _pending_devices count={len(self._pending_devices)}")
-        _LOGGER.debug(f"async_step_area: _area_index={self._area_index}")
+    async def _create_entry(self) -> FlowResult:
+        """创建配置条目"""
+        # 找到家庭列表中的用户ID（临时 client 已关闭，使用暂存数据）
+        await self.async_set_unique_id(self._username)
+        self._abort_if_unique_id_configured()
         
-        selected = {
-            str(dev["device_id"]): dev
-            for dev in self._pending_devices
-            if str(dev["device_id"]) in self._pending_selected_ids
-        }
-        _LOGGER.debug(f"async_step_area: selected keys={list(selected.keys())}")
-        
-        devices = [selected[device_id] for device_id in self._pending_selected_ids]
-        _LOGGER.debug(f"async_step_area: devices count={len(devices)}")
-        if not devices or self._area_index >= len(devices):
-            return self._finish()
-
-        device = devices[self._area_index]
-        device_id_str = str(device["device_id"])
-        if user_input is not None:
-            self._pending_device_areas[device_id_str] = user_input.get(ATTR_AREA_ID)
-            self._area_index += 1
-            if self._area_index >= len(devices):
-                return self._finish()
-            device = devices[self._area_index]
-            device_id_str = str(device["device_id"])
-
-        default_area_id = _default_area_id(self.hass, device, self._pending_device_areas)
-
-        device_label = _device_label(
-            device_id_str,
-            device.get("device_name", "") or device_id_str,
-            device.get("room_name", ""),
-        )
-        room_name = device.get("room_name", "") or "-"
-
-        _LOGGER.info(
-            "区域步骤: 设备=%s, 房间=%s, 序号=%d/%d",
-            device_label, room_name, self._area_index + 1, len(devices),
-        )
-
-        _LOGGER.debug(f"async_step_area: device_label={device_label}, room_name={room_name}, position={self._area_index + 1}, total={len(devices)}")
-        _LOGGER.debug(f"async_step_area: default_area_id={default_area_id}")
-
-        return self.async_show_form(
-            step_id="area",
-            data_schema=_area_schema(default_area_id),
-            description_placeholders={
-                "device": device_label,
-                "room": room_name,
-                "position": str(self._area_index + 1),
-                "total": str(len(devices)),
-            },
-        )
-
-    def _finish(self) -> FlowResult:
-        """创建配置条目。"""
-        client = self._https_client
-        title = f"{client.username}" if client else "ORVIBO"
-        if client and client.family_name:
-            title = f"{client.username} - {client.family_name}"
-
-        # 只保存选中的设备和区域映射
-        selected_set = set(self._pending_selected_ids)
-        filtered_areas = {
-            device_id: area_id
-            for device_id, area_id in self._pending_device_areas.items()
-            if device_id in selected_set
-        }
-
-        _LOGGER.debug(f"_finish: _pending_selected_ids={self._pending_selected_ids}")
-        _LOGGER.debug(f"_finish: _pending_device_areas={self._pending_device_areas}")
-        _LOGGER.debug(f"_finish: filtered_areas={filtered_areas}")
-
         return self.async_create_entry(
-            title=title,
-            data=self._pending_data,
-            options={
-                CONF_SELECTED_DEVICE_IDS: self._pending_selected_ids,
-                CONF_DEVICE_AREAS: filtered_areas,
+            title=f"{self._username} - {self._family_name}",
+            data={
+                CONF_USERNAME: self._username,
+                CONF_PASSWORD: self._password,
+                CONF_FAMILY_ID: self._family_id,
             },
         )
 
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        return OrviboMeshOptionsFlow(config_entry)
 
-# ── OptionsFlow（配置→选项） ──
 
 class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self) -> None:
-        self._devices: list[dict[str, Any]] = []
-        self._selected_ids: list[str] = []
-        self._device_areas: dict[str, str | None] = {}
-        self._area_index = 0
+    def __init__(self, config_entry):
+        self.config_entry = config_entry
+        self._https_client: Optional[HttpsClient] = None
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        self._device_areas = configured_device_areas(self.config_entry.options)
-        return await self.async_step_devices(user_input)
-
-    async def async_step_devices(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        errors: dict[str, str] = {}
-        if not self._devices:
-            coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
-            if coordinator is not None:
-                self._devices = list(coordinator.devices.values())
-            if not self._devices:
-                try:
-                    client = HttpsClient(
-                        username=self.config_entry.data[CONF_USERNAME],
-                        password=self.config_entry.data[CONF_PASSWORD],
-                    )
-                    if await client.ensure_login():
-                        device_data = await client.fetch_device_status()
-                        if device_data:
-                            self._devices = client.parse_device_status_list(device_data)
-                except Exception as e:
-                    _LOGGER.error(f"获取设备列表失败: {e}")
-                    errors["base"] = "cannot_connect"
-
-        if user_input is not None and CONF_SELECTED_DEVICE_IDS in user_input:
-            _LOGGER.debug(f"OptionsFlow async_step_devices: user_input={user_input}")
-            _LOGGER.debug(f"OptionsFlow async_step_devices: CONF_SELECTED_DEVICE_IDS={user_input.get(CONF_SELECTED_DEVICE_IDS)}")
-            for idx, did in enumerate(user_input.get(CONF_SELECTED_DEVICE_IDS, [])):
-                _LOGGER.debug(f"OptionsFlow async_step_devices: selected_id[{idx}]={did}, type={type(did)}")
-            
-            requested = {
-                str(device_id)
-                for device_id in user_input[CONF_SELECTED_DEVICE_IDS]
-            }
-            _LOGGER.debug(f"OptionsFlow async_step_devices: requested={requested}")
-            
-            self._selected_ids = [
-                str(dev["device_id"]) for dev in self._devices if str(dev["device_id"]) in requested
-            ]
-            _LOGGER.debug(f"OptionsFlow async_step_devices: _selected_ids={self._selected_ids}")
-            if not self._selected_ids:
-                errors["base"] = "no_devices_selected"
-            else:
-                self._area_index = 0
-                return await self.async_step_area()
-
-        defaults = sorted(
-            selected_device_ids(
-                self.config_entry.options,
-                (dev["device_id"] for dev in self._devices),
-            )
-        )
-        return self.async_show_form(
-            step_id="devices",
-            data_schema=_device_schema(self._devices, defaults),
-            errors=errors,
-        )
-
-    async def async_step_area(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """逐个设备更新区域。"""
-        selected = {
-            str(dev["device_id"]): dev
-            for dev in self._devices
-            if str(dev["device_id"]) in self._selected_ids
-        }
-        devices = [selected[device_id] for device_id in self._selected_ids]
-        if not devices or self._area_index >= len(devices):
-            return self._finish()
-
-        device = devices[self._area_index]
-        device_id_str = str(device["device_id"])
+    async def async_step_init(self, user_input=None):
         if user_input is not None:
-            self._device_areas[device_id_str] = user_input.get(ATTR_AREA_ID)
-            self._area_index += 1
-            if self._area_index >= len(devices):
-                return self._finish()
-            device = devices[self._area_index]
-            device_id_str = str(device["device_id"])
-
-        default_area_id = _default_area_id(self.hass, device, self._device_areas)
-
-        device_label = _device_label(
-            device_id_str,
-            device.get("device_name", "") or device_id_str,
-            device.get("room_name", ""),
-        )
-        room_name = device.get("room_name", "") or "-"
-
-        _LOGGER.debug(f"OptionsFlow async_step_area: device_label={device_label}, room_name={room_name}, position={self._area_index + 1}, total={len(devices)}")
-        _LOGGER.debug(f"OptionsFlow async_step_area: default_area_id={default_area_id}")
+            return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(
-            step_id="area",
-            data_schema=_area_schema(default_area_id),
-            description_placeholders={
-                "device": device_label,
-                "room": room_name,
-                "position": str(self._area_index + 1),
-                "total": str(len(devices)),
-            },
-        )
-
-    def _finish(self) -> FlowResult:
-        selected_set = set(self._selected_ids)
-        filtered_areas = {
-            device_id: area_id
-            for device_id, area_id in self._device_areas.items()
-            if device_id in selected_set
-        }
-        return self.async_create_entry(
-            title="",
-            data={
-                CONF_SELECTED_DEVICE_IDS: self._selected_ids,
-                CONF_DEVICE_AREAS: filtered_areas,
-            },
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_USERNAME,
+                    default=self.config_entry.data.get(CONF_USERNAME)
+                ): str,
+                vol.Optional(
+                    CONF_PASSWORD,
+                    default=""
+                ): str,
+            }),
         )
