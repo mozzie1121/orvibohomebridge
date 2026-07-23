@@ -129,6 +129,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             elif not re.match(r'^1[3-9]\d{9}$', username) and not re.match(r'^[^@]+@[^@]+\.[^@]+$', username):
                 errors[CONF_USERNAME] = "invalid_username"
             else:
+                client = None
                 try:
                     client = HttpsClient(username=username, password=password)
                     success = await client.ensure_login()
@@ -149,6 +150,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except Exception as e:
                     _LOGGER.error(f"登录验证失败: {e}")
                     errors["base"] = "auth_failed"
+                finally:
+                    if client is not None and client is not self._https_client:
+                        await client.close()
 
         return self.async_show_form(
             step_id="user",
@@ -362,6 +366,7 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
             if coordinator is not None:
                 self._devices = list(coordinator.devices.values())
             if not self._devices:
+                client = None
                 try:
                     client = HttpsClient(
                         username=self.config_entry.data[CONF_USERNAME],
@@ -374,6 +379,9 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
                 except Exception as e:
                     _LOGGER.error(f"获取设备列表失败: {e}")
                     errors["base"] = "cannot_connect"
+                finally:
+                    if client is not None:
+                        await client.close()
 
         if user_input is not None and CONF_SELECTED_DEVICE_IDS in user_input:
             _LOGGER.debug(f"OptionsFlow async_step_devices: user_input={user_input}")

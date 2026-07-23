@@ -76,6 +76,10 @@ class HttpsClient:
             _LOGGER.info("HTTPS 会话和连接器已关闭")
         self.access_token = None
 
+    async def close(self):
+        """供外部调用的清理方法。"""
+        await self._disconnect()
+
     def set_session_id(self, session_id: str):
         self.session_id = session_id
 
