@@ -61,10 +61,17 @@ class HttpsClient:
 
     async def _disconnect(self):
         if self.session and not self.session.closed:
+            connector = self.session.connector
             await self.session.close()
+            if connector and not connector.closed:
+                await connector.close()
             self.session = None
             _LOGGER.info("HTTPS 会话关闭")
         self.access_token = None
+
+    async def close(self):
+        """关闭客户端，释放资源"""
+        await self._disconnect()
 
     def set_session_id(self, session_id: str):
         self.session_id = session_id
