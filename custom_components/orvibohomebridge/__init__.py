@@ -113,6 +113,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if coordinator:
         await coordinator.async_cleanup()
+        # 给残留协程一点时间完成，避免 aiohttp session/connector 警告
+        await asyncio.sleep(0.5)
         _LOGGER.info("Coordinator 清理完成")
 
     unload_ok = True
