@@ -45,12 +45,17 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._family_id = temp_client.family_id
                         self._family_name = temp_client.family_name
 
-                        # 如果只有一个家庭，直接使用；否则让用户选择
-                        if len(self._family_list) <= 1:
-                            if not await self._probe_ssl_login(self._family_id):
-                                errors["base"] = "auth_failed"
-                            else:
-                                return await self._create_entry()
+                        # 前置认证校验：拿到第一个家庭 ID 后立即做 SSL 探针，
+                        # 密码错误时在凭据表单直接提示，不再展示家庭列表
+                        probe_family_id = (
+                            str(self._family_list[0]["familyId"])
+                            if self._family_list
+                            else ""
+                        )
+                        if not await self._probe_ssl_login(probe_family_id):
+                            errors["base"] = "auth_failed"
+                        elif len(self._family_list) <= 1:
+                            return await self._create_entry()
                         else:
                             return await self.async_step_select_family()
                     else:
@@ -83,9 +88,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if f["familyId"] == family_id:
                         self._family_name = f["familyName"]
                         break
-                if await self._probe_ssl_login(family_id):
-                    return await self._create_entry()
-                errors["base"] = "auth_failed"
+                return await self._create_entry()
 
         # 构建家庭选择列表
         family_choices = {
@@ -96,9 +99,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if len(family_choices) == 1:
             # 只有一个家庭，直接使用
             self._family_id = list(family_choices.keys())[0]
-            if await self._probe_ssl_login(self._family_id):
-                return await self._create_entry()
-            errors["base"] = "auth_failed"
+            return await self._create_entry()
 
         return self.async_show_form(
             step_id="select_family",
