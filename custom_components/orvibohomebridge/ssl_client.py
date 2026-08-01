@@ -216,7 +216,12 @@ class SSLClient:
             else:
                 raise ConnectionError("重连间隔为0，放弃重连")
 
-    async def connect_and_login(self):
+    async def connect_and_login(
+        self,
+        max_attempts: int = SSL_MAX_RECONNECT_ATTEMPTS,
+        hello_wait: float = 3.0,
+    ):
+        """连接并登录。max_attempts/hello_wait 供配置流程的轻量探针使用。"""
         if self.connected:
             return True
         
@@ -236,7 +241,7 @@ class SSLClient:
                 pass
             self._heartbeat_task = None
         
-        for retry in range(SSL_MAX_RECONNECT_ATTEMPTS):
+        for retry in range(max_attempts):
             try:
                 _LOGGER.debug("SSL正在连接和登录...")
                 self.connected = await self._connect()
@@ -249,7 +254,7 @@ class SSLClient:
                         name="orvibohomebridge_server_response_listener"
                     )
                     # 等待Hello密钥返回
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(hello_wait)
                     _LOGGER.debug("等待后检查 session_key 是否就绪: %s", self.session_key is not None)
                     login_result = await self._send_login()
                     _LOGGER.debug("SSL登录结果: %s", login_result)

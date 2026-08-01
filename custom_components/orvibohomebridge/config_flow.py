@@ -47,7 +47,10 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                         # 如果只有一个家庭，直接使用；否则让用户选择
                         if len(self._family_list) <= 1:
-                            return await self._create_entry()
+                            if not await self._probe_ssl_login(self._family_id):
+                                errors["base"] = "auth_failed"
+                            else:
+                                return await self._create_entry()
                         else:
                             return await self.async_step_select_family()
                     else:
@@ -80,7 +83,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if f["familyId"] == family_id:
                         self._family_name = f["familyName"]
                         break
-                return await self._create_entry()
+                if await self._probe_ssl_login(family_id):
+                    return await self._create_entry()
+                errors["base"] = "auth_failed"
 
         # 构建家庭选择列表
         family_choices = {
@@ -91,7 +96,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if len(family_choices) == 1:
             # 只有一个家庭，直接使用
             self._family_id = list(family_choices.keys())[0]
-            return await self._create_entry()
+            if await self._probe_ssl_login(self._family_id):
+                return await self._create_entry()
+            errors["base"] = "auth_failed"
 
         return self.async_show_form(
             step_id="select_family",
@@ -136,10 +143,14 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if temp_client:
                         await temp_client.close()
                 if success:
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data_updates={CONF_PASSWORD: password},
-                    )
+                    self._username = username
+                    self._password = password
+                    family_id = str(entry.data.get(CONF_FAMILY_ID, ""))
+                    if await self._probe_ssl_login(family_id):
+                        return self.async_update_reload_and_abort(
+                            entry,
+                            data_updates={CONF_PASSWORD: password},
+                        )
                 errors["base"] = "auth_failed"
 
         return self.async_show_form(
@@ -148,6 +159,36 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={"username": username},
         )
+
+    async def _probe_ssl_login(self, family_id: str) -> bool:
+        """用 SSL 二进制登录校验密码真实有效。
+
+        REST OAuth 不校验密码（任意密码都返回 token），真正的校验点在
+        10002 端口 SSL 登录。仅当服务器明确拒绝（status 非空且非 0）时
+        判定为认证失败；网络/超时类失败不阻塞配置流程。
+        """
+        from .ssl_client import SSLClient
+        from .const import SSL_HOST, SSL_PORT
+
+        client = SSLClient(
+            hass=self.hass,
+            ssl_host=SSL_HOST,
+            ssl_port=SSL_PORT,
+            username=self._username,
+            password=self._password,
+            family_id=family_id,
+            on_session_id_obtained=lambda sid: None,
+            on_status_update=lambda did, raw: None,
+            retry_interval=0,
+        )
+        try:
+            ok = await client.connect_and_login(max_attempts=1, hello_wait=1.0)
+            if ok:
+                return True
+            status = getattr(client, "_login_status", None)
+            return status is None or status == 0
+        finally:
+            await client._disconnect()
 
     async def _create_entry(self) -> FlowResult:
         """创建配置条目"""
