@@ -877,8 +877,19 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             await self._init_ssl_client()
 
             if self.ssl_client:
-                await self.ssl_client.connect_and_login()
-                await self._query_clothes_horse_initial_status()
+                ssl_ok = await self.ssl_client.connect_and_login()
+                login_status = getattr(self.ssl_client, "_login_status", None)
+                if not ssl_ok and login_status is not None and login_status != 0:
+                    # 服务器明确拒绝了登录（如密码错误 status=12），触发 HA 重新认证
+                    raise ConfigEntryAuthFailed(
+                        f"SSL 登录被服务器拒绝 (status={login_status})"
+                    )
+                if ssl_ok:
+                    await self._query_clothes_horse_initial_status()
+                else:
+                    _LOGGER.warning(
+                        "SSL 连接/登录未就绪（非认证拒绝），将在后台重试"
+                    )
 
             _LOGGER.info(f"初始化完成，共 {len(self.devices)} 个设备")
             for device_id, dev in self.devices.items():
