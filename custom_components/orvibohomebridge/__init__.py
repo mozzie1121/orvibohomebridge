@@ -4,6 +4,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, CONF_FAMILY_ID
@@ -15,6 +16,9 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan")
 
 SERVICE_REFRESH = "refresh_devices"
+
+# 本集成仅通过配置项使用，不读取 configuration.yaml
+CONFIG_SCHEMA = cv.empty_config_schema()
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
