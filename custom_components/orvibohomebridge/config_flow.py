@@ -321,6 +321,10 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         self._devices: list[dict] = []
 
     async def async_step_init(self, user_input=None):
+        return await self.async_step_devices(user_input)
+
+    async def async_step_devices(self, user_input=None):
+        """重新选择要接入的设备。"""
         errors: dict[str, str] = {}
         if not self._devices:
             self._devices = await _fetch_devices(
