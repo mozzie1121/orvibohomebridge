@@ -16,6 +16,13 @@
                     "family_id": "家庭"
                 }
             },
+            "reauth_confirm": {
+                "title": "重新认证",
+                "description": "为 {username} 更新密码",
+                "data": {
+                    "password": "密码"
+                }
+            },
             "devices": {
                 "title": "选择设备",
                 "description": "只有勾选的设备才会添加到 Home Assistant。不勾选后续无法使用。",
@@ -40,7 +47,8 @@
             "cannot_connect": "无法连接欧瑞博云"
         },
         "abort": {
-            "already_configured": "该账号已配置"
+            "already_configured": "该账号已配置",
+            "reauth_entry_missing": "该配置项已不存在"
         }
     },
     "options": {

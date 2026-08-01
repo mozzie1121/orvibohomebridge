@@ -104,6 +104,51 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
+    async def async_step_reauth(
+        self, entry_data: Optional[dict] = None
+    ) -> FlowResult:
+        """开始重新认证（凭据失效时由 Home Assistant 自动触发）。"""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: Optional[dict] = None
+    ) -> FlowResult:
+        """输入新密码并更新配置项。"""
+        errors: dict[str, str] = {}
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        if entry is None:
+            return self.async_abort(reason="reauth_entry_missing")
+        username = str(entry.data.get(CONF_USERNAME, ""))
+
+        if user_input is not None:
+            password = str(user_input.get(CONF_PASSWORD) or "")
+            if not password:
+                errors["base"] = "empty_username_or_password"
+            else:
+                temp_client = None
+                success = False
+                try:
+                    temp_client = HttpsClient(username=username, password=password)
+                    success = await temp_client.ensure_login()
+                except Exception:
+                    success = False
+                finally:
+                    if temp_client:
+                        await temp_client.close()
+                if success:
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates={CONF_PASSWORD: password},
+                    )
+                errors["base"] = "auth_failed"
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+            description_placeholders={"username": username},
+        )
+
     async def _create_entry(self) -> FlowResult:
         """创建配置条目"""
         # 找到家庭列表中的用户ID（临时 client 已关闭，使用暂存数据）

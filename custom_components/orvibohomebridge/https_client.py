@@ -42,14 +42,13 @@ class HttpsClient:
 
     async def _send_request(self, url, data):
         async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(ssl=False)
+            connector=aiohttp.TCPConnector()
         ) as session:
             if not data:
                 resp = await session.get(
                     url=url,
                     headers=HTTP_HEADERS,
                     skip_auto_headers=["Accept", "Connection"],
-                    ssl=False
                 )
             else:
                 resp = await session.post(
@@ -58,7 +57,6 @@ class HttpsClient:
                     data=data,
                     headers=HTTP_HEADERS,
                     skip_auto_headers=["Accept", "Connection"],
-                    ssl=False
                 )
             resp.raise_for_status()
             data = await resp.text()
@@ -252,19 +250,14 @@ class HttpsClient:
                 **HTTP_HEADERS,
             }
 
-            _LOGGER.info(f"请求 getDeviceDesc API: {url}")
+            _LOGGER.debug("请求 getDeviceDesc API: host=%s", get_api_host())
 
             async with aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=False)
+                connector=aiohttp.TCPConnector()
             ) as session:
-                async with session.get(url, headers=headers, ssl=False) as response:
+                async with session.get(url, headers=headers) as response:
                     if response.status != 200:
                         _LOGGER.error(f"getDeviceDesc API 失败: {response.status}")
-                        try:
-                            error_text = await response.text()
-                            _LOGGER.error(f"getDeviceDesc 错误响应: {error_text}")
-                        except Exception as e:
-                            _LOGGER.error(f"获取错误响应失败: {e}")
                         return None
                     
                     data = await response.json()

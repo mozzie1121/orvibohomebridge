@@ -1,0 +1,117 @@
+name: Publish HACS release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  schedule:
+    - cron: '17 3 * * 2,5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hacs-release
+  cancel-in-progress: false
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install "aiohttp>=3.9.0" "cryptography>=41.0.0" "voluptuous>=0.13.1"
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  hacs:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  hassfest:
+    name: Home Assistant hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  release:
+    name: Publish HACS ZIP
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    needs: [unit-tests, hacs, hassfest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: version
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const stable = JSON.parse(fs.readFileSync('custom_components/orvibohomebridge/manifest.json')).version;
+            if (!/^0\.\d+\.\d+$/.test(stable)) { core.setFailed(`Invalid stable version: ${stable}`); return; }
+            const prerelease = context.eventName === 'schedule';
+            const tagPush = context.eventName === 'push';
+            const stableTag = `v${stable}`;
+            if (tagPush && context.ref !== `refs/tags/${stableTag}`) { core.setFailed(`Tag ${context.ref} does not match manifest version ${stable}`); return; }
+            if (prerelease) {
+              const releases = await github.rest.repos.listReleases({...context.repo, per_page:100});
+              const stableExists = releases.data.some(release => release.tag_name === stableTag);
+              const commitReleased = releases.data.some(release => release.target_commitish === context.sha && release.assets.some(asset => asset.name === 'orvibohomebridge.zip' && asset.state === 'uploaded' && asset.size > 0));
+              if (stableExists || commitReleased) { core.setOutput('publish', 'false'); return; }
+            }
+            const version = prerelease ? `${stable}b${context.runNumber}` : stable;
+            core.setOutput('publish', 'true');
+            core.setOutput('version', version);
+            core.setOutput('tag', prerelease ? `v${version}` : stableTag);
+            core.setOutput('prerelease', String(prerelease));
+
+      - name: Build HACS ZIP
+        if: steps.version.outputs.publish == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        shell: bash
+        run: |
+          mkdir release-package
+          cp -R custom_components/orvibohomebridge release-package/orvibohomebridge
+          find release-package/orvibohomebridge -type d -name __pycache__ -prune -exec rm -rf {} +
+          find release-package/orvibohomebridge -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          if [[ "$PRERELEASE" == true ]]; then python -c 'import json,os,pathlib;p=pathlib.Path("release-package/orvibohomebridge/manifest.json");d=json.loads(p.read_text());d["version"]=os.environ["RELEASE_VERSION"];p.write_text(json.dumps(d,indent=2)+"\n")'; fi
+          cd release-package/orvibohomebridge
+          zip -r ../../orvibohomebridge.zip .
+
+      - name: Create or repair GitHub release
+        if: steps.version.outputs.publish == 'true'
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = process.env.RELEASE_TAG;
+            let release = await github.rest.repos.getReleaseByTag({...context.repo, tag}).catch(error => error.status === 404 ? null : Promise.reject(error));
+            const ref = await github.rest.git.getRef({...context.repo, ref:`tags/${tag}`}).catch(error => error.status === 404 ? null : Promise.reject(error));
+            if (ref && ref.data.object.sha !== context.sha) { core.setFailed(`Tag ${tag} does not point to ${context.sha}`); return; }
+            const asset = release?.data.assets.find(item => item.name === 'orvibohomebridge.zip');
+            if (asset?.state === 'uploaded' && asset.size > 0) { core.notice(`Release ${tag} already exists`); return; }
+            if (asset) await github.rest.repos.deleteReleaseAsset({...context.repo, asset_id: asset.id});
+            if (!release) release = await github.rest.repos.createRelease({...context.repo, tag_name: tag, target_commitish: context.sha, name: tag, generate_release_notes: true, prerelease: process.env.PRERELEASE === 'true'});
+            const data = fs.readFileSync('orvibohomebridge.zip');
+            await github.rest.repos.uploadReleaseAsset({...context.repo, release_id: release.data.id, name: 'orvibohomebridge.zip', data, headers: {'content-type': 'application/zip', 'content-length': data.length}});
