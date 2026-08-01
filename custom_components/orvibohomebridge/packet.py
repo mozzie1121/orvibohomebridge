@@ -754,7 +754,7 @@ class HomemateJsonData:
     @classmethod
     def get_access_token_by_password(cls, username: str, password: str):
         url = f"https://{get_api_host()}/getOauthToken?userName={username}&type=0&password={password}"
-        _LOGGER.debug(f"请求access_token: userName={username}, type=0 (password masked)")
+        _LOGGER.debug("请求access_token: type=0 (password masked, userName 不入日志)")
         return {"url": url, "data": None}
 
     @classmethod

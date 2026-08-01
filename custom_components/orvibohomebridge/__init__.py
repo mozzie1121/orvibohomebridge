@@ -3,7 +3,7 @@ import asyncio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, CONF_FAMILY_ID
@@ -50,6 +50,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         _LOGGER.info("开始设置 Orvibo Mesh...")
         await coordinator._async_setup()
         _LOGGER.info("Coordinator 设置完成")
+    except ConfigEntryAuthFailed:
+        raise
     except Exception as e:
         _LOGGER.error(f"Coordinator 设置失败: {e}", exc_info=True)
         raise ConfigEntryNotReady from e

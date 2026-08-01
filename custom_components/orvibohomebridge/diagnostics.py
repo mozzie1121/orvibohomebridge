@@ -7,14 +7,12 @@
 from __future__ import annotations
 import time
 from typing import Any
-from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
 from .const import DOMAIN
-
-TO_REDACT = {"userName", "user_id", "access_token", "password", "phoneToken"}
+from .redact import redact_packet
 
 
 async def async_get_config_entry_diagnostics(
@@ -26,6 +24,7 @@ async def async_get_config_entry_diagnostics(
         return {"error": "coordinator not found"}
 
     now = time.time()
+    salt = getattr(coordinator, "_redaction_salt", b"") or b"orvibohomebridge"
 
     # 整理设备列表
     devices_raw = {}
@@ -52,13 +51,13 @@ async def async_get_config_entry_diagnostics(
         cmd42_entries.append({
             "ago_s": round(now - entry_["ts"], 1) if entry_.get("ts") else None,
             "device_id": entry_["device_id"],
-            "raw": async_redact_data(entry_.get("raw", {}), TO_REDACT),
+            "raw": redact_packet(entry_.get("raw", {}), salt, strict=False),
         })
 
     info = {
         "device_count": len(devices_raw),
-        "devices": devices_raw,
-        "states": async_redact_data(states_raw, TO_REDACT),
+        "devices": redact_packet(devices_raw, salt, strict=False),
+        "states": redact_packet(states_raw, salt, strict=False),
         "recent_cmd42_push": cmd42_entries,
     }
     return info
@@ -80,18 +79,23 @@ async def async_get_device_diagnostics(
             break
 
     now = time.time()
+    salt = getattr(coordinator, "_redaction_salt", b"") or b"orvibohomebridge"
 
     result: dict[str, Any] = {}
 
     # 设备原始信息
     if device_id and device_id in coordinator.devices:
-        result["device_info"] = coordinator.devices[device_id]
+        result["device_info"] = redact_packet(
+            coordinator.devices[device_id], salt, strict=False
+        )
     else:
         result["device_info"] = {"error": f"device {device_id} not found in coordinator"}
 
     # 当前状态
     if device_id and device_id in coordinator.device_states:
-        result["current_state"] = dict(coordinator.device_states[device_id])
+        result["current_state"] = redact_packet(
+            dict(coordinator.device_states[device_id]), salt, strict=False
+        )
         result["current_state"].pop("properties", None)
     else:
         result["current_state"] = None
@@ -102,7 +106,7 @@ async def async_get_device_diagnostics(
         if entry_["device_id"] == device_id or entry_.get("raw", {}).get("uid") == device_id:
             device_cmd42.append({
                 "ago_s": round(now - entry_["ts"], 1) if entry_.get("ts") else None,
-                "raw": async_redact_data(entry_.get("raw", {}), TO_REDACT),
+                "raw": redact_packet(entry_.get("raw", {}), salt, strict=False),
             })
     result["recent_cmd42_push"] = device_cmd42[-20:]
 
