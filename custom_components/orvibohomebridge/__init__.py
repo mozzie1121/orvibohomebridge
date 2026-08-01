@@ -17,8 +17,9 @@ PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "
 
 SERVICE_REFRESH = "refresh_devices"
 
-# 本集成仅通过配置项使用，不读取 configuration.yaml
-CONFIG_SCHEMA = cv.empty_config_schema()
+# 本集成仅通过配置项使用，不读取 configuration.yaml。
+# 新版 HA 要求 empty_config_schema 传入 domain 参数。
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
