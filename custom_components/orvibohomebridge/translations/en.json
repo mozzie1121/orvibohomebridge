@@ -70,7 +70,8 @@
         },
         "error": {
             "no_devices_selected": "Select at least one device",
-            "cannot_connect": "Cannot connect to ORVIBO cloud"
+            "cannot_connect": "Cannot connect to ORVIBO cloud",
+            "no_devices": "No devices found in this family"
         }
     }
 }
