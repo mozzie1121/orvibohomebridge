@@ -70,7 +70,8 @@
         },
         "error": {
             "no_devices_selected": "请至少勾选一台设备",
-            "cannot_connect": "无法连接欧瑞博云"
+            "cannot_connect": "无法连接欧瑞博云",
+            "no_devices": "该家庭中没有发现设备"
         }
     }
 }
