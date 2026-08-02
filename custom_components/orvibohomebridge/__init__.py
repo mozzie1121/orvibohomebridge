@@ -52,13 +52,12 @@ async def async_setup(hass: HomeAssistant, config: dict):
                 hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
             js_url = "/orvibohomebridge/www/orvibo-door-lock-card.js"
             try:
-                from homeassistant.components.frontend import async_add_extra_js_url
+                from homeassistant.components.frontend import add_extra_js_url
 
-                await async_add_extra_js_url(hass, js_url)
-            except (AttributeError, TypeError):
-                from homeassistant.components import frontend
-
-                frontend.add_extra_js_url(hass, js_url)
+                add_extra_js_url(hass, js_url)
+            except (AttributeError, TypeError, ImportError):
+                # 旧版 HA：hass.components 方式
+                hass.components.frontend.add_extra_js_url(hass, js_url)
             _LOGGER.info("门锁卡片资源已注册")
     except Exception:  # noqa: BLE001 - 卡片注册失败不影响核心功能
         _LOGGER.warning("门锁卡片资源注册失败（不影响其他功能）", exc_info=True)
