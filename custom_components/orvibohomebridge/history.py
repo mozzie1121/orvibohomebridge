@@ -39,6 +39,7 @@ def save_snapshot(
 ) -> Path:
     """保存事件截图；同事件已存在则跳过，返回实际路径。"""
     dest = snapshot_path(history_dir, kind, ts)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     dest.write_bytes(image_bytes)
