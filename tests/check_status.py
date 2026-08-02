@@ -1,20 +1,26 @@
 """快速查看设备状态信息"""
 import hashlib, json, asyncio, aiohttp, sys
+import os
 from pathlib import Path
+
+USER = os.environ.get("ORVIBO_USERNAME", "")
+PASSWORD = os.environ.get("ORVIBO_PASSWORD", "")
+if not USER or not PASSWORD:
+    sys.exit("请先设置环境变量 ORVIBO_USERNAME 和 ORVIBO_PASSWORD")
 
 # 临时绕过 homeassistant 依赖
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "custom_components"))
 _init = Path(sys.path[0]) / "orvibohomebridge" / "__init__.py"
-_orig = _init.read_text()
-if "homeassistant" in _orig: _init.write_text("#")
+_orig = _init.read_bytes()
+if b"homeassistant" in _orig: _init.write_bytes(b"#")
 from orvibohomebridge.packet import HomemateJsonData
 from orvibohomebridge.const import HTTPS_HOST, HTTP_HEADERS
-if _orig: _init.write_text(_orig)
+if _orig: _init.write_bytes(_orig)
 
 async def main():
-    pw_md5 = hashlib.md5("Sunjian21".encode()).hexdigest().upper()
+    pw_md5 = hashlib.md5(PASSWORD.encode()).hexdigest().upper()
     async with aiohttp.ClientSession() as s:
-        r = await s.get(f"https://{HTTPS_HOST}/getOauthToken?userName=65261217@qq.com&type=0&password={pw_md5}",
+        r = await s.get(f"https://{HTTPS_HOST}/getOauthToken?userName={USER}&type=0&password={pw_md5}",
                        headers={**HTTP_HEADERS, "Accept":"*/*"}, ssl=False)
         j = json.loads(await r.text())
         token, uid = j["data"]["access_token"], j["data"]["user_id"]
@@ -26,7 +32,7 @@ async def main():
         for f in j.get("data", []):
             fid, fn = f.get("familyId",""), f.get("familyName","?")
             print(f"\n🏠 {fn}")
-            ret2 = HomemateJsonData.get_devices_status(token, "", uid, "65261217@qq.com", fid, 1)
+            ret2 = HomemateJsonData.get_devices_status(token, "", uid, USER, fid, 1)
             r = await s.post(ret2["url"], data=ret2["data"], headers=HTTP_HEADERS, ssl=False)
             d = json.loads(await r.text()).get("data", {})
             devs = d.get("device", [])
@@ -48,7 +54,7 @@ async def main():
             for order, v1 in [("on", 1), ("off", 0), ("set property", 0)]:
                 ctrl = {
                     "uid": "accf23852d1c",
-                    "userName": "65261217@qq.com",
+                    "userName": USER,
                     "deviceId": target,
                     "order": order, "value1": v1, "value2": 0, "value3": 0, "value4": 0,
                     "delayTime": 0, "qualityOfService": 1, "defaultResponse": 1, "propertyResponse": 0,
@@ -66,7 +72,7 @@ async def main():
                 params = {
                     "accessToken": token, "deviceId": target, "order": order,
                     "random": generate_uuid(), "serial": ctrl["serial"],
-                    "timestamp": ts, "userId": uid, "userName": "65261217@qq.com",
+                    "timestamp": ts, "userId": uid, "userName": USER,
                 }
                 from orvibohomebridge.functions import hmac_sha256
                 keys = sorted(params.keys())

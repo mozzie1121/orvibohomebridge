@@ -31,6 +31,9 @@ DEBUG_INFO = "Android_ZhiJia365_34_5.1.3.309"
 DOMAIN = "orvibohomebridge"
 MANUFACTURER = "ORVIBO"
 
+# HA 事件总线：门锁状态/事件（解锁、门铃、锁状态、门状态）
+LOCK_EVENT = "orvibohomebridge_lock_event"
+
 HTTPS_HOST = "china.orvibo.com"
 # 国际区集群（Orvibo Home 海外用户，数据与中国区独立分区）
 HTTPS_HOST_GLOBAL = "homemate.orvibo.com"

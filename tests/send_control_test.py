@@ -1,13 +1,14 @@
 """通过 SSL 发送控制命令到 COCO 智能插线板 (type=43)"""
 import asyncio, hashlib, json, ssl, sys, time
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "custom_components"))
 
 _init = Path(sys.path[0]) / "orvibohomebridge" / "__init__.py"
-_orig = _init.read_text()
-if "homeassistant" in _orig: _init.write_text("#")
+_orig = _init.read_bytes()
+if b"homeassistant" in _orig: _init.write_bytes(b"#")
 
 from orvibohomebridge.const import SSL_HOST, SSL_PORT, CMD_HELLO, CMD_LOGIN, CMD_CONTROL, CMD_HEARTBEAT, CMD_HANDSHAKE
 from orvibohomebridge.const import SOFTWARE_NAME, SOFTWARE_VERSION, SYS_VERSION, HARDWARE_VERSION, LANGUAGE, PHONE_NAME, DEBUG_INFO
@@ -15,10 +16,12 @@ from orvibohomebridge.const import SOFTWARE_VER, DEFAULT_KEY, ID_UNSET, MAGIC, H
 from orvibohomebridge.packet import HomematePacket, HomemateJsonData
 from orvibohomebridge.functions import generate_serial, generate_uuid
 
-if _orig: _init.write_text(_orig)
+if _orig: _init.write_bytes(_orig)
 
-USERNAME = "65261217@qq.com"
-PASSWORD = "Sunjian21"
+USERNAME = os.environ.get("ORVIBO_USERNAME", "")
+PASSWORD = os.environ.get("ORVIBO_PASSWORD", "")
+if not USERNAME or not PASSWORD:
+    sys.exit("请先设置环境变量 ORVIBO_USERNAME 和 ORVIBO_PASSWORD")
 FAMILY_ID = "00000000000018111433753460517481"  # 我的家庭
 DEVICE_ID = "834a9801ba2d4b729126648329c3473b"
 DEVICE_UID = "accf23852d1c"
