@@ -14,7 +14,7 @@ from .selection import CONF_DEVICE_AREAS, selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan")
+PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan", "camera")
 
 SERVICE_REFRESH = "refresh_devices"
 SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
