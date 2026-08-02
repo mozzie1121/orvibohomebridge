@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import hmac
 import json
 from pathlib import Path
 import sys
@@ -97,6 +99,34 @@ class SignedUrlTests(unittest.TestCase):
         # STS 临时凭证必须带 x-cos-security-token，浏览器才能直接访问
         self.assertIn("x-cos-security-token=", url)
         self.assertIn("QeIhfJn0wdBI45nD3VbQcchmkhFxYHqadf45e2f789d5a3469de9046a99add69d", url)
+        # COS 存储 Content-Type 为 text/html，必须用 response-content-type 覆盖
+        self.assertIn("response-content-type=image%2Fjpeg", url)
+        self.assertIn("q-url-param-list=response-content-type", url)
+
+    def test_query_signature_matches_manual(self) -> None:
+        """手工按腾讯 COS 规则重算签名，确认 query 参数参与签名。"""
+        secret_id = "AKIDTEST"
+        secret_key = "secret-key"
+        host = "p20-doorlock-1251222210.cos.ap-guangzhou.myqcloud.com"
+        path = "/a/b.jpg"
+        start, end = 1785670000, 1785670600
+        query_params = {"response-content-type": "image/jpeg"}
+        auth = cos_media.cos_authorization(
+            secret_id, secret_key, "get", path, host, start, end, query_params=query_params
+        )
+
+        # 独立重算
+        key_time = f"{start};{end}"
+        http_string = "get\n/a/b.jpg\nresponse-content-type=image%2Fjpeg\nhost=p20-doorlock-1251222210.cos.ap-guangzhou.myqcloud.com\n"
+        string_to_sign = f"sha1\n{key_time}\n{hashlib.sha1(http_string.encode()).hexdigest()}\n"
+        sign_key = hmac.new(
+            secret_key.encode(), key_time.encode(), hashlib.sha1
+        ).hexdigest()
+        expected_sig = hmac.new(
+            sign_key.encode(), string_to_sign.encode(), hashlib.sha1
+        ).hexdigest()
+        self.assertIn(f"q-signature={expected_sig}", auth)
+        self.assertIn("q-url-param-list=response-content-type", auth)
 
     def test_key_without_leading_slash(self) -> None:
         url = cos_media.signed_media_url(
