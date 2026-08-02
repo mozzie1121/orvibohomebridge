@@ -73,6 +73,22 @@ def download(url: str, dest: Path, timeout: int = 60) -> bool:
                 f.write(chunk)
         tmp.replace(dest)
         return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            _LOGGER.warning(
+                "录像对象不存在（可能已过期或尚未上传完成）: %s", dest.name
+            )
+        else:
+            _LOGGER.warning(
+                "录像下载 HTTP %s: %s",
+                e.code,
+                e.read(300).decode("utf-8", "replace")[:200],
+            )
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
     except (urllib.error.URLError, OSError) as e:
         _LOGGER.warning("录像下载失败: %s", e)
         try:

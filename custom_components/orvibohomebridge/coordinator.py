@@ -42,7 +42,13 @@ def _download_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
-    except Exception:  # noqa: BLE001
+    except urllib.error.HTTPError as e:
+        _LOGGER.warning(
+            "下载失败 HTTP %s: %s", e.code, e.read(300).decode("utf-8", "replace")[:200]
+        )
+        return None
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.warning("下载失败: %r", e)
         return None
 
 
@@ -946,7 +952,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if not url:
                 _LOGGER.warning("门锁截图签名 URL 获取失败 device=%s", fingerprint(device_id, self._redaction_salt))
                 return
-            image = await self.hass.async_add_executor_job(_download_bytes, url)
+            image: Optional[bytes] = None
+            # 门铃图片上传有延迟：事件先到、图片对象可能尚未就绪，重试数次
+            for attempt in range(3):
+                image = await self.hass.async_add_executor_job(_download_bytes, url)
+                if image:
+                    break
+                if attempt < 2:
+                    _LOGGER.debug("截图下载重试 %s/3 device=%s", attempt + 2, fingerprint(device_id, self._redaction_salt))
+                    await asyncio.sleep(2 * (attempt + 1))
         except Exception:  # noqa: BLE001 - 截图失败不应影响事件流
             _LOGGER.exception("门锁截图更新异常 device=%s", fingerprint(device_id, self._redaction_salt))
             return
