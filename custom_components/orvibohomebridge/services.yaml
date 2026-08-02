@@ -43,3 +43,24 @@ fetch_video:
       description: 事件里的 video_url（如 /uid/videoPicklockEvent/xxx.h264）
       required: true
       example: "/77c139c4d27f4fa6a20e1f459849aa47/videoPicklockEvent/picklockEvent_1785652830.h264"
+
+list_events:
+  name: 查询门锁事件历史
+  description: 列出历史截图/录像记录（按时间倒序），返回 media_id 供回溯播放
+  returns_response: true
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID（留空查询所有门锁）
+      required: false
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    limit:
+      name: 返回条数
+      description: 最多返回的记录数（默认 100）
+      required: false
+      example: 50

@@ -212,6 +212,27 @@ response_variable: video_result
 视频转封装使用 ffmpeg（`-c copy` 无损，秒级完成）；HA 环境通常自带，缺失时录像
 仍会以 `.h264` 原文件保存（`h264_file` 字段）。
 
+#### 事件历史回溯
+
+门铃/撬锁/离家等事件触发时，截图与录像会自动归档到
+`config/media/orvibohomebridge/<设备>/`（文件名为 `<事件类型>_<时间戳>`）。
+HA 侧边栏 → **媒体** → 媒体浏览器打开即可按时间倒序浏览全部历史记录，
+点击截图/视频即可回溯查看。
+
+也可通过服务 `orvibohomebridge.list_events` 查询结构化历史：
+
+```yaml
+action: orvibohomebridge.list_events
+data:
+  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+  limit: 50
+response_variable: history
+```
+
+返回每条记录含 `kind`（ring/picklock/leave_home 等）、`time`、`type`
+（image/video）、`file`（本地路径）与 `media_id`（媒体浏览器引用）。
+有"有人逗留"等新事件类型时也会自动归档，无需额外配置。
+
 自动化示例（按用户过滤）：
 
 ```yaml

@@ -19,6 +19,7 @@ PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "
 SERVICE_REFRESH = "refresh_devices"
 SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
 SERVICE_FETCH_VIDEO = "fetch_video"
+SERVICE_LIST_EVENTS = "list_events"
 
 # 本集成仅通过配置项使用，不读取 configuration.yaml。
 # 新版 HA 要求 empty_config_schema 传入 domain 参数。
@@ -115,6 +116,34 @@ async def async_setup(hass: HomeAssistant, config: dict):
         DOMAIN,
         SERVICE_FETCH_VIDEO,
         handle_fetch_video,
+    )
+
+    async def handle_list_events(call: ServiceCall):
+        """查询门锁事件历史（截图/录像），按时间倒序返回。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        limit = int(call.data.get("limit", 100))
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        result = []
+        for coordinator in targets:
+            result.extend(await coordinator.async_list_events(device_id, limit))
+            if len(result) >= limit:
+                result = result[:limit]
+                break
+        return {"events": result}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_EVENTS,
+        handle_list_events,
     )
     return True
 
