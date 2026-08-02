@@ -106,6 +106,17 @@
 - fixtures：`tests/fixtures/lock_v5eyes_samples.jsonl`（脱敏真实样本 11 条）。
 - 测试：新增 errorUnlock/部分更新/门铃消息/告警消息/样本冒烟，全套 117 例通过。
 
+### 第10轮：开门归属（谁开的门）（已完成代码 2026-08-02）
+
+- 事件总线新增归属字段：
+  - unlock 事件：`unlock_user_name`（配置过名称时）。
+  - door_open=True 的状态事件：`opened_by_user_id` / `opened_by_type` /
+    `opened_by_name`——把窗口内（默认 30s）最近一次开锁归属到本次开门。
+- 新服务 `orvibohomebridge.set_lock_user_name`（entry_id 可选，device_id + user_id + name，
+  name 留空清除），映射保存在内存（重启丢失，后续可持久化到 options）。
+- 开锁事件实体的 extra_state_attributes 增加 `unlock_user_name`。
+- 测试：resolve_opened_by 窗口/缺失归属 4 例，全套 128 例通过。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

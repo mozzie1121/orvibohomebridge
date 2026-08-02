@@ -334,10 +334,17 @@ class OrviboDoorLockUnlockSensor(CoordinatorEntity, BinarySensorEntity):
         state = self.coordinator.get_device_state(self._device_id)
         if not state:
             return {}
-        return {
+        attributes = {
             "unlock_type": state.get("unlock_type"),
             "unlock_user_id": state.get("unlock_user_id"),
         }
+        user_name = self.coordinator.lock_user_name(
+            self._device_id,
+            state.get("unlock_user_id"),
+        )
+        if user_name:
+            attributes["unlock_user_name"] = user_name
+        return attributes
 
     @property
     def device_info(self):

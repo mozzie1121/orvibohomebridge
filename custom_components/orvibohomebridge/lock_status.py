@@ -216,3 +216,22 @@ def normalize_message_event(payload: Any) -> Optional[dict[str, Any]]:
         "pic_url": data.get("picUrl"),
         "time": data.get("time"),
     }
+
+
+def resolve_opened_by(
+    last_unlock: Any,
+    elapsed: float,
+    window: float = 30,
+) -> Optional[dict[str, Any]]:
+    """把一次开门事件归属到窗口内最近一次开锁（返回 user_id + 开锁方式）。"""
+    if not isinstance(last_unlock, Mapping):
+        return None
+    if not isinstance(elapsed, (int, float)) or elapsed < 0 or elapsed > window:
+        return None
+    user_id = last_unlock.get("user_id")
+    if user_id is None:
+        return None
+    return {
+        "user_id": str(user_id),
+        "unlock_type": last_unlock.get("unlock_type"),
+    }

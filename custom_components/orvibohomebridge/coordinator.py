@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import secrets
+import time
 from typing import Dict, Any, Optional
 from datetime import timedelta
 from homeassistant.core import HomeAssistant
@@ -33,6 +34,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     MOTION_RESET_DELAY = 30  # 人体传感器触发后恢复延时（秒）
     EMERGENCY_RESET_DELAY = 180  # 紧急按钮触发后恢复延时（秒），3分钟
     LOCK_RESET_DELAY = 5  # 门锁门铃/开锁事件触发后恢复延时（秒）
+    LOCK_DOOR_OPEN_WINDOW = 30  # 开锁 → 开门 的归属窗口（秒）
     
     def __init__(self, hass: HomeAssistant, username: str, password: str, family_id: str = None):
         self.username = username
@@ -47,6 +49,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
         self._lock_reset_tasks: Dict[tuple, asyncio.Task] = {}  # 门锁事件复位任务
         self._last_lock_events: Dict[str, tuple] = {}  # 门锁事件去重签名
+        self._lock_user_names: Dict[str, Dict[str, str]] = {}  # device_id -> {user_id: 名称}
+        self._last_unlock: Dict[str, Dict[str, Any]] = {}  # device_id -> 最近一次开锁
         
         # 调试信息：记录最近收到的原始状态推送（仅内存，日志/诊断均脱敏）
         self._cmd42_log: list[dict] = []
@@ -759,7 +763,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def _publish_lock_event(self, device_id: str, raw_status: dict) -> None:
         """把归一化后的门锁状态/事件发布到 HA 事件总线（日志脱敏）。"""
         from .const import LOCK_EVENT
-        from .lock_status import normalize_door_lock_properties, normalize_lock_event
+        from .lock_status import (
+            normalize_door_lock_properties,
+            normalize_lock_event,
+            resolve_opened_by,
+        )
 
         lock = normalize_door_lock_properties(raw_status.get("properties"))
         event = normalize_lock_event(raw_status)
@@ -803,6 +811,30 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         }
         if event is not None:
             data.update(event)
+        # 记录最近一次开锁，供随后的开门事件归属"谁开的门"
+        if event is not None and event.get("kind") == "unlock":
+            self._last_unlock[device_id] = {
+                "user_id": event.get("unlock_user_id"),
+                "unlock_type": event.get("unlock_type"),
+                "at": time.monotonic(),
+            }
+            name = self.lock_user_name(device_id, event.get("unlock_user_id"))
+            if name:
+                data["unlock_user_name"] = name
+        # 开门事件归属：窗口内最近一次开锁的用户
+        if lock["door_open"] is True:
+            last = self._last_unlock.get(device_id)
+            opened = (
+                resolve_opened_by(last, time.monotonic() - last["at"], self.LOCK_DOOR_OPEN_WINDOW)
+                if last is not None
+                else None
+            )
+            if opened is not None:
+                data["opened_by_user_id"] = opened["user_id"]
+                data["opened_by_type"] = opened["unlock_type"]
+                name = self.lock_user_name(device_id, opened["user_id"])
+                if name:
+                    data["opened_by_name"] = name
         self.hass.bus.async_fire(LOCK_EVENT, data)
         _LOGGER.debug(
             "[门锁事件总线] device=%s locked=%s door=%s kind=%s",
@@ -811,6 +843,26 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             data.get("door_open"),
             data.get("kind"),
         )
+
+    def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:
+        """返回门锁 userId 配置的显示名称（无配置返回 None）。"""
+        if not isinstance(user_id, (str, int)):
+            return None
+        name = self._lock_user_names.get(device_id, {}).get(str(user_id))
+        return name if isinstance(name, str) and name else None
+
+    def set_lock_user_name(self, device_id: str, user_id: str, name: str) -> bool:
+        """为门锁 userId 设置/清除显示名称。"""
+        device_id = str(device_id or "")
+        user_id = str(user_id or "")
+        if not device_id or not user_id:
+            return False
+        names = self._lock_user_names.setdefault(device_id, {})
+        if name:
+            names[user_id] = str(name)
+        else:
+            names.pop(user_id, None)
+        return True
 
     def _publish_lock_message(self, device_id: str, raw_status: dict) -> None:
         """发布 cmd=82 推送消息事件（门锁文本消息/告警，日志脱敏）。"""
