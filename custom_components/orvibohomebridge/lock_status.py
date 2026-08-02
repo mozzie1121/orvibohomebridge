@@ -70,12 +70,14 @@ def normalize_door_lock_properties(properties: Any) -> dict[str, Any]:
 
     door_lock = _mapping(props.get("doorLock"))
     if door_lock:
-        # V5 Eyes（type=522/classId=463）实机验证：lockState="on" 表示"已解锁"，
-        # "off" 表示"已锁定"（解锁事件后紧跟 lockState=on，与 App 显示一致）。
+        # V5 Eyes（type=522/classId=463）实机验证（反语义，与 App 显示一致）：
+        # lockState="on"=已解锁、"off"=已锁定；
+        # insideLockState="off"=门内反锁中、"on"=反锁解除（181826 反锁/解除抓包）。
         lock_raw = _normalize_state(door_lock.get("lockState"))
         result["locked"] = None if lock_raw is None else not lock_raw
         result["door_open"] = _normalize_state(door_lock.get("doorState"))
-        result["inside_locked"] = _normalize_state(door_lock.get("insideLockState"))
+        inside_raw = _normalize_state(door_lock.get("insideLockState"))
+        result["inside_locked"] = None if inside_raw is None else not inside_raw
         result["raw"]["doorLock"] = dict(door_lock)
 
     # 形态 B 的扁平权威字段优先（部分固件两种形态同时出现）

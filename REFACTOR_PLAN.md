@@ -175,6 +175,15 @@
   传感器选项与中英翻译同步新增 `abnormal`（异常/Abnormal）。
 - fixtures 固化异常样本 1 条，冒烟测试断言含 `abnormal` 状态，全套 140 例通过。
 
+### 第10轮再修：门内反锁语义取反（已完成 2026-08-02）
+
+- 实机样本（181826 反锁/解除反锁操作）确认 `insideLockState` 与 `lockState`
+  同为反语义：`off`=门内反锁中、`on`=反锁解除（操作反锁后推送 off，
+  解除后推送 on，与原代码假设相反）。
+- `normalize_door_lock_properties` 对 `insideLockState` 取反；
+  扁平形态 `reverse_lock`（其他固件）语义不变，仍直接使用。
+- 更新两条归一化单测断言，fixtures 补充反锁解除样本，全套 141 例通过。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

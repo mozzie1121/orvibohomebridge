@@ -38,7 +38,8 @@ class DoorLockPropertyTests(unittest.TestCase):
         )
         self.assertIs(result["locked"], False)
         self.assertIs(result["door_open"], True)
-        self.assertIs(result["inside_locked"], False)
+        # 实机反锁语义：insideLockState="off"=反锁中（181826 抓包验证）
+        self.assertIs(result["inside_locked"], True)
         self.assertIsNone(result["child_locked"])
 
     def test_doorlock_morphology_locked(self) -> None:
@@ -280,7 +281,8 @@ class LockEventTests(unittest.TestCase):
         )
         self.assertIsNone(result["locked"])
         self.assertIsNone(result["door_open"])
-        self.assertIs(result["inside_locked"], True)
+        # 实机反锁语义：insideLockState="on"=反锁解除
+        self.assertIs(result["inside_locked"], False)
 
 
 class MessageEventTests(unittest.TestCase):
