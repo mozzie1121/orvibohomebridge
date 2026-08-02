@@ -31,6 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -171,6 +172,31 @@ def build_download(
     return url, headers
 
 
+def build_signed_url(token: Dict[str, Any], object_key: str, ttl: int = 600) -> str:
+    """生成浏览器可直接访问的预签名 URL（含 x-cos-security-token query）。
+
+    与集成 cos_media.signed_media_url 同算法：STS 临时凭证必须放进 URL，
+    浏览器无法携带自定义 header。
+    """
+    host = f"{token['bucket']}.cos.{token['region']}.myqcloud.com"
+    path = object_key if object_key.startswith("/") else "/" + object_key
+    sys_time = token.get("systemCurrentTime")
+    now = max(int(time.time()), int(sys_time / 1000) if sys_time else 0)
+    auth = cos_authorization(
+        token["secretId"], token["secretKey"], "get", path, host, now, now + ttl
+    )
+    token_part = f"&x-cos-security-token={quote(token['sessionToken'], safe='')}"
+    return f"https://{host}{path}?{auth}{token_part}"
+
+
+def download_url(url: str, timeout: int = 30) -> bytes:
+    """模拟浏览器直接访问（不带任何自定义 header）。"""
+    print(f"      尝试[浏览器直连] {url[:120]}...")
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
 def download(token: Dict[str, Any], object_key: str, save: str) -> None:
     print(f"[5/5] 下载 {object_key}")
     variants = [
@@ -216,6 +242,9 @@ async def main() -> int:
     parser.add_argument("--device-id", help="门锁 deviceId（w- 前缀；默认自动识别）")
     parser.add_argument("--device-uid", help="门锁 uid（无 w- 前缀；默认自动识别）")
     parser.add_argument("--list", action="store_true", help="仅列出门锁设备（不下载）")
+    parser.add_argument(
+        "--url", action="store_true", help="生成浏览器可直连的预签名 URL 并自测（不保存文件）"
+    )
     args = parser.parse_args()
 
     username = os.environ.get("ORVIBO_USERNAME") or ""
@@ -311,6 +340,13 @@ async def main() -> int:
     if not token["secretId"] or not token["bucket"]:
         print("❌ security 字段不完整")
         return 1
+
+    if args.url:
+        signed = build_signed_url(token, args.object_key)
+        print(f"[5/5] 预签名 URL（浏览器可直接打开）:\n{signed}")
+        body = download_url(signed)
+        print(f"      直连成功: {len(body)} 字节 (magic={body[:8].hex()})")
+        return 0
 
     download(token, args.object_key, args.save)
     return 0
