@@ -2,6 +2,7 @@ import logging
 import asyncio
 import secrets
 import time
+from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import timedelta
 from homeassistant.core import HomeAssistant
@@ -12,6 +13,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from .ssl_client import SSLClient
 from .https_client import HttpsClient
 from .cos_media import CosMediaManager
+from .video_archive import VideoArchiver
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .packet import get_api_host
 from .redact import fingerprint, redact_packet
@@ -53,6 +55,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.https_client = HttpsClient(username=username, password=password)
         self.ssl_client = None
         self.cos_media: Optional[CosMediaManager] = None
+        self.video_archiver: Optional[VideoArchiver] = None
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
@@ -896,7 +899,94 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 out[target] = url
             elif cos.cached_credentials(device_id) is None:
                 self.hass.async_create_task(cos.get_credentials(device_id, uid))
+            if field == "video_url":
+                self._schedule_video_archive(device_id, uid, key, url, out)
         return out
+
+    def _schedule_video_archive(
+        self,
+        device_id: str,
+        device_uid: str,
+        object_key: str,
+        signed_url: Optional[str],
+        out: Dict[str, str],
+    ) -> None:
+        """后台下载事件录像并转 MP4；事件附带预期本地路径与媒体 ID。"""
+        archiver = self.video_archiver
+        if archiver is None:
+            return
+        paths = archiver.paths_for(device_id, object_key)
+        if paths is None:
+            return
+        _h264, mp4_path = paths
+        if mp4_path.exists() and mp4_path.stat().st_size > 0:
+            out["video_file"] = str(mp4_path)
+            out["media_id"] = archiver.media_source_id(mp4_path)
+            return
+        # 预期目标（后台填充完成后即为可播放 MP4）
+        out["video_file"] = str(mp4_path)
+        if signed_url:
+            self.hass.async_create_task(
+                self._archive_video(device_id, device_uid, object_key, signed_url)
+            )
+
+    async def _archive_video(
+        self,
+        device_id: str,
+        device_uid: str,
+        object_key: str,
+        signed_url: str,
+    ) -> None:
+        """下载 + 转码（executor 中执行，避免阻塞事件循环）。"""
+        archiver = self.video_archiver
+        cos = self.cos_media
+        if archiver is None:
+            return
+        try:
+            result = await self.hass.async_add_executor_job(
+                archiver.archive, device_id, object_key, signed_url
+            )
+        except Exception as e:  # noqa: BLE001 - 归档失败不应影响事件流
+            _LOGGER.warning(
+                "录像归档失败 device=%s key=%s: %s",
+                fingerprint(device_id, self._redaction_salt),
+                object_key,
+                e,
+            )
+            return
+        if result and result.get("mp4_file") and Path(result["mp4_file"]).exists():
+            _LOGGER.info(
+                "录像已归档 device=%s -> %s",
+                fingerprint(device_id, self._redaction_salt),
+                result["mp4_file"],
+            )
+        else:
+            _LOGGER.debug("录像下载/转码未完成（无 ffmpeg 或下载失败）")
+
+    async def async_fetch_video(
+        self,
+        device_id: str,
+        object_key: str,
+        device_uid: str = "",
+    ) -> Dict[str, Any]:
+        """主动拉取事件录像：返回 {video_file, media_id, mp4_file, h264_file}。
+
+        供 orvibohomebridge.fetch_video 服务调用；凭证缺失时自动换取。
+        """
+        archiver = self.video_archiver
+        cos = self.cos_media
+        if archiver is None or cos is None:
+            return {"error": "录像归档未就绪"}
+        if not device_uid:
+            dev = self.devices.get(device_id) or {}
+            device_uid = dev.get("uid", "")
+        url = await cos.signed_url(device_id, device_uid, object_key)
+        if not url:
+            return {"error": "无法获取 COS 凭证或签名 URL"}
+        result = await self.hass.async_add_executor_job(
+            archiver.archive, device_id, object_key, url
+        )
+        return result or {"error": "录像下载失败"}
 
     def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:
         """返回门锁 userId 配置的显示名称（无配置返回 None）。"""
@@ -1346,6 +1436,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             ssl_client=self.ssl_client,
             user_id=self.https_client.user_id or "",
             family_id=self.https_client.family_id or "",
+        )
+        self.video_archiver = VideoArchiver(
+            media_root=self.hass.config.path("media"),
         )
 
     async def _prewarm_cos_credentials(self) -> None:

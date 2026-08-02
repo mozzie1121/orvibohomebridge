@@ -186,6 +186,28 @@
 
 集成启动后会在后台预取门锁 COS 凭证（36 小时有效），事件到达时即时签名。
 
+**事件录像**：带 `video_url` 的事件（撬锁/离家告警录像，`.h264` 裸流）会在后台自动
+下载并转封装为 MP4，事件附带：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `video_file` | string | 本地 MP4 路径（`config/media/orvibohomebridge/...`，转码完成后可播放） |
+| `media_id` | string | HA 媒体浏览器引用 ID（`media-source://...`） |
+
+也可通过服务 `orvibohomebridge.fetch_video` 主动拉取任意录像（返回 `video_file` /
+`media_id` / `mp4_file`）：
+
+```yaml
+action: orvibohomebridge.fetch_video
+data:
+  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+  object_key: "{{ trigger.event.data.video_url }}"
+response_variable: video_result
+```
+
+视频转封装使用 ffmpeg（`-c copy` 无损，秒级完成）；HA 环境通常自带，缺失时录像
+仍会以 `.h264` 原文件保存（`h264_file` 字段）。
+
 自动化示例（按用户过滤）：
 
 ```yaml

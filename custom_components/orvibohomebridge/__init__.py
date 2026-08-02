@@ -18,6 +18,7 @@ PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "
 
 SERVICE_REFRESH = "refresh_devices"
 SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
+SERVICE_FETCH_VIDEO = "fetch_video"
 
 # 本集成仅通过配置项使用，不读取 configuration.yaml。
 # 新版 HA 要求 empty_config_schema 传入 domain 参数。
@@ -78,6 +79,42 @@ async def async_setup(hass: HomeAssistant, config: dict):
         DOMAIN,
         SERVICE_SET_LOCK_USER_NAME,
         handle_set_lock_user_name,
+    )
+
+    async def handle_fetch_video(call: ServiceCall):
+        """拉取门锁事件录像（.h264 → MP4），返回本地路径与媒体 ID。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        object_key = str(call.data.get("object_key", ""))
+        if not device_id or not object_key:
+            _LOGGER.error("fetch_video 需要 device_id 和 object_key（事件里的 video_url）")
+            return {"error": "需要 device_id 和 object_key"}
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        for coordinator in targets:
+            result = await coordinator.async_fetch_video(
+                device_id, object_key
+            )
+            if result and "error" not in result:
+                _LOGGER.info(
+                    "录像已拉取 device=%s -> %s",
+                    str(device_id)[-12:],
+                    result.get("video_file"),
+                )
+                return result
+        return {"error": "未找到可用的配置项或拉取失败"}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FETCH_VIDEO,
+        handle_fetch_video,
     )
     return True
 
