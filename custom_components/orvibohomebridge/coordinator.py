@@ -44,8 +44,9 @@ def _download_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
     except urllib.error.HTTPError as e:
+        err_body = e.read(600).decode("utf-8", "replace")
         _LOGGER.warning(
-            "下载失败 HTTP %s: %s", e.code, e.read(300).decode("utf-8", "replace")[:200]
+            "下载失败 HTTP %s: %s", e.code, err_body[:500]
         )
         return None
     except Exception as e:  # noqa: BLE001
