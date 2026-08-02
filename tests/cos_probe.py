@@ -129,12 +129,27 @@ def cos_authorization(
     host: str,
     start: int,
     end: int,
+    query_params: Optional[Dict[str, str]] = None,
 ) -> str:
-    """COS 签名 v5（q-sign-algorithm=sha1）。"""
+    """COS 签名 v5（q-sign-algorithm=sha1）。
+
+    query_params 参与签名（如 response-content-type），按 URL 编码后的
+    参数名排序；签名参数自身与 x-cos-security-token 不参与计算。
+    """
     key_time = f"{start};{end}"
     sign_key = _hmac_hex(secret_key, key_time, hashlib.sha1)
     # 注意：单 header 时末尾不带 &（服务端 FormatString 实测确认）
-    http_string = f"{method.lower()}\n{path}\n\nhost={host}\n"
+    query_part = ""
+    q_url_param_list = ""
+    if query_params:
+        encoded = {
+            urllib.parse.quote(str(k), safe="-"): urllib.parse.quote(str(v), safe="")
+            for k, v in query_params.items()
+        }
+        items = sorted(encoded.items())
+        query_part = "&".join(f"{k}={v}" for k, v in items)
+        q_url_param_list = ";".join(k for k, _ in items)
+    http_string = f"{method.lower()}\n{path}\n{query_part}\nhost={host}\n"
     # COS 官方算法：StringToSign = "sha1\n{key_time}\n{sha1(HttpString)}\n"
     # 注意末尾必须带换行（SignatureDoesNotMatch 错误体与官方文档双重确认）
     string_to_sign = (
@@ -143,7 +158,7 @@ def cos_authorization(
     signature = _hmac_hex(sign_key, string_to_sign, hashlib.sha1)
     return (
         f"q-sign-algorithm=sha1&q-ak={secret_id}&q-sign-time={key_time}"
-        f"&q-key-time={key_time}&q-header-list=host&q-url-param-list="
+        f"&q-key-time={key_time}&q-header-list=host&q-url-param-list={q_url_param_list}"
         f"&q-signature={signature}"
     )
 

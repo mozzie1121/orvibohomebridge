@@ -172,21 +172,53 @@ def build_download(
     return url, headers
 
 
+_CONTENT_TYPE_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".h264": "video/h264",
+    ".mp4": "video/mp4",
+}
+
+
 def build_signed_url(token: Dict[str, Any], object_key: str, ttl: int = 600) -> str:
     """生成浏览器可直接访问的预签名 URL（含 x-cos-security-token query）。
 
-    与集成 cos_media.signed_media_url 同算法：STS 临时凭证必须放进 URL，
-    浏览器无法携带自定义 header。
+    与集成 cos_media.signed_media_url 同算法：STS 临时凭证必须放进 URL；
+    COS 存储的 Content-Type 可能是 text/html，需用 response-content-type
+    覆盖（该参数参与签名）。
     """
     host = f"{token['bucket']}.cos.{token['region']}.myqcloud.com"
     path = object_key if object_key.startswith("/") else "/" + object_key
     sys_time = token.get("systemCurrentTime")
     now = max(int(time.time()), int(sys_time / 1000) if sys_time else 0)
+    dot = object_key.rfind(".")
+    content_type = _CONTENT_TYPE_BY_EXT.get(object_key[dot:].lower()) if dot >= 0 else None
+    query_params: Dict[str, str] = {}
+    if content_type:
+        query_params["response-content-type"] = content_type
     auth = cos_authorization(
-        token["secretId"], token["secretKey"], "get", path, host, now, now + ttl
+        token["secretId"],
+        token["secretKey"],
+        "get",
+        path,
+        host,
+        now,
+        now + ttl,
+        query_params=query_params or None,
     )
+    query_prefix = ""
+    if query_params:
+        encoded = {
+            quote(str(k), safe="-"): quote(str(v), safe="")
+            for k, v in query_params.items()
+        }
+        query_prefix = "&".join(f"{k}={v}" for k, v in sorted(encoded.items())) + "&"
     token_part = f"&x-cos-security-token={quote(token['sessionToken'], safe='')}"
-    return f"https://{host}{path}?{auth}{token_part}"
+    return f"https://{host}{path}?{query_prefix}{auth}{token_part}"
 
 
 def download_url(url: str, timeout: int = 30) -> bytes:
@@ -194,7 +226,13 @@ def download_url(url: str, timeout: int = 30) -> bytes:
     print(f"      尝试[浏览器直连] {url[:120]}...")
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        body = resp.read()
+        print(
+            f"      Content-Type: {resp.headers.get('Content-Type')} | "
+            f"Content-Length: {resp.headers.get('Content-Length')} | "
+            f"Content-Disposition: {resp.headers.get('Content-Disposition') or '-'}"
+        )
+        return body
 
 
 def download(token: Dict[str, Any], object_key: str, save: str) -> None:

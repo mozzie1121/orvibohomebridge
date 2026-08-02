@@ -40,18 +40,33 @@ def cos_authorization(
     host: str,
     start: int,
     end: int,
+    query_params: Optional[Mapping[str, str]] = None,
 ) -> str:
-    """COS 签名 v5（与 tests/cos_probe.py 同算法，实机验证通过）。"""
+    """COS 签名 v5（与 tests/cos_probe.py 同算法，实机验证通过）。
+
+    query_params 参与签名（如 response-content-type），按 URL 编码后的
+    参数名排序；签名参数自身与 x-cos-security-token 不参与计算。
+    """
     key_time = f"{start};{end}"
     sign_key = _hmac_hex(secret_key, key_time, hashlib.sha1)
-    http_string = f"{method.lower()}\n{path}\n\nhost={host}\n"
+    query_part = ""
+    q_url_param_list = ""
+    if query_params:
+        encoded = {
+            quote(str(k), safe="-"): quote(str(v), safe="")
+            for k, v in query_params.items()
+        }
+        items = sorted(encoded.items())
+        query_part = "&".join(f"{k}={v}" for k, v in items)
+        q_url_param_list = ";".join(k for k, _ in items)
+    http_string = f"{method.lower()}\n{path}\n{query_part}\nhost={host}\n"
     string_to_sign = (
         f"sha1\n{key_time}\n{hashlib.sha1(http_string.encode()).hexdigest()}\n"
     )
     signature = _hmac_hex(sign_key, string_to_sign, hashlib.sha1)
     return (
         f"q-sign-algorithm=sha1&q-ak={secret_id}&q-sign-time={key_time}"
-        f"&q-key-time={key_time}&q-header-list=host&q-url-param-list="
+        f"&q-key-time={key_time}&q-header-list=host&q-url-param-list={q_url_param_list}"
         f"&q-signature={signature}"
     )
 
@@ -71,6 +86,26 @@ class CosCredentials:
     @property
     def valid(self) -> bool:
         return time.time() < self.expires_at - _RENEW_LEAD_TIME
+
+
+_CONTENT_TYPE_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".h264": "video/h264",
+    ".mp4": "video/mp4",
+}
+
+
+def _infer_content_type(object_key: str) -> Optional[str]:
+    """按对象键扩展名推断 Content-Type（用于 response-content-type 覆盖）。"""
+    dot = object_key.rfind(".")
+    if dot < 0:
+        return None
+    return _CONTENT_TYPE_BY_EXT.get(object_key[dot:].lower())
 
 
 def parse_cos_response(resp: Mapping[str, Any]) -> Optional[CosCredentials]:
@@ -122,21 +157,42 @@ def signed_media_url(
     creds: CosCredentials,
     object_key: str,
     ttl: int = 600,
+    content_type: Optional[str] = None,
 ) -> str:
     """把 COS 对象键签成临时可访问 URL（预签名 URL 格式）。
 
     STS 临时凭证必须把 x-cos-security-token 放进 URL query（浏览器无法带
     自定义 header），否则直接访问会 AccessDenied。该参数不参与签名计算。
+    COS 存储的 Content-Type 可能是 text/html（实测），导致浏览器把图片
+    当文本渲染；通过 response-content-type 参数覆盖响应头（参与签名）。
     """
     host = f"{creds.bucket}.cos.{creds.region}.myqcloud.com"
     path = object_key if object_key.startswith("/") else "/" + object_key
     now = max(int(time.time()), int(creds.system_time_ms / 1000) if creds.system_time_ms else 0)
     duration = min(ttl, max(1, int(creds.expires_at - now - _RENEW_LEAD_TIME)))
+    content_type = content_type or _infer_content_type(object_key)
+    query_params: dict[str, str] = {}
+    if content_type:
+        query_params["response-content-type"] = content_type
     auth = cos_authorization(
-        creds.secret_id, creds.secret_key, "get", path, host, now, now + duration
+        creds.secret_id,
+        creds.secret_key,
+        "get",
+        path,
+        host,
+        now,
+        now + duration,
+        query_params=query_params or None,
     )
+    query_prefix = ""
+    if query_params:
+        encoded = {
+            quote(str(k), safe="-"): quote(str(v), safe="")
+            for k, v in query_params.items()
+        }
+        query_prefix = "&".join(f"{k}={v}" for k, v in sorted(encoded.items())) + "&"
     token_part = f"&x-cos-security-token={quote(creds.session_token, safe='')}"
-    return f"https://{host}{path}?{auth}{token_part}"
+    return f"https://{host}{path}?{query_prefix}{auth}{token_part}"
 
 
 class CosMediaManager:
