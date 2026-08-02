@@ -46,6 +46,7 @@ from orvibohomebridge.packet import HomematePacket  # noqa: E402
 LOGGER = logging.getLogger("temp_pwd_probe")
 CMD_TEMP_PWD = 246
 CMD_DELETE_AUTH = 247
+CMD_QUERY_LIST = 171
 
 
 class TempPwdSsl(Ssl):
@@ -196,6 +197,66 @@ class TempPwdSsl(Ssl):
         LOGGER.error("等待 cmd=247 响应超时")
         return None
 
+    async def query_authorization_list(
+        self,
+        family_id: str,
+        timeout: float = 15.0,
+    ) -> Optional[Dict[str, Any]]:
+        """发送 cmd=171 查询授权/消息列表，返回原始响应（供确认结构）。"""
+        payload = {
+            "familyId": family_id,
+            "lastUpdateTime": 0,
+            "start": 0,
+            "limit": 50,
+            "cmd": CMD_QUERY_LIST,
+            "serial": generate_serial(),
+            "clientType": 1,
+            "uniSerial": generate_serial(use_time=True),
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
+        LOGGER.info("cmd=171 已发送: family=%s", family_id)
+        await self._send(payload, self.key)
+
+        deadline = time.time() + timeout
+        collected = []
+        while time.time() < deadline:
+            try:
+                hdr = await asyncio.wait_for(self.r.readexactly(42), timeout=5)
+                ln = HomematePacket.parse_length(hdr)
+                body = await asyncio.wait_for(self.r.readexactly(ln - 42), timeout=10)
+            except asyncio.TimeoutError:
+                continue
+            except (asyncio.IncompleteReadError, ConnectionError, OSError):
+                LOGGER.error("SSL 连接中断")
+                break
+            try:
+                pkt = HomematePacket(
+                    hdr + body, {(self.sid or ""): self.key or DEFAULT_KEY.encode()}
+                )
+            except Exception:
+                continue
+            d = pkt.json_payload
+            if not isinstance(d, dict):
+                continue
+            cmd = d.get("cmd")
+            if cmd == CMD_HELLO:
+                kv = d.get("key")
+                if kv:
+                    self.key, self.sid = str(kv).encode(), bytes(pkt.session_id).decode()
+                continue
+            if cmd in (CMD_LOGIN, CMD_HEARTBEAT, CMD_HANDSHAKE):
+                continue
+            if cmd == CMD_QUERY_LIST or "authorizedUnlock" in json.dumps(d):
+                collected.append(d)
+                if cmd == CMD_QUERY_LIST:
+                    break
+        if not collected:
+            LOGGER.error("未收到 cmd=171 响应")
+            return None
+        return collected
+
 
 def extract_password(resp: Dict[str, Any]) -> Optional[str]:
     """从响应里提取临时密码（code 或 authorizedUnlock.password）。"""
@@ -234,6 +295,7 @@ async def main() -> int:
     parser.add_argument("--end", default="", help="结束时间 yyyy-MM-dd HH:mm（type=1 用，替代默认 now+minutes）")
     parser.add_argument("--phone", default="", help="下发时同步短信通知的手机号（可选）")
     parser.add_argument("--delete", type=int, default=0, help="删除指定 authorizedId 的授权（不下发）")
+    parser.add_argument("--list-auth", action="store_true", help="查询授权/消息列表（cmd=171，打印原始响应）")
     parser.add_argument(
         "--list", action="store_true", help="仅列出门锁信息（预留，暂未实现 cmd171 查询）"
     )
@@ -296,6 +358,22 @@ async def main() -> int:
             return 0
         print(f"删除失败 status={resp.get('status')}")
         return 1
+
+    if args.list_auth:
+        sslc = TempPwdSsl(api.username, api.password, fid)
+        if not await sslc.connect():
+            print("SSL 连接/登录失败")
+            await api.close()
+            return 1
+        result = await sslc.query_authorization_list(fid)
+        await sslc.close()
+        await api.close()
+        if not result:
+            print("无响应")
+            return 1
+        for item in result:
+            print(json.dumps(item, ensure_ascii=False)[:1200])
+        return 0
 
     name = args.name or f"临时用户 {time.strftime('%m%d%H%M')}"
     sslc = TempPwdSsl(api.username, api.password, fid)
