@@ -92,9 +92,9 @@
         "door_lock_state": {
             "name": "锁状态",
             "state": {
-                "locked": "上锁",
+                "locked": "已上锁",
                 "unlocked": "未上锁",
-                "inside_locked": "门内反锁",
+                "inside_locked": "门内已反锁",
                 "abnormal": "异常"
             }
         }
