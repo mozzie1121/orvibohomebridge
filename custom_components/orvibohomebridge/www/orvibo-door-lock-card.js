@@ -305,7 +305,11 @@ class OrviboDoorLockCard extends HTMLElement {
   }
 }
 
-customElements.define("orvibo-door-lock-card", OrviboDoorLockCard);
+if (!customElements.get("orvibo-door-lock-card")) {
+  customElements.define("orvibo-door-lock-card", OrviboDoorLockCard);
+} else {
+  console.warn("orvibo-door-lock-card 已定义，跳过重复注册");
+}
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "orvibo-door-lock-card",
