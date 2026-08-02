@@ -133,9 +133,13 @@ def cos_authorization(
     """COS 签名 v5（q-sign-algorithm=sha1）。"""
     key_time = f"{start};{end}"
     sign_key = _hmac_hex(secret_key, key_time, hashlib.sha1)
-    http_headers = f"host={host}&"
-    http_string = f"{method.lower()}\n{path}\n\n{http_headers}\n"
-    string_to_sign = hashlib.sha1(http_string.encode()).hexdigest()
+    # 注意：单 header 时末尾不带 &（服务端 FormatString 实测确认）
+    http_string = f"{method.lower()}\n{path}\n\nhost={host}\n"
+    # COS 服务端校验的 StringToSign 是三段式：sha1\n{key_time}\n{sha1(HttpString)}
+    # （SignatureDoesNotMatch 错误体直接给出了该格式）
+    string_to_sign = (
+        f"sha1\n{key_time}\n{hashlib.sha1(http_string.encode()).hexdigest()}"
+    )
     signature = _hmac_hex(sign_key, string_to_sign, hashlib.sha1)
     return (
         f"q-sign-algorithm=sha1&q-ak={secret_id}&q-sign-time={key_time}"
@@ -235,6 +239,20 @@ def selftest() -> None:
     assert headers2["Authorization"] != auth
     # create_sign 与集成 packet.create_sign 同方案（可离线复算校验格式）
     assert len(create_sign({"a": "1", "b": "2"})) == 64
+    # 用服务器错误体中的真实 FormatString 反推校验 HttpString 构造
+    # （cffc68e3... 即服务端给出的 sha1(HttpString)）
+    path = "/77c139c4d27f4fa6a20e1f459849aa47/picturePicklockEvent/picklockEvent_1785652830.jpg"
+    host = "familypic-cn-1251222210.cos.ap-guangzhou.myqcloud.com"
+    http_string = f"get\n{path}\n\nhost={host}\n"
+    assert (
+        hashlib.sha1(http_string.encode()).hexdigest()
+        == "cffc68e3aba2b1e672f079faffc9895fa3702d48"
+    )
+    # StringToSign 三段式格式自检
+    auth2 = cos_authorization(
+        "AKIDEXAMPLE", "x" * 40, "get", path, host, 1785667760, 1785797360
+    )
+    assert "q-sign-time=1785667760;1785797360" in auth2
     print("selftest OK: COS 签名 v5 结构/确定性校验通过")
 
 
