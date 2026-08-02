@@ -55,7 +55,7 @@
         "step": {
             "init": {
                 "title": "Orvibo 配置",
-                "menu": {
+                "menu_options": {
                     "devices": "选择设备",
                     "lock_users": "锁用户映射"
                 }
