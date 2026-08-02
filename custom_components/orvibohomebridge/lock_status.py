@@ -258,3 +258,12 @@ def derive_lock_status(
     if locked is False:
         return "unlocked"
     return None
+
+
+def format_unlock_label(user_id: Any, name: Optional[str]) -> str:
+    """生成"xxx开门"显示文本（未配置名称时回退为 用户{id}）。"""
+    if name and str(name).strip():
+        return f"{name}开门"
+    if user_id not in (None, ""):
+        return f"用户{user_id}开门"
+    return "无"

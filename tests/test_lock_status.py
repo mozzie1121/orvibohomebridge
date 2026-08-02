@@ -391,5 +391,16 @@ class LockStatusDerivationTests(unittest.TestCase):
         self.assertIsNone(lock_status.derive_lock_status(None, None, None))
 
 
+class UnlockLabelTests(unittest.TestCase):
+    def test_named_user(self) -> None:
+        self.assertEqual(lock_status.format_unlock_label(2, "张三"), "张三开门")
+
+    def test_unnamed_user_falls_back_to_id(self) -> None:
+        self.assertEqual(lock_status.format_unlock_label(2, None), "用户2开门")
+
+    def test_no_event_yet(self) -> None:
+        self.assertEqual(lock_status.format_unlock_label(None, None), "无")
+
+
 if __name__ == "__main__":
     unittest.main()
