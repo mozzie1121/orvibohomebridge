@@ -121,6 +121,8 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
     async def handle_list_events(call: ServiceCall):
         """查询门锁事件历史（截图/录像），按时间倒序返回。"""
+        from pathlib import Path
+
         entry_id = call.data.get("entry_id")
         device_id = str(call.data.get("device_id", ""))
         limit = int(call.data.get("limit", 100))
@@ -139,7 +141,21 @@ async def async_setup(hass: HomeAssistant, config: dict):
             if len(result) >= limit:
                 result = result[:limit]
                 break
-        return {"events": result}
+        media_root = Path(hass.config.path("media"))
+        history_root = media_root / "orvibohomebridge"
+
+        def _scan_device_dirs() -> list[str]:
+            if not history_root.is_dir():
+                return []
+            return sorted(d.name for d in history_root.iterdir() if d.is_dir())
+
+        device_dirs = await hass.async_add_executor_job(_scan_device_dirs)
+        return {
+            "events": result,
+            "media_root": str(media_root),
+            "history_root": str(history_root),
+            "device_dirs": device_dirs,
+        }
 
     hass.services.async_register(
         DOMAIN,
