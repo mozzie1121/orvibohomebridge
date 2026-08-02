@@ -24,6 +24,7 @@ from .const import (
     SYS_VERSION, HARDWARE_VERSION, LANGUAGE, PHONE_NAME, DEBUG_INFO,
     CMD_HELLO, CMD_LOGIN, CMD_CONTROL, CMD_HEARTBEAT,
     CMD_CLOTHES_HORSE_CONTROL, CMD_CLOTHES_HORSE_QUERY,
+    CMD_COS_AUTH,
 )
 
 # 当前 HTTPS API 主机（模块级，可在运行时切换：中国区/国际区）
@@ -729,6 +730,39 @@ class HomemateJsonData:
         uniSerial = generate_serial(use_time=True)
         payload = {
             "cmd": CMD_HEARTBEAT,
+            "serial": serial,
+            "clientType": 1,
+            "uniSerial": uniSerial,
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
+        return payload
+
+    @classmethod
+    def ssl_cos_auth(cls, user_id: str, device_id: str, device_uid: str, family_id: str):
+        """构建门锁媒体授权请求(cmd=313, Skill.GetCOSAuthorization)。
+
+        与智家365 App 的 AbstractC0003b.m28V 一致：
+        内层 JSON 字符串含 namespace/requestId/version/userId/deviceId/
+        familyId/uid/type=lock，外层再包一层 {"request": "<内层 JSON>"}。
+        响应 QueryTxAuthResponse.security 提供门锁专用 COS 桶凭证。
+        """
+        serial = generate_serial()
+        uniSerial = generate_serial(use_time=True)
+        inner = {
+            "namespace": "Skill.GetCOSAuthorization",
+            "requestId": generate_uuid(),
+            "version": 1,
+            "userId": user_id,
+            "deviceId": device_id,
+            "familyId": family_id,
+            "uid": device_uid,
+            "type": "lock",
+        }
+        payload = {
+            "request": json.dumps(inner, separators=(",", ":")),
+            "cmd": CMD_COS_AUTH,
             "serial": serial,
             "clientType": 1,
             "uniSerial": uniSerial,
