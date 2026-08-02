@@ -70,7 +70,10 @@ def normalize_door_lock_properties(properties: Any) -> dict[str, Any]:
 
     door_lock = _mapping(props.get("doorLock"))
     if door_lock:
-        result["locked"] = _normalize_state(door_lock.get("lockState"))
+        # V5 Eyes（type=522/classId=463）实机验证：lockState="on" 表示"已解锁"，
+        # "off" 表示"已锁定"（解锁事件后紧跟 lockState=on，与 App 显示一致）。
+        lock_raw = _normalize_state(door_lock.get("lockState"))
+        result["locked"] = None if lock_raw is None else not lock_raw
         result["door_open"] = _normalize_state(door_lock.get("doorState"))
         result["inside_locked"] = _normalize_state(door_lock.get("insideLockState"))
         result["raw"]["doorLock"] = dict(door_lock)
