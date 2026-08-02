@@ -9,5 +9,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/mozzie1121/orvibohomebridge/issues",
   "requirements": ["aiohttp", "cryptography"],
-  "version": "0.3.8"
+  "version": "0.4.0"
 }
