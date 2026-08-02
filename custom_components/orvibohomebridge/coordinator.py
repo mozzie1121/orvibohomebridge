@@ -915,28 +915,54 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 self.hass.async_create_task(cos.get_credentials(device_id, uid))
             if field == "video_url":
                 self._schedule_video_archive(device_id, uid, key, url, out)
-        snapshot_url = out.get("pic_media_url") or out.get("doorbell_media_url")
-        if snapshot_url:
+        snapshot_key = event.get("pic_url") or event.get("doorbell_url")
+        if snapshot_key:
             self.hass.async_create_task(
-                self._update_lock_snapshot(device_id, snapshot_url)
+                self._update_lock_snapshot(device_id, uid, snapshot_key)
             )
         return out
 
     def register_lock_camera(self, device_id: str, camera: Any) -> None:
         """camera 平台实体注册（device_id → 实体），事件截图推送用。"""
         self._lock_cameras[device_id] = camera
+        _LOGGER.debug("门锁截图实体已注册 device=%s", fingerprint(device_id, self._redaction_salt))
 
-    async def _update_lock_snapshot(self, device_id: str, url: str) -> None:
-        """下载最新事件截图并推送到门锁 camera 实体。"""
+    async def _update_lock_snapshot(
+        self, device_id: str, device_uid: str, object_key: str
+    ) -> None:
+        """获取凭证 → 签名 URL → 下载截图 → 推送门锁 camera 实体。"""
         camera = self._lock_cameras.get(device_id)
         if camera is None:
+            _LOGGER.debug(
+                "门锁截图实体未注册，跳过截图更新 device=%s",
+                fingerprint(device_id, self._redaction_salt),
+            )
+            return
+        cos = self.cos_media
+        if cos is None:
             return
         try:
+            url = await cos.signed_url(device_id, device_uid, object_key)
+            if not url:
+                _LOGGER.warning("门锁截图签名 URL 获取失败 device=%s", fingerprint(device_id, self._redaction_salt))
+                return
             image = await self.hass.async_add_executor_job(_download_bytes, url)
         except Exception:  # noqa: BLE001 - 截图失败不应影响事件流
+            _LOGGER.exception("门锁截图更新异常 device=%s", fingerprint(device_id, self._redaction_salt))
             return
         if image:
             await camera.async_set_image(image)
+            _LOGGER.info(
+                "门锁截图已更新 device=%s bytes=%s",
+                fingerprint(device_id, self._redaction_salt),
+                len(image),
+            )
+        else:
+            _LOGGER.warning(
+                "门锁截图下载为空 device=%s key=%s",
+                fingerprint(device_id, self._redaction_salt),
+                object_key,
+            )
 
     def _schedule_video_archive(
         self,
