@@ -11,6 +11,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .ssl_client import SSLClient
 from .https_client import HttpsClient
+from .cos_media import CosMediaManager
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .packet import get_api_host
 from .redact import fingerprint, redact_packet
@@ -51,6 +52,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         self.https_client = HttpsClient(username=username, password=password)
         self.ssl_client = None
+        self.cos_media: Optional[CosMediaManager] = None
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
@@ -851,6 +853,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 name = self.lock_user_name(device_id, opened["user_id"])
                 if name:
                     data["opened_by_name"] = name
+        if event is not None:
+            data.update(self._attach_media_urls(device_id, raw_status, event))
         self.hass.bus.async_fire(LOCK_EVENT, data)
         _LOGGER.debug(
             "[门锁事件总线] device=%s locked=%s door=%s kind=%s",
@@ -859,6 +863,40 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             data.get("door_open"),
             data.get("kind"),
         )
+
+    def _attach_media_urls(
+        self,
+        device_id: str,
+        raw_status: dict,
+        event: dict,
+    ) -> Dict[str, str]:
+        """把事件里的 COS 对象键签成临时 URL（media_url/pic_media_url/doorbell_media_url）。
+
+        使用已缓存的门锁 COS 凭证同步签名（零网络等待）；无有效凭证时
+        触发后台刷新（cmd=313，36 小时有效），本轮事件不阻塞。
+        """
+        cos = self.cos_media
+        if cos is None or not event:
+            return {}
+        uid = raw_status.get("uid") or event.get("uid") or ""
+        if not uid:
+            dev = self.devices.get(device_id) or {}
+            uid = dev.get("uid", "")
+        out: Dict[str, str] = {}
+        for field, target in (
+            ("video_url", "media_url"),
+            ("pic_url", "pic_media_url"),
+            ("doorbell_url", "doorbell_media_url"),
+        ):
+            key = event.get(field)
+            if not key:
+                continue
+            url = cos.try_signed_url(device_id, uid, key)
+            if url:
+                out[target] = url
+            elif cos.cached_credentials(device_id) is None:
+                self.hass.async_create_task(cos.get_credentials(device_id, uid))
+        return out
 
     def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:
         """返回门锁 userId 配置的显示名称（无配置返回 None）。"""
@@ -894,6 +932,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if event is None:
             return
         event["device_id"] = device_id or event.get("device_id")
+        event.update(self._attach_media_urls(device_id, raw_status, event))
         self.hass.bus.async_fire(LOCK_EVENT, event)
         _LOGGER.debug(
             "[门锁消息] device=%s kind=%s is_alarm=%s text=%s",
@@ -1056,6 +1095,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     )
                 if ssl_ok:
                     await self._query_clothes_horse_initial_status()
+                    # 后台预热门锁 COS 媒体凭证，事件到达时可直接签名出 URL
+                    self.hass.async_create_task(self._prewarm_cos_credentials())
                 else:
                     _LOGGER.warning(
                         "SSL 连接/登录未就绪（非认证拒绝），将在后台重试"
@@ -1301,6 +1342,29 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             on_status_update=on_status_update,
             on_session_id_obtained=on_session_id_obtained,
         )
+        self.cos_media = CosMediaManager(
+            ssl_client=self.ssl_client,
+            user_id=self.https_client.user_id or "",
+            family_id=self.https_client.family_id or "",
+        )
+
+    async def _prewarm_cos_credentials(self) -> None:
+        """后台预热所有门锁的 COS 媒体凭证（cmd=313，36 小时有效）。"""
+        cos = self.cos_media
+        if cos is None:
+            return
+        for device_id, device in self.devices.items():
+            if classify_device(device) != DeviceCategory.DOOR_LOCK:
+                continue
+            uid = device.get("uid", "")
+            try:
+                await cos.get_credentials(device_id, uid)
+            except Exception as e:  # noqa: BLE001 - 预热失败不应阻断启动
+                _LOGGER.warning(
+                    "门锁媒体凭证预热失败 device=%s: %s",
+                    fingerprint(device_id, self._redaction_salt),
+                    e,
+                )
 
     async def _query_clothes_horse_initial_status(self) -> None:
         """SSL 登录成功后，对所有晾衣架设备下发 cmd=100 查询初始状态。"""

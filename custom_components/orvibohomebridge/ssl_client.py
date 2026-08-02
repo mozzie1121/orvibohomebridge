@@ -14,6 +14,7 @@ from .const import (
     SSL_MAX_RECONNECT_ATTEMPTS,
     CMD_HELLO, CMD_LOGIN, CMD_STATE_UPDATE, CMD_CONTROL, CMD_HEARTBEAT, CMD_HANDSHAKE,
     CMD_CLOTHES_HORSE_CONTROL, CMD_CLOTHES_HORSE_STATE, CMD_CLOTHES_HORSE_QUERY,
+    CMD_COS_AUTH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,6 +71,9 @@ class SSLClient:
         self._pending_control: dict[str, asyncio.Event] = {}
         # device_id → 完整的 cmd=42 dict
         self._pending_results: dict[str, dict] = {}
+        # COS 授权等待机制：cmd=313 响应（Skill.GetCOSAuthorization）
+        self._pending_cos: Optional[asyncio.Event] = None
+        self._pending_cos_result: Optional[dict] = None
         # 控制响应超时（秒）
         self._control_response_timeout: float = 3.0
         # 登录等待机制
@@ -638,6 +642,43 @@ class SSLClient:
         await self._send_packet(payload, self.session_key)
         return True
 
+    async def send_cos_auth(
+        self,
+        user_id: str,
+        device_id: str,
+        device_uid: str,
+        timeout: float = 15.0,
+    ) -> Optional[dict]:
+        """请求门锁媒体 COS 凭证（cmd=313, Skill.GetCOSAuthorization）。
+
+        返回完整响应 dict（含 response 字段，值为 QueryTxAuthResponse JSON
+        字符串）；超时或连接失败返回 None。凭证由调用方缓存。
+        """
+        await self.connect_and_login()
+        if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
+            _LOGGER.debug("会话密钥无效，无法请求 COS 授权")
+            return None
+        payload = HomemateJsonData.ssl_cos_auth(
+            user_id=user_id,
+            device_id=device_id,
+            device_uid=device_uid,
+            family_id=self.family_id,
+        )
+        event = asyncio.Event()
+        self._pending_cos = event
+        self._pending_cos_result = None
+        try:
+            _LOGGER.debug("发送 COS 授权请求 device=%s", device_id)
+            await self._send_packet(payload, self.session_key)
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return self._pending_cos_result
+        except asyncio.TimeoutError:
+            _LOGGER.debug("等待 COS 授权响应超时")
+            return None
+        finally:
+            self._pending_cos = None
+            self._pending_cos_result = None
+
     async def _wait_for_control_response(self, device_id: str, timeout: float | None = None) -> dict | None:
         """发送控制后等待设备返回 cmd=42 状态响应。
 
@@ -736,6 +777,13 @@ class SSLClient:
                     # 门锁事件（unlockEvent/errorUnlockEvent/picklockEvent/
                     # leaveHomeEvent/doorUnclose/doorbell ring）走同一状态通道
                     await self._handle_state_update(data)
+                elif cmd == CMD_COS_AUTH:
+                    # Skill.GetCOSAuthorization 响应（门锁媒体 COS 凭证）
+                    if self._pending_cos is not None:
+                        self._pending_cos_result = data
+                        self._pending_cos.set()
+                    else:
+                        _LOGGER.debug("收到未期待的 cmd=313 响应")
                 elif cmd in (CMD_HEARTBEAT, CMD_HANDSHAKE):
                     continue
                 else:
