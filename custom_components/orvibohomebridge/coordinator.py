@@ -908,6 +908,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if not uid:
             dev = self.devices.get(device_id) or {}
             uid = dev.get("uid", "")
+        # time 字段可能为 None（而非缺失），统一兜底为当前时间戳
+        event_ts = event.get("time") or int(time.time())
         out: Dict[str, str] = {}
         for field, target in (
             ("video_url", "media_url"),
@@ -930,7 +932,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     url,
                     out,
                     event.get("kind", "event"),
-                    event.get("time", int(time.time())),
+                    event_ts,
                 )
         snapshot_key = event.get("pic_url") or event.get("doorbell_url")
         if snapshot_key:
@@ -940,7 +942,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     uid,
                     snapshot_key,
                     event.get("kind", "event"),
-                    event.get("time", int(time.time())),
+                    event_ts,
                 )
             )
         return out
@@ -988,11 +990,13 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             return
         if image:
             try:
-                save_snapshot(
-                    history_dir(self.hass.config.path("media"), device_id),
-                    kind,
-                    ts,
-                    image,
+                await self.hass.async_add_executor_job(
+                    lambda: save_snapshot(
+                        history_dir(self.hass.config.path("media"), device_id),
+                        kind,
+                        ts,
+                        image,
+                    )
                 )
             except OSError as e:
                 _LOGGER.warning("截图落盘失败: %s", e)
