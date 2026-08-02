@@ -8,7 +8,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN, CONF_FAMILY_ID
+from .const import DOMAIN, CONF_FAMILY_ID, CONF_LOCK_USER_NAMES
 from .coordinator import OrviboMeshCoordinator
 from .selection import CONF_DEVICE_AREAS, selected_device_ids
 
@@ -87,7 +87,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     password = entry.data[CONF_PASSWORD]
     family_id = entry.data.get(CONF_FAMILY_ID)
 
-    coordinator = OrviboMeshCoordinator(hass, username, password, family_id)
+    coordinator = OrviboMeshCoordinator(
+        hass,
+        username,
+        password,
+        family_id,
+        lock_user_names=entry.options.get(CONF_LOCK_USER_NAMES),
+    )
 
     try:
         _LOGGER.info("开始设置 Orvibo Mesh...")

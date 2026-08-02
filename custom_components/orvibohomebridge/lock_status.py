@@ -267,3 +267,35 @@ def format_unlock_label(user_id: Any, name: Optional[str]) -> str:
     if user_id not in (None, ""):
         return f"用户{user_id}开门"
     return "无"
+
+
+def parse_lock_user_names(text: Any) -> dict[str, str]:
+    """解析多行"用户ID=名称"文本为映射，兼容冒号分隔，忽略空行/坏行。"""
+    result: dict[str, str] = {}
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        separator = "=" if "=" in line else (":" if ":" in line else None)
+        if separator is None:
+            continue
+        user_id, name = line.split(separator, 1)
+        user_id = user_id.strip()
+        name = name.strip()
+        if user_id and name:
+            result[user_id] = name
+    return result
+
+
+def format_lock_user_names(mapping: Any) -> str:
+    """把映射格式化为多行"用户ID=名称"，数字 ID 优先排序。"""
+    if not isinstance(mapping, Mapping):
+        return ""
+    def sort_key(item: tuple[str, Any]) -> tuple[int, str]:
+        user_id = str(item[0])
+        return (0 if user_id.isdigit() else 1, user_id)
+
+    return "\n".join(
+        f"{user_id}={name}"
+        for user_id, name in sorted(mapping.items(), key=sort_key)
+    )

@@ -402,5 +402,29 @@ class UnlockLabelTests(unittest.TestCase):
         self.assertEqual(lock_status.format_unlock_label(None, None), "无")
 
 
+class LockUserMappingTests(unittest.TestCase):
+    def test_parse_equals_and_colon(self) -> None:
+        result = lock_status.parse_lock_user_names(
+            "1=张三\n2:李四\n\nbad line\n3= 王五 "
+        )
+        self.assertEqual(result, {"1": "张三", "2": "李四", "3": "王五"})
+
+    def test_parse_empty(self) -> None:
+        self.assertEqual(lock_status.parse_lock_user_names(""), {})
+        self.assertEqual(lock_status.parse_lock_user_names(None), {})
+
+    def test_format_roundtrip(self) -> None:
+        text = lock_status.format_lock_user_names({"2": "李四", "1": "张三"})
+        self.assertEqual(text, "1=张三\n2=李四")
+        self.assertEqual(
+            lock_status.parse_lock_user_names(text),
+            {"1": "张三", "2": "李四"},
+        )
+
+    def test_format_invalid_input(self) -> None:
+        self.assertEqual(lock_status.format_lock_user_names(None), "")
+        self.assertEqual(lock_status.format_lock_user_names("nope"), "")
+
+
 if __name__ == "__main__":
     unittest.main()
