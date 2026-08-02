@@ -116,5 +116,45 @@ class DescribeTests(unittest.TestCase):
         self.assertIn("authorized_id", info)
 
 
+class ParseAuthorizationItemTests(unittest.TestCase):
+    def test_parse_readtable_item(self) -> None:
+        item = {
+            "authorizedUnlockId": "z19f376bfe3b48f79f0e9dcb0a0410f9",
+            "deviceId": "w-lock",
+            "authorizedId": 101,
+            "uid": "lock-uid",
+            "number": 1,
+            "password": "121583",
+            "phone": "13800138000",
+            "unlockNum": 0,
+            "startTime": 1783341252,
+            "endTime": 1783341252 + 86400,
+            "authorizeStatus": 0,
+            "delFlag": 0,
+        }
+        rec = temp_password.parse_authorization_item(item)
+        assert rec is not None
+        self.assertEqual(rec["password"], "121583")
+        self.assertEqual(rec["authorized_id"], 101)
+        self.assertEqual(rec["number"], 1)
+        self.assertEqual(rec["phone"], "13800138000")
+        self.assertEqual(rec["end_time"], 1783341252 + 86400)
+
+    def test_skips_deleted(self) -> None:
+        item = {
+            "authorizedUnlockId": "x",
+            "authorizedId": 102,
+            "password": "270602",
+            "delFlag": 1,
+        }
+        self.assertIsNone(temp_password.parse_authorization_item(item))
+
+    def test_skips_missing_fields(self) -> None:
+        self.assertIsNone(temp_password.parse_authorization_item({}))
+        self.assertIsNone(
+            temp_password.parse_authorization_item({"authorizedId": 1})
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

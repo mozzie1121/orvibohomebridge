@@ -50,6 +50,31 @@ def parse_grant_response(resp: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
+def parse_authorization_item(item: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """解析 readtable authorizedUnlock 单条记录（服务器端完整列表）。"""
+    if not isinstance(item, Mapping):
+        return None
+    if item.get("delFlag"):  # 已删除的授权跳过
+        return None
+    password = item.get("password") or ""
+    authorized_id = item.get("authorizedId")
+    if not password or authorized_id is None:
+        return None
+    return {
+        "password": str(password),
+        "authorized_id": int(authorized_id),
+        "authorized_unlock_id": item.get("authorizedUnlockId") or "",
+        "type": 0,  # 服务器列表无 type 字段（下发响应才有），保留字段占位
+        "start_time": int(item.get("startTime") or 0),
+        "end_time": int(item.get("endTime") or 0),
+        "number": int(item.get("number") or 0),
+        "unlock_num": int(item.get("unlockNum") or 0),
+        "phone": item.get("phone") or "",
+        "name": "",
+        "authorize_status": item.get("authorizeStatus"),
+    }
+
+
 def is_expired(record: Mapping[str, Any], now: Optional[int] = None) -> bool:
     """临时密码是否已过期（结束时间到 或 次数用尽）。"""
     now = int(time.time()) if now is None else int(now)
