@@ -42,6 +42,8 @@ from orvibohomebridge.functions import (  # noqa: E402
     generate_uuid,
 )
 from orvibohomebridge.packet import HomematePacket  # noqa: E402
+from orvibohomebridge.packet import HomemateJsonData  # noqa: E402
+from orvibohomebridge.const import HTTP_HEADERS  # noqa: E402
 
 LOGGER = logging.getLogger("temp_pwd_probe")
 CMD_TEMP_PWD = 246
@@ -360,6 +362,28 @@ async def main() -> int:
         return 1
 
     if args.list_auth:
+        # 1) readtable（REST 全量同步）里是否有授权表
+        try:
+            ret = HomemateJsonData.get_devices_status(
+                api.token, "", api.uid, api.username, fid, device_flag=0
+            )
+            s = await api._s()
+            async with s.post(ret["url"], data=ret["data"], headers=HTTP_HEADERS, ssl=False) as r:
+                j = await r.json()
+            data = j.get("data", {}) or {}
+            print("[readtable] data keys:", list(data.keys()))
+            for k, v in data.items():
+                if isinstance(v, list):
+                    sample = list(v[0].keys())[:15] if v else "-"
+                    print(f"  {k}: list[{len(v)}] 首项keys={sample}")
+                elif isinstance(v, dict):
+                    print(f"  {k}: dict keys={list(v.keys())[:15]}")
+                else:
+                    print(f"  {k}: {type(v).__name__}")
+        except Exception as e:
+            print("[readtable] 失败:", e)
+
+        # 2) SSL cmd=171 消息列表
         sslc = TempPwdSsl(api.username, api.password, fid)
         if not await sslc.connect():
             print("SSL 连接/登录失败")
