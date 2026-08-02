@@ -94,7 +94,8 @@
             "state": {
                 "locked": "Locked",
                 "unlocked": "Unlocked",
-                "inside_locked": "Inside locked"
+                "inside_locked": "Inside locked",
+                "abnormal": "Abnormal"
             }
         }
     }
