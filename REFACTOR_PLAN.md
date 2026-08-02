@@ -142,6 +142,14 @@
   传感器与临界状态（门关+lockState=on → 未上锁）随之修正。
 - 132 例测试通过。
 
+### 第10轮再修：开锁事件直接显示"xxx开门"（已完成 2026-08-02）
+
+- "开锁事件"从 binary_sensor 改为 sensor，状态直接显示
+  `张三开门`（配置名称后）或 `用户2开门`（未配置），无事件时显示"无"。
+- 新增 `format_unlock_label()` 与属性 `unlock_time`（事件时间戳）。
+- 二进制开锁实体移除；自动化仍可订阅 `orvibohomebridge_lock_event`。
+- 135 例测试通过。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

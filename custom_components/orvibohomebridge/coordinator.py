@@ -741,6 +741,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             dev_state["unlock_event"] = True
             dev_state["unlock_type"] = value.get("type")
             dev_state["unlock_user_id"] = value.get("userId")
+            dev_state["unlock_time"] = raw_status.get("time")
             _LOGGER.debug(f"[开锁事件] deviceId={raw_status.get('deviceId')}, type={value.get('type')}, userId={value.get('userId')}")
             self._schedule_lock_reset(raw_status.get("deviceId", ""), "unlock")
 
