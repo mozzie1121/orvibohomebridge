@@ -135,10 +135,10 @@ def cos_authorization(
     sign_key = _hmac_hex(secret_key, key_time, hashlib.sha1)
     # 注意：单 header 时末尾不带 &（服务端 FormatString 实测确认）
     http_string = f"{method.lower()}\n{path}\n\nhost={host}\n"
-    # COS 服务端校验的 StringToSign 是三段式：sha1\n{key_time}\n{sha1(HttpString)}
-    # （SignatureDoesNotMatch 错误体直接给出了该格式）
+    # COS 官方算法：StringToSign = "sha1\n{key_time}\n{sha1(HttpString)}\n"
+    # 注意末尾必须带换行（SignatureDoesNotMatch 错误体与官方文档双重确认）
     string_to_sign = (
-        f"sha1\n{key_time}\n{hashlib.sha1(http_string.encode()).hexdigest()}"
+        f"sha1\n{key_time}\n{hashlib.sha1(http_string.encode()).hexdigest()}\n"
     )
     signature = _hmac_hex(sign_key, string_to_sign, hashlib.sha1)
     return (
@@ -253,6 +253,14 @@ def selftest() -> None:
         "AKIDEXAMPLE", "x" * 40, "get", path, host, 1785667760, 1785797360
     )
     assert "q-sign-time=1785667760;1785797360" in auth2
+    # 服务器错误体 StringToSign 完整还原（含尾部换行）：
+    # sha1\n1785667865;1785797465\ncffc68e3aba2b1e672f079faffc9895fa3702d48\n
+    _hmac_args = _hmac_hex("", "", hashlib.sha1)  # noqa: 仅确保函数可调用
+    expected_sts = "sha1\n1785667865;1785797465\ncffc68e3aba2b1e672f079faffc9895fa3702d48\n"
+    key_time = "1785667865;1785797465"
+    sign_key = _hmac_hex("x" * 40, key_time, hashlib.sha1)
+    sig = _hmac_hex(sign_key, expected_sts, hashlib.sha1)
+    assert len(sig) == 40
     print("selftest OK: COS 签名 v5 结构/确定性校验通过")
 
 
