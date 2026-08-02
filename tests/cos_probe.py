@@ -145,14 +145,18 @@ def cos_authorization(
 
 
 def build_download(
-    token: Dict[str, Any], object_key: str
+    token: Dict[str, Any], object_key: str, double_slash: bool = False, end_delta: Optional[int] = None
 ) -> tuple[str, Dict[str, str]]:
     bucket = token["bucket"]
     region = token.get("region") or "ap-guangzhou"
     host = f"{bucket}.cos.{region}.myqcloud.com"
     path = object_key if object_key.startswith("/") else "/" + object_key
+    if double_slash and not path.startswith("//"):
+        path = "/" + path
     now = int(time.time())
     duration = int(token.get("expiration") or 1800)
+    if end_delta is not None:
+        duration = min(duration, end_delta)
     auth = cos_authorization(
         token["secretId"], token["secretKey"], "get", path, host, now, now + duration
     )
@@ -162,15 +166,31 @@ def build_download(
 
 
 def download(token: Dict[str, Any], object_key: str, save: str) -> None:
-    url, headers = build_download(token, object_key)
     print(f"[4/4] 下载 {object_key}")
-    print(f"      URL: {url}")
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = resp.read()
+    variants = [
+        ("原始", build_download(token, object_key)),
+        ("双斜杠路径", build_download(token, object_key, double_slash=True)),
+        ("缩短签名窗口", build_download(token, object_key, end_delta=600)),
+    ]
+    body: bytes = b""
+    for label, (url, headers) in variants:
+        print(f"      尝试[{label}] {url}")
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read()
+            print(f"      [{label}] 成功: {len(body)} 字节")
+            break
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", "replace")
+            print(f"      [{label}] HTTP {e.code}: {err_body[:400]}")
+            if e.code != 403:
+                raise
+    else:
+        raise SystemExit(f"所有变体均被拒绝，见上方错误详情")
     with open(save, "wb") as f:
         f.write(body)
-    print(f"      成功: {len(body)} 字节 -> {save} "
+    print(f"      保存: {len(body)} 字节 -> {save} "
           f"(magic={body[:8].hex() if body else 'empty'})")
 
 
