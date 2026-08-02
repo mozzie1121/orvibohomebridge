@@ -91,3 +91,91 @@ cleanup_history:
       description: 每个设备最多保留的记录数（可选，按时间裁剪最旧的）
       required: false
       example: 500
+
+grant_temp_password:
+  name: 下发临时密码
+  description: 生成临时密码（可选短信通知），返回密码/authorizedId/有效期
+  target: {}
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID（留空自动选第一把门锁）
+      required: false
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    type:
+      name: 授权类型
+      description: "1=限时（start_time/end_time 或 minutes） 2=临时（minutes+number，默认）"
+      required: false
+      example: 2
+    minutes:
+      name: 有效期（分钟）
+      description: 相对时长（默认 1440=24 小时）
+      required: false
+      example: 1440
+    number:
+      name: 可用次数
+      description: "0=不限次；type=2 默认 1"
+      required: false
+      example: 1
+    name:
+      name: 临时用户名
+      description: 显示名称（默认自动生成"临时用户 MMddHHmm"）
+      required: false
+      example: "快递员"
+    phone:
+      name: 手机号
+      description: 可选：下发时同步短信通知该手机号
+      required: false
+      example: "13800138000"
+    start_time:
+      name: 开始时间
+      description: Unix 秒时间戳（type=1 限时用；默认当前时间）
+      required: false
+      example: 1785805200
+    end_time:
+      name: 结束时间
+      description: Unix 秒时间戳（type=1 限时用；默认 now+minutes）
+      required: false
+      example: 1785978000
+
+revoke_temp_password:
+  name: 删除临时密码
+  description: 按 authorizedId 删除已下发的临时密码
+  target: {}
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID
+      required: true
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    authorized_id:
+      name: 授权 ID
+      description: 下发响应或 list_temp_passwords 里的 authorized_id
+      required: true
+      example: 101
+
+list_temp_passwords:
+  name: 查询临时密码
+  description: 列出当前临时密码（含过期状态）
+  target: {}
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID（留空查询所有）
+      required: false
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"

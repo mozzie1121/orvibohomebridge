@@ -19,6 +19,8 @@ CMD_CLOTHES_HORSE_CONTROL = 98
 CMD_CLOTHES_HORSE_STATE = 99
 CMD_CLOTHES_HORSE_QUERY = 100
 CMD_COS_AUTH = 313  # Skill.GetCOSAuthorization：换取门锁媒体（图片/视频）COS 凭证
+CMD_TEMP_PASSWORD = 246  # 下发临时密码（type/effectTime/number/phone）
+CMD_DELETE_AUTHORIZATION = 247  # 删除授权（uid/deviceId/authorizedId）
 
 SOFTWARE_NAME = "ZhiJia365"
 SOFTWARE_VERSION = "50103309"
@@ -34,6 +36,7 @@ MANUFACTURER = "ORVIBO"
 
 # HA 事件总线：门锁状态/事件（解锁、门铃、锁状态、门状态）
 LOCK_EVENT = "orvibohomebridge_lock_event"
+TEMP_PASSWORD_EVENT = "orvibohomebridge_temp_password_event"
 
 HTTPS_HOST = "china.orvibo.com"
 # 国际区集群（Orvibo Home 海外用户，数据与中国区独立分区）

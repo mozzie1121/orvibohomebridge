@@ -21,6 +21,9 @@ SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
 SERVICE_FETCH_VIDEO = "fetch_video"
 SERVICE_LIST_EVENTS = "list_events"
 SERVICE_CLEANUP_HISTORY = "cleanup_history"
+SERVICE_GRANT_TEMP_PASSWORD = "grant_temp_password"
+SERVICE_REVOKE_TEMP_PASSWORD = "revoke_temp_password"
+SERVICE_LIST_TEMP_PASSWORDS = "list_temp_passwords"
 
 # 本集成仅通过配置项使用，不读取 configuration.yaml。
 # 新版 HA 要求 empty_config_schema 传入 domain 参数。
@@ -196,6 +199,114 @@ async def async_setup(hass: HomeAssistant, config: dict):
         handle_cleanup_history,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+    async def handle_grant_temp_password(call: ServiceCall):
+        """下发临时密码（可选短信通知），返回密码/authorizedId/有效期。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        auth_type = int(call.data.get("type", 2))
+        minutes = int(call.data.get("minutes", 1440))
+        number = int(call.data.get("number", 1))
+        name = str(call.data.get("name", ""))
+        phone = str(call.data.get("phone", ""))
+        start_time = call.data.get("start_time")
+        end_time = call.data.get("end_time")
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        for coordinator in targets:
+            if not device_id and coordinator.devices:
+                device_id = next(
+                    (
+                        did
+                        for did, dev in coordinator.devices.items()
+                        if classify_device(dev) == DeviceCategory.DOOR_LOCK
+                    ),
+                    "",
+                )
+            if not device_id:
+                continue
+            result = await coordinator.async_grant_temp_password(
+                device_id=device_id,
+                auth_type=auth_type,
+                minutes=minutes,
+                number=number,
+                name=name,
+                phone=phone,
+                start_time=int(start_time) if start_time else None,
+                end_time=int(end_time) if end_time else None,
+            )
+            return result or {"error": "下发失败"}
+        return {"error": "未找到可用的配置项或门锁设备"}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GRANT_TEMP_PASSWORD,
+        handle_grant_temp_password,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def handle_revoke_temp_password(call: ServiceCall):
+        """删除指定 authorizedId 的临时密码。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        authorized_id = int(call.data.get("authorized_id", 0))
+        if not device_id or not authorized_id:
+            return {"error": "需要 device_id 和 authorized_id"}
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        for coordinator in targets:
+            if device_id not in coordinator.devices:
+                continue
+            return await coordinator.async_revoke_temp_password(
+                device_id, authorized_id
+            )
+        return {"error": "未找到设备或配置项"}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REVOKE_TEMP_PASSWORD,
+        handle_revoke_temp_password,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def handle_list_temp_passwords(call: ServiceCall):
+        """列出当前临时密码（含过期状态）。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        result = {}
+        for coordinator in targets:
+            result.update(await coordinator.async_list_temp_passwords(device_id))
+        return result
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_TEMP_PASSWORDS,
+        handle_list_temp_passwords,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
@@ -229,6 +340,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # 历史记录自动清理：保留 7 天，每周执行；卸载时取消定时任务
     coordinator.start_history_cleanup()
     entry.async_on_unload(coordinator.stop_history_cleanup)
+    coordinator.start_temp_password_cleanup()
+    entry.async_on_unload(coordinator.stop_temp_password_cleanup)
 
     # 使用 async_forward_entry_setups 一次性加载所有平台
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
