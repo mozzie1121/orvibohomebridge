@@ -64,3 +64,29 @@ list_events:
       description: 最多返回的记录数（默认 100）
       required: false
       example: 50
+
+cleanup_history:
+  name: 清理门锁历史记录
+  description: 删除超过保留天数的截图/录像（默认保留 7 天，每周自动执行一次）
+  returns_response: true
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    keep_days:
+      name: 保留天数
+      description: 保留最近 N 天的记录（默认 7）
+      required: false
+      example: 7
+    device_id:
+      name: 设备 ID
+      description: 只清理指定门锁（留空清理所有）
+      required: false
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    max_entries:
+      name: 最大条数
+      description: 每个设备最多保留的记录数（可选，按时间裁剪最旧的）
+      required: false
+      example: 500

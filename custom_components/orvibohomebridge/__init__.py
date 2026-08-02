@@ -20,6 +20,7 @@ SERVICE_REFRESH = "refresh_devices"
 SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
 SERVICE_FETCH_VIDEO = "fetch_video"
 SERVICE_LIST_EVENTS = "list_events"
+SERVICE_CLEANUP_HISTORY = "cleanup_history"
 
 # 本集成仅通过配置项使用，不读取 configuration.yaml。
 # 新版 HA 要求 empty_config_schema 传入 domain 参数。
@@ -145,6 +146,37 @@ async def async_setup(hass: HomeAssistant, config: dict):
         SERVICE_LIST_EVENTS,
         handle_list_events,
     )
+
+    async def handle_cleanup_history(call: ServiceCall):
+        """手动清理门锁历史记录（截图/录像）。"""
+        entry_id = call.data.get("entry_id")
+        keep_days = int(call.data.get("keep_days", 7))
+        device_id = str(call.data.get("device_id", ""))
+        max_entries = call.data.get("max_entries")
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        total = 0
+        for coordinator in targets:
+            total += await coordinator.async_cleanup_history(
+                keep_days=keep_days,
+                device_id=device_id,
+                max_entries=int(max_entries) if max_entries else None,
+            )
+        _LOGGER.info("历史清理完成，共删除 %s 个文件", total)
+        return {"removed": total}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEANUP_HISTORY,
+        handle_cleanup_history,
+    )
     return True
 
 
@@ -174,6 +206,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
     _LOGGER.info("Coordinator 已注册到 hass.data")
+
+    # 历史记录自动清理：保留 7 天，每周执行；卸载时取消定时任务
+    coordinator.start_history_cleanup()
+    entry.async_on_unload(coordinator.stop_history_cleanup)
 
     # 使用 async_forward_entry_setups 一次性加载所有平台
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

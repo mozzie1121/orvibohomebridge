@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 MODULE_PATH = (
@@ -86,6 +87,46 @@ class MediaSourceIdTests(unittest.TestCase):
                 history.media_source_id(root, f),
                 "media-source://media_source/orvibohomebridge/w-lock/ring_1785672298.jpg",
             )
+
+
+class CleanupTests(unittest.TestCase):
+    def test_removes_expired_keeps_recent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            d = history.history_dir(root, "w-lock")
+            now = int(time.time())
+            old_ts = now - 10 * 86400
+            new_ts = now - 1 * 86400
+            old_pic = d / f"ring_{old_ts}.jpg"
+            old_video = d / f"picklock_{old_ts}.mp4"
+            new_pic = d / f"ring_{new_ts}.jpg"
+            old_pic.write_bytes(b"a")
+            old_video.write_bytes(b"b")
+            new_pic.write_bytes(b"c")
+            removed = history.cleanup(root, keep_days=7)
+            self.assertEqual(removed, 2)
+            self.assertFalse(old_pic.exists())
+            self.assertFalse(old_video.exists())
+            self.assertTrue(new_pic.exists())
+
+    def test_max_entries_trim(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            d = history.history_dir(root, "w-lock")
+            now = int(time.time())
+            for i in range(5):
+                (d / f"ring_{now - i * 100}.jpg").write_bytes(b"x")
+            removed = history.cleanup(root, keep_days=365, max_entries=3)
+            self.assertEqual(removed, 2)
+            files = [f.name for f in d.iterdir()]
+            self.assertEqual(len(files), 3)
+
+    def test_empty_dir_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            d = history.history_dir(root, "w-lock")
+            history.cleanup(root, keep_days=7)
+            self.assertFalse(d.exists())
 
 
 if __name__ == "__main__":
