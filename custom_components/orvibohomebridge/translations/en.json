@@ -53,6 +53,20 @@
     },
     "options": {
         "step": {
+            "init": {
+                "title": "ORVIBO options",
+                "menu": {
+                    "devices": "Select devices",
+                    "lock_users": "Lock user mapping"
+                }
+            },
+            "lock_users": {
+                "title": "Lock user mapping",
+                "description": "One entry per line: userID=name (e.g. 1=John, 2=Jane). Used to show who opened the door.",
+                "data": {
+                    "lock_user_names": "User mapping"
+                }
+            },
             "devices": {
                 "title": "Select Devices",
                 "description": "Only checked devices will be added to Home Assistant.",

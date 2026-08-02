@@ -36,7 +36,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     LOCK_RESET_DELAY = 5  # 门锁门铃/开锁事件触发后恢复延时（秒）
     LOCK_DOOR_OPEN_WINDOW = 30  # 开锁 → 开门 的归属窗口（秒）
     
-    def __init__(self, hass: HomeAssistant, username: str, password: str, family_id: str = None):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        username: str,
+        password: str,
+        family_id: str = None,
+        lock_user_names: Optional[Dict[str, str]] = None,
+    ):
         self.username = username
         self.password = password
         self.family_id = family_id
@@ -50,6 +57,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._lock_reset_tasks: Dict[tuple, asyncio.Task] = {}  # 门锁事件复位任务
         self._last_lock_events: Dict[str, tuple] = {}  # 门锁事件去重签名
         self._lock_user_names: Dict[str, Dict[str, str]] = {}  # device_id -> {user_id: 名称}
+        self._lock_user_names_shared: Dict[str, str] = dict(lock_user_names or {})  # 持久化映射（entry 级）
         self._last_unlock: Dict[str, Dict[str, Any]] = {}  # device_id -> 最近一次开锁
         
         # 调试信息：记录最近收到的原始状态推送（仅内存，日志/诊断均脱敏）
@@ -856,7 +864,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """返回门锁 userId 配置的显示名称（无配置返回 None）。"""
         if not isinstance(user_id, (str, int)):
             return None
-        name = self._lock_user_names.get(device_id, {}).get(str(user_id))
+        key = str(user_id)
+        name = self._lock_user_names.get(device_id, {}).get(key)
+        if name is None:
+            name = self._lock_user_names_shared.get(key)
         return name if isinstance(name, str) and name else None
 
     def set_lock_user_name(self, device_id: str, user_id: str, name: str) -> bool:
@@ -868,8 +879,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         names = self._lock_user_names.setdefault(device_id, {})
         if name:
             names[user_id] = str(name)
+            self._lock_user_names_shared[user_id] = str(name)
         else:
             names.pop(user_id, None)
+            self._lock_user_names_shared.pop(user_id, None)
         return True
 
     def _publish_lock_message(self, device_id: str, raw_status: dict) -> None:

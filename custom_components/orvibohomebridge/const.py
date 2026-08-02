@@ -103,3 +103,4 @@ CLASS_ID_MAP = {
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_FAMILY_ID = "family_id"
+CONF_LOCK_USER_NAMES = "lock_user_names"  # {user_id: 名称}，持久化于 entry.options
