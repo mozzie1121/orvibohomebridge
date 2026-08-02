@@ -336,5 +336,26 @@ class MessageEventTests(unittest.TestCase):
         self.assertIsNone(lock_status.normalize_message_event({"cmd": 42}))
 
 
+class DoorAttributionTests(unittest.TestCase):
+    def test_recent_unlock_attributes_door_open(self) -> None:
+        last = {"user_id": 2, "unlock_type": "fingerprint"}
+        self.assertEqual(
+            lock_status.resolve_opened_by(last, 4.0, window=30),
+            {"user_id": "2", "unlock_type": "fingerprint"},
+        )
+
+    def test_stale_unlock_not_attributed(self) -> None:
+        last = {"user_id": 2, "unlock_type": "fingerprint"}
+        self.assertIsNone(lock_status.resolve_opened_by(last, 31.0, window=30))
+
+    def test_missing_user_id_not_attributed(self) -> None:
+        self.assertIsNone(
+            lock_status.resolve_opened_by({"unlock_type": "password"}, 1.0)
+        )
+
+    def test_no_last_unlock_not_attributed(self) -> None:
+        self.assertIsNone(lock_status.resolve_opened_by(None, 1.0))
+
+
 if __name__ == "__main__":
     unittest.main()

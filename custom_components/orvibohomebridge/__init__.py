@@ -17,6 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan")
 
 SERVICE_REFRESH = "refresh_devices"
+SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
 
 # 本集成仅通过配置项使用，不读取 configuration.yaml。
 # 新版 HA 要求 empty_config_schema 传入 domain 参数。
@@ -42,6 +43,42 @@ async def async_setup(hass: HomeAssistant, config: dict):
         _LOGGER.info("设备刷新完成")
 
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, handle_refresh)
+
+    async def handle_set_lock_user_name(call: ServiceCall):
+        """为门锁 userId 设置显示名称，用于区分"谁开的门"。"""
+        entry_id = call.data.get("entry_id")
+        device_id = call.data.get("device_id", "")
+        user_id = call.data.get("user_id", "")
+        name = call.data.get("name", "")
+        if not device_id or user_id in (None, ""):
+            _LOGGER.error("set_lock_user_name 需要 device_id 和 user_id")
+            return
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(coordinator for coordinator in hass.data.get(DOMAIN, {}).values())
+        updated = False
+        for coordinator in targets:
+            if coordinator.set_lock_user_name(str(device_id), str(user_id), str(name)):
+                updated = True
+        if updated:
+            _LOGGER.info(
+                "门锁用户名称已设置: device=%s user=%s name=%s",
+                str(device_id)[-12:],
+                user_id,
+                name,
+            )
+        else:
+            _LOGGER.warning("未找到可应用 set_lock_user_name 的配置项")
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_LOCK_USER_NAME,
+        handle_set_lock_user_name,
+    )
     return True
 
 
