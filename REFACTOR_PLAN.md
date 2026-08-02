@@ -158,6 +158,15 @@
 - 协调器启动时加载映射；服务 `set_lock_user_name` 继续可用（会话内即时生效）。
 - 新增 parse/format_lock_user_names 纯函数 + 4 个测试，全套 139 例通过。
 
+### 第10轮再修：选项菜单翻译键修正（已完成 2026-08-02）
+
+- 配置界面"选择设备 / 锁用户映射"此前显示内部步骤名（devices/lock_users），
+  原因是 HA 选项流菜单的翻译键写成了 `menu`，正确键为 `menu_options`
+  （与 `async_show_menu` 的 `menu_options` 参数对应）。
+- 已修正 `translations/zh-Hans.json` 与 `translations/en.json`，
+  菜单项现在正常显示中文/英文。
+- 全套 139 例测试通过。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

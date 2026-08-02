@@ -55,7 +55,7 @@
         "step": {
             "init": {
                 "title": "ORVIBO options",
-                "menu": {
+                "menu_options": {
                     "devices": "Select devices",
                     "lock_users": "Lock user mapping"
                 }
