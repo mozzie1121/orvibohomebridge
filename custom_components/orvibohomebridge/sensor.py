@@ -342,7 +342,7 @@ class OrviboDoorLockLithiumBatterySensor(OrviboSensorBase):
 
 
 class OrviboDoorLockStateSensor(OrviboSensorBase):
-    """智能门锁 - 锁状态（上锁/未上锁/门内反锁/异常，绑定门磁）。"""
+    """智能门锁 - 锁状态（已上锁/未上锁/门内已反锁/异常，绑定门磁）。"""
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["locked", "unlocked", "inside_locked", "abnormal"]
