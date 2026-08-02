@@ -21,9 +21,12 @@ SPEC.loader.exec_module(lock_status)
 
 
 class DoorLockPropertyTests(unittest.TestCase):
-    """形态 A：properties.doorLock（type=522 / classId=463）。"""
+    """形态 A：properties.doorLock（type=522 / classId=463）。
 
-    def test_doorlock_morphology_locked_and_closed(self) -> None:
+    V5 Eyes 实机语义：lockState="on"=已解锁，lockState="off"=已锁定。
+    """
+
+    def test_doorlock_morphology_unlocked_and_open(self) -> None:
         result = lock_status.normalize_door_lock_properties(
             {
                 "doorLock": {
@@ -33,16 +36,16 @@ class DoorLockPropertyTests(unittest.TestCase):
                 }
             }
         )
-        self.assertIs(result["locked"], True)
+        self.assertIs(result["locked"], False)
         self.assertIs(result["door_open"], True)
         self.assertIs(result["inside_locked"], False)
         self.assertIsNone(result["child_locked"])
 
-    def test_doorlock_morphology_unlocked(self) -> None:
+    def test_doorlock_morphology_locked(self) -> None:
         result = lock_status.normalize_door_lock_properties(
             {"doorLock": {"lockState": "off", "doorState": "off"}}
         )
-        self.assertIs(result["locked"], False)
+        self.assertIs(result["locked"], True)
         self.assertIs(result["door_open"], False)
 
     def test_flat_morphology_reverse_lock(self) -> None:

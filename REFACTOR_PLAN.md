@@ -134,6 +134,14 @@
 - 锁状态规则（用户确认）：门磁开=未上锁；门磁关=门内反锁/上锁/未上锁
   （保留"锁舌收回但门未推开"的临界状态：门关+lockState=off → 未上锁）。
 
+### 第10轮再修：lockState 语义取反（已完成 2026-08-02）
+
+- 实机时序证据（142950：密码解锁事件后紧跟 lockState=on）表明
+  V5 Eyes 的 `lockState="on"=已解锁`、`"off"=已锁定`，原代码注释方向相反。
+- `normalize_door_lock_properties` 已取反；事件总线 `locked` 字段、锁状态
+  传感器与临界状态（门关+lockState=on → 未上锁）随之修正。
+- 132 例测试通过。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容
