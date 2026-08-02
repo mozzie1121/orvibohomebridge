@@ -88,14 +88,16 @@
             "no_devices": "No devices found in this family"
         }
     },
-    "sensor": {
-        "door_lock_state": {
-            "name": "Lock state",
-            "state": {
-                "locked": "Locked",
-                "unlocked": "Unlocked",
-                "inside_locked": "Inside locked",
-                "abnormal": "Abnormal"
+    "entity": {
+        "sensor": {
+            "door_lock_state": {
+                "name": "Lock state",
+                "state": {
+                    "locked": "Locked",
+                    "unlocked": "Unlocked",
+                    "inside_locked": "Inside locked",
+                    "abnormal": "Abnormal"
+                }
             }
         }
     }

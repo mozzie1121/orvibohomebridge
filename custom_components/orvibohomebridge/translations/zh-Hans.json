@@ -88,14 +88,16 @@
             "no_devices": "该家庭中没有发现设备"
         }
     },
-    "sensor": {
-        "door_lock_state": {
-            "name": "锁状态",
-            "state": {
-                "locked": "已上锁",
-                "unlocked": "未上锁",
-                "inside_locked": "门内已反锁",
-                "abnormal": "异常"
+    "entity": {
+        "sensor": {
+            "door_lock_state": {
+                "name": "锁状态",
+                "state": {
+                    "locked": "已上锁",
+                    "unlocked": "未上锁",
+                    "inside_locked": "门内已反锁",
+                    "abnormal": "异常"
+                }
             }
         }
     }
