@@ -77,6 +77,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.cos_media: Optional[CosMediaManager] = None
         self.video_archiver: Optional[VideoArchiver] = None
         self._lock_cameras: Dict[str, Any] = {}  # device_id -> camera 实体
+        self._history_cleanup_unsub = None
+        self.HISTORY_KEEP_DAYS = 7  # 历史截图/录像保留天数
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
@@ -1104,6 +1106,54 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self.hass.config.path("media"),
             device_id or None,
             limit,
+        )
+
+    def start_history_cleanup(self) -> None:
+        """启动历史清理：立即清理一次 + 每周定时清理（保留 7 天）。"""
+        if self._history_cleanup_unsub is not None:
+            return
+        from homeassistant.helpers.event import async_track_time_interval
+        from .history import cleanup
+
+        media_root = self.hass.config.path("media")
+
+        async def _run(_now=None) -> None:
+            try:
+                removed = await self.hass.async_add_executor_job(
+                    cleanup, media_root, self.HISTORY_KEEP_DAYS
+                )
+                if removed:
+                    _LOGGER.info("历史清理完成，删除 %s 个过期文件", removed)
+            except Exception:  # noqa: BLE001 - 清理失败不应影响集成
+                _LOGGER.warning("历史清理异常", exc_info=True)
+
+        # 启动时清一次（处理升级前积压），随后每周执行
+        self.hass.async_create_task(_run())
+        self._history_cleanup_unsub = async_track_time_interval(
+            self.hass, _run, timedelta(days=7)
+        )
+
+    def stop_history_cleanup(self) -> None:
+        """取消历史清理定时任务（集成卸载时调用）。"""
+        if self._history_cleanup_unsub is not None:
+            self._history_cleanup_unsub()
+            self._history_cleanup_unsub = None
+
+    async def async_cleanup_history(
+        self,
+        keep_days: int = 7,
+        device_id: str = "",
+        max_entries: Optional[int] = None,
+    ) -> int:
+        """手动清理历史记录，返回删除文件数。"""
+        from .history import cleanup
+
+        return await self.hass.async_add_executor_job(
+            cleanup,
+            self.hass.config.path("media"),
+            keep_days,
+            device_id or None,
+            max_entries,
         )
 
     def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:

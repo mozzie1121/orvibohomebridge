@@ -233,6 +233,16 @@ response_variable: history
 （image/video）、`file`（本地路径）与 `media_id`（媒体浏览器引用）。
 有"有人逗留"等新事件类型时也会自动归档，无需额外配置。
 
+**自动清理**：历史记录默认保留 7 天，集成启动时清理一次，之后每周自动执行
+（删除超过 7 天的截图/录像及空目录）。也可手动清理或调整保留策略：
+
+```yaml
+action: orvibohomebridge.cleanup_history
+data:
+  keep_days: 7
+  max_entries: 500   # 可选：每个设备最多保留 500 条，按时间裁剪
+```
+
 自动化示例（按用户过滤）：
 
 ```yaml
