@@ -14,7 +14,7 @@ from .const import (
     SSL_MAX_RECONNECT_ATTEMPTS,
     CMD_HELLO, CMD_LOGIN, CMD_STATE_UPDATE, CMD_CONTROL, CMD_HEARTBEAT, CMD_HANDSHAKE,
     CMD_CLOTHES_HORSE_CONTROL, CMD_CLOTHES_HORSE_STATE, CMD_CLOTHES_HORSE_QUERY,
-    CMD_COS_AUTH,
+    CMD_COS_AUTH, CMD_TEMP_PASSWORD, CMD_DELETE_AUTHORIZATION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +74,9 @@ class SSLClient:
         # COS 授权等待机制：cmd=313 响应（Skill.GetCOSAuthorization）
         self._pending_cos: Optional[asyncio.Event] = None
         self._pending_cos_result: Optional[dict] = None
+        # 临时密码/删除授权等待机制：cmd=246/247 响应
+        self._pending_temp: Optional[asyncio.Event] = None
+        self._pending_temp_result: Optional[dict] = None
         # 控制响应超时（秒）
         self._control_response_timeout: float = 3.0
         # 登录等待机制
@@ -679,6 +682,81 @@ class SSLClient:
             self._pending_cos = None
             self._pending_cos_result = None
 
+    async def _wait_temp_response(self, timeout: float) -> Optional[dict]:
+        """等待 cmd=246/247 响应（由监听循环填充）。"""
+        event = asyncio.Event()
+        self._pending_temp = event
+        self._pending_temp_result = None
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return self._pending_temp_result
+        except asyncio.TimeoutError:
+            _LOGGER.debug("等待临时密码响应超时")
+            return None
+        finally:
+            self._pending_temp = None
+            self._pending_temp_result = None
+
+    async def send_temp_password(
+        self,
+        device_id: str,
+        device_uid: str,
+        name: str,
+        auth_type: int,
+        minutes: int,
+        number: int,
+        phone: str = "",
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        timeout: float = 15.0,
+    ) -> Optional[dict]:
+        """下发临时密码（cmd=246），返回完整响应（含 code/password）。"""
+        await self.connect_and_login()
+        if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
+            _LOGGER.debug("会话密钥无效，无法下发临时密码")
+            return None
+        now = int(time.time())
+        if auth_type == 1 and start_time is not None and end_time is not None:
+            start_ts, end_ts = start_time, end_time
+        else:
+            start_ts = now
+            end_ts = now + minutes * 60 if auth_type == 1 else 0
+        payload = HomemateJsonData.ssl_temp_password(
+            device_id=device_id,
+            device_uid=device_uid,
+            name=name,
+            auth_type=auth_type,
+            minutes=minutes,
+            number=number,
+            phone=phone,
+            start_time=start_ts,
+            end_time=end_ts,
+        )
+        _LOGGER.debug("下发临时密码 device=%s type=%s minutes=%s", device_id, auth_type, minutes)
+        await self._send_packet(payload, self.session_key)
+        return await self._wait_temp_response(timeout)
+
+    async def delete_authorization(
+        self,
+        device_id: str,
+        device_uid: str,
+        authorized_id: int,
+        timeout: float = 15.0,
+    ) -> Optional[dict]:
+        """删除授权（cmd=247，authorizedId 来自下发响应）。"""
+        await self.connect_and_login()
+        if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
+            _LOGGER.debug("会话密钥无效，无法删除授权")
+            return None
+        payload = HomemateJsonData.ssl_delete_authorization(
+            device_id=device_id,
+            device_uid=device_uid,
+            authorized_id=authorized_id,
+        )
+        _LOGGER.debug("删除授权 device=%s authorizedId=%s", device_id, authorized_id)
+        await self._send_packet(payload, self.session_key)
+        return await self._wait_temp_response(timeout)
+
     async def _wait_for_control_response(self, device_id: str, timeout: float | None = None) -> dict | None:
         """发送控制后等待设备返回 cmd=42 状态响应。
 
@@ -784,6 +862,13 @@ class SSLClient:
                         self._pending_cos.set()
                     else:
                         _LOGGER.debug("收到未期待的 cmd=313 响应")
+                elif cmd in (CMD_TEMP_PASSWORD, CMD_DELETE_AUTHORIZATION):
+                    # 临时密码下发/删除授权响应
+                    if self._pending_temp is not None:
+                        self._pending_temp_result = data
+                        self._pending_temp.set()
+                    else:
+                        _LOGGER.debug("收到未期待的 cmd=%s 响应", cmd)
                 elif cmd in (CMD_HEARTBEAT, CMD_HANDSHAKE):
                     continue
                 else:
