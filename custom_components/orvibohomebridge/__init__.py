@@ -38,7 +38,20 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
         www_dir = Path(__file__).parent / "www"
         if www_dir.is_dir():
-            hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
+            try:
+                from homeassistant.components.http import StaticPathConfig
+
+                hass.http.async_register_static_paths(
+                    [
+                        StaticPathConfig(
+                            url_path="/orvibohomebridge/www",
+                            path=str(www_dir),
+                            cache_headers=True,
+                        )
+                    ]
+                )
+            except (AttributeError, TypeError):
+                hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
             js_url = "/orvibohomebridge/www/orvibo-door-lock-card.js"
             try:
                 hass.components.frontend.async_add_extra_js_url(hass, js_url)
