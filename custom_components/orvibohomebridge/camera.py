@@ -69,3 +69,14 @@ class OrviboLockSnapshotCamera(CoordinatorEntity, Camera):
         """事件到达时由 coordinator 推送最新截图。"""
         self._image = image
         self.async_write_ha_state()
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """关联到门锁设备（与其他平台实体一致）。"""
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", "Orvibo Door Lock"),
+            "manufacturer": "ORVIBO",
+            "model": "Smart Lock",
+            "sw_version": "1.0",
+        }
