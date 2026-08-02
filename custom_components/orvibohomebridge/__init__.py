@@ -32,6 +32,22 @@ CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 async def async_setup(hass: HomeAssistant, config: dict):
     """设置服务"""
+    # 注册内嵌门锁卡片资源（纯原生 JS，无需第三方插件）
+    try:
+        from pathlib import Path
+
+        www_dir = Path(__file__).parent / "www"
+        if www_dir.is_dir():
+            hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
+            js_url = "/orvibohomebridge/www/orvibo-door-lock-card.js"
+            try:
+                hass.components.frontend.async_add_extra_js_url(hass, js_url)
+            except AttributeError:
+                hass.components.frontend.add_extra_js_url(hass, js_url)
+            _LOGGER.info("门锁卡片资源已注册")
+    except Exception:  # noqa: BLE001 - 卡片注册失败不影响核心功能
+        _LOGGER.warning("门锁卡片资源注册失败（不影响其他功能）", exc_info=True)
+
     async def handle_refresh(call: ServiceCall):
         """处理手动刷新设备请求"""
         entry_id = call.data.get("entry_id")
