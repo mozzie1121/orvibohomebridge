@@ -159,7 +159,7 @@ class OrviboDoorLockLockSensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def is_on(self) -> Optional[bool]:
         state = self.coordinator.get_device_state(self._device_id)
-        return state.get("lock_state", False) if state else False
+        return state.get("lock_state") if state else None
 
     @property
     def device_info(self):
