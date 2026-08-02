@@ -37,6 +37,11 @@ async def async_setup(hass: HomeAssistant, config: dict):
         from pathlib import Path
 
         www_dir = Path(__file__).parent / "www"
+        _LOGGER.info(
+            "门锁卡片资源注册检查: www_dir=%s exists=%s",
+            www_dir,
+            www_dir.is_dir(),
+        )
         if www_dir.is_dir():
             try:
                 from homeassistant.components.http import StaticPathConfig
