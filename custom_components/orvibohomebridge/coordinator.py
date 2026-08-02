@@ -15,6 +15,7 @@ from .ssl_client import SSLClient
 from .https_client import HttpsClient
 from .cos_media import CosMediaManager
 from .video_archive import VideoArchiver
+from .history import history_dir, save_snapshot
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .packet import get_api_host
 from .redact import fingerprint, redact_packet
@@ -920,11 +921,25 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             elif cos.cached_credentials(device_id) is None:
                 self.hass.async_create_task(cos.get_credentials(device_id, uid))
             if field == "video_url":
-                self._schedule_video_archive(device_id, uid, key, url, out)
+                self._schedule_video_archive(
+                    device_id,
+                    uid,
+                    key,
+                    url,
+                    out,
+                    event.get("kind", "event"),
+                    event.get("time", int(time.time())),
+                )
         snapshot_key = event.get("pic_url") or event.get("doorbell_url")
         if snapshot_key:
             self.hass.async_create_task(
-                self._update_lock_snapshot(device_id, uid, snapshot_key)
+                self._update_lock_snapshot(
+                    device_id,
+                    uid,
+                    snapshot_key,
+                    event.get("kind", "event"),
+                    event.get("time", int(time.time())),
+                )
             )
         return out
 
@@ -934,9 +949,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         _LOGGER.debug("门锁截图实体已注册 device=%s", fingerprint(device_id, self._redaction_salt))
 
     async def _update_lock_snapshot(
-        self, device_id: str, device_uid: str, object_key: str
+        self,
+        device_id: str,
+        device_uid: str,
+        object_key: str,
+        kind: str,
+        ts: int | str,
     ) -> None:
-        """获取凭证 → 签名 URL → 下载截图 → 推送门锁 camera 实体。"""
+        """获取凭证 → 签名 URL → 下载截图 → 落盘历史 → 推送 camera 实体。"""
         camera = self._lock_cameras.get(device_id)
         if camera is None:
             _LOGGER.debug(
@@ -965,10 +985,20 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.exception("门锁截图更新异常 device=%s", fingerprint(device_id, self._redaction_salt))
             return
         if image:
+            try:
+                save_snapshot(
+                    history_dir(self.hass.config.path("media"), device_id),
+                    kind,
+                    ts,
+                    image,
+                )
+            except OSError as e:
+                _LOGGER.warning("截图落盘失败: %s", e)
             await camera.async_set_image(image)
             _LOGGER.info(
-                "门锁截图已更新 device=%s bytes=%s",
+                "门锁截图已更新并归档 device=%s kind=%s bytes=%s",
                 fingerprint(device_id, self._redaction_salt),
+                kind,
                 len(image),
             )
         else:
@@ -985,15 +1015,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         object_key: str,
         signed_url: Optional[str],
         out: Dict[str, str],
+        kind: str,
+        ts: int | str,
     ) -> None:
         """后台下载事件录像并转 MP4；事件附带预期本地路径与媒体 ID。"""
         archiver = self.video_archiver
         if archiver is None:
             return
-        paths = archiver.paths_for(device_id, object_key)
-        if paths is None:
-            return
-        _h264, mp4_path = paths
+        _h264, mp4_path = archiver.event_paths(device_id, kind, ts)
         if mp4_path.exists() and mp4_path.stat().st_size > 0:
             out["video_file"] = str(mp4_path)
             out["media_id"] = archiver.media_source_id(mp4_path)
@@ -1002,30 +1031,29 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         out["video_file"] = str(mp4_path)
         if signed_url:
             self.hass.async_create_task(
-                self._archive_video(device_id, device_uid, object_key, signed_url)
+                self._archive_video(device_id, kind, ts, signed_url)
             )
 
     async def _archive_video(
         self,
         device_id: str,
-        device_uid: str,
-        object_key: str,
+        kind: str,
+        ts: int | str,
         signed_url: str,
     ) -> None:
         """下载 + 转码（executor 中执行，避免阻塞事件循环）。"""
         archiver = self.video_archiver
-        cos = self.cos_media
         if archiver is None:
             return
         try:
             result = await self.hass.async_add_executor_job(
-                archiver.archive, device_id, object_key, signed_url
+                archiver.archive_event, device_id, kind, ts, signed_url
             )
         except Exception as e:  # noqa: BLE001 - 归档失败不应影响事件流
             _LOGGER.warning(
-                "录像归档失败 device=%s key=%s: %s",
+                "录像归档失败 device=%s kind=%s: %s",
                 fingerprint(device_id, self._redaction_salt),
-                object_key,
+                kind,
                 e,
             )
             return
@@ -1062,6 +1090,21 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             archiver.archive, device_id, object_key, url
         )
         return result or {"error": "录像下载失败"}
+
+    async def async_list_events(
+        self,
+        device_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, str]]:
+        """查询门锁事件历史（截图/录像），按时间倒序。"""
+        from .history import list_history
+
+        return await self.hass.async_add_executor_job(
+            list_history,
+            self.hass.config.path("media"),
+            device_id or None,
+            limit,
+        )
 
     def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:
         """返回门锁 userId 配置的显示名称（无配置返回 None）。"""

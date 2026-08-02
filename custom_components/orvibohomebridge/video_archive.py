@@ -31,6 +31,13 @@ def _sanitize(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name) or "device"
 
 
+def _event_dir(media_root: Path, device_id: str) -> Path:
+    """事件归档目录（与 history.history_dir 一致）。"""
+    d = Path(media_root) / "orvibohomebridge" / _sanitize(device_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def infer_event_name(object_key: str) -> Optional[tuple[str, str]]:
     """从对象键推断事件名与时间戳，如 ('picklock', '1785652830')。"""
     m = _EVENT_PATTERN.search(object_key.replace("\\", "/"))
@@ -162,6 +169,14 @@ class VideoArchiver:
         """按对象键计算确定性文件路径（h264 原始, mp4 目标）。"""
         return build_media_paths(self._media_root, device_id, object_key)
 
+    def event_paths(
+        self, device_id: str, kind: str, ts: int | str
+    ) -> tuple[Path, Path]:
+        """按事件类型+时间戳计算路径（与截图历史命名一致）。"""
+        kind = re.sub(r"[^A-Za-z0-9_]", "_", str(kind)) or "event"
+        base = _event_dir(self._media_root, device_id) / f"{kind}_{ts}"
+        return base.with_suffix(".h264"), base.with_suffix(".mp4")
+
     def media_source_id(self, mp4_path: Path) -> str:
         """生成 HA media_source 引用 ID（config/media 为根）。"""
         rel = mp4_path.resolve().relative_to(self._media_root.resolve())
@@ -180,6 +195,22 @@ class VideoArchiver:
         h264_path, mp4_path = paths
         if mp4_path.exists() and mp4_path.stat().st_size > 0:
             # 已归档过（同一事件去重）
+            return self._result(h264_path, mp4_path)
+        if not download(url, h264_path):
+            return None
+        transcode_to_mp4(h264_path, mp4_path, self._ffmpeg)
+        return self._result(h264_path, mp4_path)
+
+    def archive_event(
+        self,
+        device_id: str,
+        kind: str,
+        ts: int | str,
+        url: str,
+    ) -> Optional[dict[str, str]]:
+        """按事件类型+时间戳归档录像（历史目录统一命名）。"""
+        h264_path, mp4_path = self.event_paths(device_id, kind, ts)
+        if mp4_path.exists() and mp4_path.stat().st_size > 0:
             return self._result(h264_path, mp4_path)
         if not download(url, h264_path):
             return None
