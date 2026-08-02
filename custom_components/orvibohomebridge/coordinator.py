@@ -985,8 +985,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 _LOGGER.warning("门锁截图签名 URL 获取失败 device=%s", fingerprint(device_id, self._redaction_salt))
                 return
             image: Optional[bytes] = None
-            # 门铃图片上传延迟可达数十秒：间隔 3/6/10/15 秒，共 5 次（总窗口 ~34s）
-            retry_delays = (0, 3, 6, 10, 15)
+            # 门铃图片上传可能在事件推送后数十秒才完成：先等 8 秒再首试，
+            # 失败间隔 10/20/25 秒重试（总窗口 ~63s），给足上传时间
+            retry_delays = (8, 10, 20, 25)
             for attempt, delay in enumerate(retry_delays):
                 if delay:
                     await asyncio.sleep(delay)
