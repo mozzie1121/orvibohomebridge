@@ -25,6 +25,7 @@ SPEC.loader.exec_module(lock_status)
 class CaptureFixtureTests(unittest.TestCase):
     def test_every_sample_parses_to_a_known_shape(self) -> None:
         kinds: list[str] = []
+        unlock_types: list[str] = []
         with FIXTURE.open(encoding="utf-8") as f:
             for line in f:
                 rec = json.loads(line)
@@ -43,6 +44,8 @@ class CaptureFixtureTests(unittest.TestCase):
                 )
                 if event is not None:
                     kinds.append(f"event:{event['kind']}")
+                    if event["kind"] == "unlock" and event.get("unlock_type"):
+                        unlock_types.append(event["unlock_type"])
                 elif message is not None:
                     kinds.append(f"message:{message['kind']}")
 
@@ -56,7 +59,8 @@ class CaptureFixtureTests(unittest.TestCase):
             "message:message",
         ):
             self.assertIn(expected, kinds)
-        self.assertEqual(len(kinds), 15)
+        self.assertIn("card", unlock_types)
+        self.assertEqual(len(kinds), 18)
 
     def test_real_state_sequences_are_consistent(self) -> None:
         """doorLock 的 lockState=on 表示已解锁（locked=False）。"""

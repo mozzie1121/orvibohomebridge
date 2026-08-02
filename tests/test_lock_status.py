@@ -133,6 +133,21 @@ class LockEventTests(unittest.TestCase):
         self.assertEqual(event["unlock_type"], "fingerprint")
         self.assertEqual(event["unlock_user_id"], 1)
 
+    def test_card_unlock_event(self) -> None:
+        event = lock_status.normalize_lock_event(
+            {
+                "cmd": 352,
+                "event": {
+                    "server": "doorLock",
+                    "name": "unlockEvent",
+                    "value": {"type": "card", "userId": 6},
+                },
+            }
+        )
+        self.assertEqual(event["kind"], "unlock")
+        self.assertEqual(event["unlock_type"], "card")
+        self.assertEqual(event["unlock_user_id"], 6)
+
     def test_doorbell_ring_event(self) -> None:
         event = lock_status.normalize_lock_event(
             {
