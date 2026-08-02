@@ -77,6 +77,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.cos_media: Optional[CosMediaManager] = None
         self.video_archiver: Optional[VideoArchiver] = None
         self._lock_cameras: Dict[str, Any] = {}  # device_id -> camera 实体
+        self._snapshot_pending: set[tuple[str, str]] = set()  # (device_id, object_key) 进行中
         self._history_cleanup_unsub = None
         self.HISTORY_KEEP_DAYS = 7  # 历史截图/录像保留天数
         
@@ -961,15 +962,21 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         ts: int | str,
     ) -> None:
         """获取凭证 → 签名 URL → 下载截图 → 落盘历史 → 推送 camera 实体。"""
+        dedup_key = (device_id, object_key)
+        if dedup_key in self._snapshot_pending:
+            return  # 同一事件已有一个下载任务在跑（cmd352/cmd82 可能重复触发）
+        self._snapshot_pending.add(dedup_key)
         camera = self._lock_cameras.get(device_id)
         if camera is None:
             _LOGGER.debug(
                 "门锁截图实体未注册，跳过截图更新 device=%s",
                 fingerprint(device_id, self._redaction_salt),
             )
+            self._snapshot_pending.discard(dedup_key)
             return
         cos = self.cos_media
         if cos is None:
+            self._snapshot_pending.discard(dedup_key)
             return
         try:
             url = await cos.signed_url(device_id, device_uid, object_key)
@@ -977,17 +984,25 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 _LOGGER.warning("门锁截图签名 URL 获取失败 device=%s", fingerprint(device_id, self._redaction_salt))
                 return
             image: Optional[bytes] = None
-            # 门铃图片上传有延迟：事件先到、图片对象可能尚未就绪，重试数次
-            for attempt in range(3):
+            # 门铃图片上传延迟可达数十秒：间隔 3/6/10/15 秒，共 5 次（总窗口 ~34s）
+            retry_delays = (0, 3, 6, 10, 15)
+            for attempt, delay in enumerate(retry_delays):
+                if delay:
+                    await asyncio.sleep(delay)
                 image = await self.hass.async_add_executor_job(_download_bytes, url)
                 if image:
                     break
-                if attempt < 2:
-                    _LOGGER.debug("截图下载重试 %s/3 device=%s", attempt + 2, fingerprint(device_id, self._redaction_salt))
-                    await asyncio.sleep(2 * (attempt + 1))
+                _LOGGER.debug(
+                    "截图下载重试 %s/%s device=%s",
+                    attempt + 1,
+                    len(retry_delays),
+                    fingerprint(device_id, self._redaction_salt),
+                )
         except Exception:  # noqa: BLE001 - 截图失败不应影响事件流
             _LOGGER.exception("门锁截图更新异常 device=%s", fingerprint(device_id, self._redaction_salt))
             return
+        finally:
+            self._snapshot_pending.discard(dedup_key)
         if image:
             try:
                 await self.hass.async_add_executor_job(
