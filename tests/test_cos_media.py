@@ -94,6 +94,9 @@ class SignedUrlTests(unittest.TestCase):
         self.assertIn("q-sign-time=", url)
         self.assertIn("q-signature=", url)
         self.assertIn("x.jpg", url)
+        # STS 临时凭证必须带 x-cos-security-token，浏览器才能直接访问
+        self.assertIn("x-cos-security-token=", url)
+        self.assertIn("QeIhfJn0wdBI45nD3VbQcchmkhFxYHqadf45e2f789d5a3469de9046a99add69d", url)
 
     def test_key_without_leading_slash(self) -> None:
         url = cos_media.signed_media_url(

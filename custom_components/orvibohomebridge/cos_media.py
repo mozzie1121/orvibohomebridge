@@ -20,6 +20,7 @@ import json
 import logging
 import time
 from typing import Any, Mapping, Optional
+from urllib.parse import quote
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,7 +123,11 @@ def signed_media_url(
     object_key: str,
     ttl: int = 600,
 ) -> str:
-    """把 COS 对象键签成临时可访问 URL（预签名 URL 格式）。"""
+    """把 COS 对象键签成临时可访问 URL（预签名 URL 格式）。
+
+    STS 临时凭证必须把 x-cos-security-token 放进 URL query（浏览器无法带
+    自定义 header），否则直接访问会 AccessDenied。该参数不参与签名计算。
+    """
     host = f"{creds.bucket}.cos.{creds.region}.myqcloud.com"
     path = object_key if object_key.startswith("/") else "/" + object_key
     now = max(int(time.time()), int(creds.system_time_ms / 1000) if creds.system_time_ms else 0)
@@ -130,7 +135,8 @@ def signed_media_url(
     auth = cos_authorization(
         creds.secret_id, creds.secret_key, "get", path, host, now, now + duration
     )
-    return f"https://{host}{path}?{auth}"
+    token_part = f"&x-cos-security-token={quote(creds.session_token, safe='')}"
+    return f"https://{host}{path}?{auth}{token_part}"
 
 
 class CosMediaManager:
