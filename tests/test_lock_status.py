@@ -378,12 +378,22 @@ class DoorAttributionTests(unittest.TestCase):
 class LockStatusDerivationTests(unittest.TestCase):
     def test_open_door_means_unlocked(self) -> None:
         self.assertEqual(
-            lock_status.derive_lock_status(True, True, None),
+            lock_status.derive_lock_status(False, True, None),
             "unlocked",
         )
         self.assertEqual(
             lock_status.derive_lock_status(False, True, True),
             "unlocked",
+        )
+
+    def test_open_door_with_locked_is_abnormal(self) -> None:
+        self.assertEqual(
+            lock_status.derive_lock_status(True, True, None),
+            "abnormal",
+        )
+        self.assertEqual(
+            lock_status.derive_lock_status(True, True, True),
+            "abnormal",
         )
 
     def test_closed_door_inside_lock(self) -> None:
