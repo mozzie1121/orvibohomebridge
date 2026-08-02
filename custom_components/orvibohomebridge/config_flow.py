@@ -5,16 +5,58 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import selector
+
 from .https_client import HttpsClient
 from .const import (
     DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_FAMILY_ID,
 )
+from .device_types import classify_device, is_hidden_category
+from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
 
 
+def _device_label(device_id: str, name: str, room: str) -> str:
+    """设备标签：名称 + 房间。"""
+    if room and room != name:
+        return f"{name} [{room}]"
+    return name or device_id[-8:]
+
+
+async def _fetch_devices(
+    username: str,
+    password: str,
+    family_id: str,
+) -> list[dict]:
+    """拉取设备列表（含房间信息），过滤隐藏类别。"""
+    client = None
+    try:
+        client = HttpsClient(username=username, password=password)
+        if family_id:
+            client.family_id = family_id
+        if not await client.ensure_login():
+            return []
+        data = await client.fetch_device_status()
+        devices = client.parse_device_status_list(data) if data else []
+    except Exception as e:
+        _LOGGER.debug("获取设备列表失败: %s", e)
+        return []
+    finally:
+        if client:
+            await client.close()
+    return [
+        d for d in devices
+        if not is_hidden_category(classify_device(d))
+    ]
+
+
 class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+
+    def __init__(self) -> None:
+        self._devices: list[dict] = []
+        self._pending_selected_ids: list[str] = []
 
     async def async_step_user(
         self, user_input: Optional[dict] = None
@@ -45,9 +87,17 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._family_id = temp_client.family_id
                         self._family_name = temp_client.family_name
 
-                        # 如果只有一个家庭，直接使用；否则让用户选择
-                        if len(self._family_list) <= 1:
-                            return await self._create_entry()
+                        # 前置认证校验：拿到第一个家庭 ID 后立即做 SSL 探针，
+                        # 密码错误时在凭据表单直接提示，不再展示家庭列表
+                        probe_family_id = (
+                            str(self._family_list[0]["familyId"])
+                            if self._family_list
+                            else ""
+                        )
+                        if not await self._probe_ssl_login(probe_family_id):
+                            errors["base"] = "auth_failed"
+                        elif len(self._family_list) <= 1:
+                            return await self.async_step_devices()
                         else:
                             return await self.async_step_select_family()
                     else:
@@ -80,7 +130,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if f["familyId"] == family_id:
                         self._family_name = f["familyName"]
                         break
-                return await self._create_entry()
+                return await self.async_step_devices()
 
         # 构建家庭选择列表
         family_choices = {
@@ -91,7 +141,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if len(family_choices) == 1:
             # 只有一个家庭，直接使用
             self._family_id = list(family_choices.keys())[0]
-            return await self._create_entry()
+            return await self.async_step_devices()
 
         return self.async_show_form(
             step_id="select_family",
@@ -103,6 +153,140 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "family_count": str(len(family_choices)),
             }
         )
+
+    async def async_step_devices(
+        self, user_input: Optional[dict] = None
+    ) -> FlowResult:
+        """选择要接入 Home Assistant 的设备。"""
+        errors: dict[str, str] = {}
+        if not self._devices:
+            self._devices = await _fetch_devices(
+                self._username, self._password, self._family_id or ""
+            )
+            if not self._devices:
+                errors["base"] = "no_devices"
+
+        if user_input is not None and CONF_SELECTED_DEVICE_IDS in user_input:
+            available = {str(d["device_id"]) for d in self._devices}
+            requested = {str(item) for item in user_input[CONF_SELECTED_DEVICE_IDS]}
+            self._pending_selected_ids = [
+                str(d["device_id"])
+                for d in self._devices
+                if str(d["device_id"]) in requested & available
+            ]
+            if not self._pending_selected_ids:
+                errors["base"] = "no_devices_selected"
+            else:
+                return await self._create_entry()
+
+        options = [
+            selector.SelectOptionDict(
+                value=str(d["device_id"]),
+                label=_device_label(
+                    str(d["device_id"]),
+                    str(d.get("device_name") or ""),
+                    str(d.get("room_name") or ""),
+                ),
+            )
+            for d in self._devices
+        ]
+        default_ids = [str(d["device_id"]) for d in self._devices]
+        return self.async_show_form(
+            step_id="devices",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SELECTED_DEVICE_IDS, default=default_ids
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=options,
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.LIST,
+                        )
+                    )
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Optional[dict] = None
+    ) -> FlowResult:
+        """开始重新认证（凭据失效时由 Home Assistant 自动触发）。"""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: Optional[dict] = None
+    ) -> FlowResult:
+        """输入新密码并更新配置项。"""
+        errors: dict[str, str] = {}
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        if entry is None:
+            return self.async_abort(reason="reauth_entry_missing")
+        username = str(entry.data.get(CONF_USERNAME, ""))
+
+        if user_input is not None:
+            password = str(user_input.get(CONF_PASSWORD) or "")
+            if not password:
+                errors["base"] = "empty_username_or_password"
+            else:
+                temp_client = None
+                success = False
+                try:
+                    temp_client = HttpsClient(username=username, password=password)
+                    success = await temp_client.ensure_login()
+                except Exception:
+                    success = False
+                finally:
+                    if temp_client:
+                        await temp_client.close()
+                if success:
+                    self._username = username
+                    self._password = password
+                    family_id = str(entry.data.get(CONF_FAMILY_ID, ""))
+                    if await self._probe_ssl_login(family_id):
+                        return self.async_update_reload_and_abort(
+                            entry,
+                            data_updates={CONF_PASSWORD: password},
+                        )
+                errors["base"] = "auth_failed"
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+            description_placeholders={"username": username},
+        )
+
+    async def _probe_ssl_login(self, family_id: str) -> bool:
+        """用 SSL 二进制登录校验密码真实有效。
+
+        REST OAuth 不校验密码（任意密码都返回 token），真正的校验点在
+        10002 端口 SSL 登录。仅当服务器明确拒绝（status 非空且非 0）时
+        判定为认证失败；网络/超时类失败不阻塞配置流程。
+        """
+        from .ssl_client import SSLClient
+        from .const import SSL_HOST, SSL_PORT
+
+        client = SSLClient(
+            hass=self.hass,
+            ssl_host=SSL_HOST,
+            ssl_port=SSL_PORT,
+            username=self._username,
+            password=self._password,
+            family_id=family_id,
+            on_session_id_obtained=lambda sid: None,
+            on_status_update=lambda did, raw: None,
+            retry_interval=0,
+        )
+        try:
+            ok = await client.connect_and_login(max_attempts=1, hello_wait=1.0)
+            if ok:
+                return True
+            status = getattr(client, "_login_status", None)
+            return status is None or status == 0
+        finally:
+            await client._disconnect()
 
     async def _create_entry(self) -> FlowResult:
         """创建配置条目"""
@@ -117,6 +301,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_PASSWORD: self._password,
                 CONF_FAMILY_ID: self._family_id,
             },
+            options={
+                CONF_SELECTED_DEVICE_IDS: self._pending_selected_ids,
+            },
         )
 
     @staticmethod
@@ -125,24 +312,76 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
+    """重新选择接入的设备。"""
+
     def __init__(self, config_entry):
-        self.config_entry = config_entry
-        self._https_client: Optional[HttpsClient] = None
+        # 新版 HA 将 OptionsFlow.config_entry 暴露为只读属性；
+        # 用私有字段保存工厂参数，兼容新旧版本。
+        self._config_entry = config_entry
+        self._devices: list[dict] = []
 
     async def async_step_init(self, user_input=None):
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+        return await self.async_step_devices(user_input)
 
+    async def async_step_devices(self, user_input=None):
+        """重新选择要接入的设备。"""
+        errors: dict[str, str] = {}
+        if not self._devices:
+            self._devices = await _fetch_devices(
+                str(self._config_entry.data.get(CONF_USERNAME, "")),
+                str(self._config_entry.data.get(CONF_PASSWORD, "")),
+                str(self._config_entry.data.get(CONF_FAMILY_ID, "")),
+            )
+            if not self._devices:
+                errors["base"] = "no_devices"
+
+        if user_input is not None:
+            available = {str(d["device_id"]) for d in self._devices}
+            requested = {
+                str(item) for item in user_input.get(CONF_SELECTED_DEVICE_IDS, [])
+            }
+            selected = [
+                str(d["device_id"])
+                for d in self._devices
+                if str(d["device_id"]) in requested & available
+            ]
+            if not selected:
+                errors["base"] = "no_devices_selected"
+            else:
+                return self.async_create_entry(
+                    title="",
+                    data={CONF_SELECTED_DEVICE_IDS: selected},
+                )
+
+        options = [
+            selector.SelectOptionDict(
+                value=str(d["device_id"]),
+                label=_device_label(
+                    str(d["device_id"]),
+                    str(d.get("device_name") or ""),
+                    str(d.get("room_name") or ""),
+                ),
+            )
+            for d in self._devices
+        ]
+        current = selected_device_ids(
+            self._config_entry.options,
+            [str(d["device_id"]) for d in self._devices],
+        )
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_USERNAME,
-                    default=self.config_entry.data.get(CONF_USERNAME)
-                ): str,
-                vol.Optional(
-                    CONF_PASSWORD,
-                    default=""
-                ): str,
-            }),
+            step_id="devices",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SELECTED_DEVICE_IDS, default=sorted(current)
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=options,
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.LIST,
+                        )
+                    )
+                }
+            ),
+            errors=errors,
         )

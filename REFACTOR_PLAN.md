@@ -29,6 +29,26 @@
 - 逐步给 coordinator 状态解析加测试
 - 确保所有协议层函数有测试覆盖
 
+### 第6轮：reauth 与凭据安全（已完成 2026-08-02）
+- config_flow 增加 `reauth` / `reauth_confirm` 流程，凭据失效由 HA 自动触发重新认证
+- 新增 `redact.py`（移植 orvibo-cloud 的脱敏方案）：日志严格打码、诊断保留可读值但指纹化标识
+- coordinator / ssl_client 移除会泄露 `session_key`、原始推送 payload 的 debug 日志
+- `https_client` 恢复 TLS 证书校验（移除 `ssl=False`）
+- diagnostics 改为脱敏输出，`_cmd42_log` 仅存内存、绝不写日志
+
+### 第7轮：发布自动化（已完成 2026-08-02）
+- 新增 `validate.yml`（unittest + hacs + hassfest）
+- 新增 `hacs-release.yml`（每周二/五 beta、v tag 正式版、`orvibohomebridge.zip` 契约）
+- `hacs.json` 启用 `zip_release`，资产固定为 `orvibohomebridge.zip`
+
+### 第8轮：SSL 层认证校验（已完成 2026-08-02）
+- 验证结论：REST `getOauthToken` 不校验密码（任意密码返回有效 token，可拉取家庭/设备）；
+  真正的密码校验在 10002 端口二进制 SSL 登录（假密码返回 `status=12`）。
+- coordinator：SSL 登录被服务器明确拒绝时抛 `ConfigEntryAuthFailed`，触发 HA 重新认证；
+  网络类失败保持后台重试，不误报。
+- config_flow / reauth：新增 `_probe_ssl_login()` 轻量探针（单次握手、快速超时），
+  在配置阶段就把错误密码拦截为 `auth_failed`。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

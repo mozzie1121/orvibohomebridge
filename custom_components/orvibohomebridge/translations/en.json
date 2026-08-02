@@ -16,6 +16,13 @@
                     "family_id": "Family"
                 }
             },
+            "reauth_confirm": {
+                "title": "Re-authenticate",
+                "description": "Update the password for {username}",
+                "data": {
+                    "password": "Password"
+                }
+            },
             "devices": {
                 "title": "Select Devices",
                 "description": "Only checked devices will be added to Home Assistant.",
@@ -40,7 +47,8 @@
             "cannot_connect": "Cannot connect to ORVIBO cloud"
         },
         "abort": {
-            "already_configured": "This account is already configured"
+            "already_configured": "This account is already configured",
+            "reauth_entry_missing": "The configuration entry no longer exists"
         }
     },
     "options": {
@@ -62,7 +70,8 @@
         },
         "error": {
             "no_devices_selected": "Select at least one device",
-            "cannot_connect": "Cannot connect to ORVIBO cloud"
+            "cannot_connect": "Cannot connect to ORVIBO cloud",
+            "no_devices": "No devices found in this family"
         }
     }
 }

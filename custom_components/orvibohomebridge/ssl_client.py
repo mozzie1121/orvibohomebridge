@@ -216,7 +216,12 @@ class SSLClient:
             else:
                 raise ConnectionError("重连间隔为0，放弃重连")
 
-    async def connect_and_login(self):
+    async def connect_and_login(
+        self,
+        max_attempts: int = SSL_MAX_RECONNECT_ATTEMPTS,
+        hello_wait: float = 3.0,
+    ):
+        """连接并登录。max_attempts/hello_wait 供配置流程的轻量探针使用。"""
         if self.connected:
             return True
         
@@ -236,7 +241,7 @@ class SSLClient:
                 pass
             self._heartbeat_task = None
         
-        for retry in range(SSL_MAX_RECONNECT_ATTEMPTS):
+        for retry in range(max_attempts):
             try:
                 _LOGGER.debug("SSL正在连接和登录...")
                 self.connected = await self._connect()
@@ -249,10 +254,10 @@ class SSLClient:
                         name="orvibohomebridge_server_response_listener"
                     )
                     # 等待Hello密钥返回
-                    await asyncio.sleep(3)
-                    _LOGGER.debug(f"等待后检查session_key={self.session_key}")
+                    await asyncio.sleep(hello_wait)
+                    _LOGGER.debug("等待后检查 session_key 是否就绪: %s", self.session_key is not None)
                     login_result = await self._send_login()
-                    _LOGGER.debug(f"SSL登录结果: {login_result}")
+                    _LOGGER.debug("SSL登录结果: %s", login_result)
                     if login_result:
                         _LOGGER.debug("启动心跳保活任务...")
                         self._heartbeat_task = self.hass.async_create_background_task(
@@ -297,14 +302,18 @@ class SSLClient:
 
     async def _send_hello(self):
         payload = HomemateJsonData.ssl_get_session()
-        _LOGGER.debug(f"发送Hello包: {payload}")
+        _LOGGER.debug("发送Hello包: cmd=%s keys=%s", payload.get("cmd"), sorted(payload))
         await self._send_packet(payload, DEFAULT_KEY.encode("utf-8"))
 
     async def _send_login(self):
         if not self.connected:
             _LOGGER.debug("未建立SSL连接，无法发起登录")
             return False
-        _LOGGER.debug(f"准备登录，当前session_key={self.session_key}, family_id={self.family_id}")
+        _LOGGER.debug(
+            "准备登录: session_key_ready=%s, family_id=%s",
+            self.session_key is not None,
+            self.family_id,
+        )
         password_md5 = hashlib.md5(self.password.encode()).hexdigest().upper()
         payload = HomemateJsonData.ssl_login(
             username=self.username,
@@ -771,7 +780,7 @@ class SSLClient:
         key = data.get("key")
         self.session_key = str(key).encode("utf-8") if key else DEFAULT_KEY.encode("utf-8")
         SSLClient.add_key(self.session_id, self.session_key)
-        _LOGGER.debug(f"Hello响应成功，会话ID:{self.session_id} 密钥:{key} hex={self.session_key.hex()} len={len(self.session_key)}")
+        _LOGGER.debug("Hello响应成功: session_key_len=%s", len(self.session_key))
         self.on_session_id_obtained(self.session_id)
 
     async def _handle_login(self, data: dict):

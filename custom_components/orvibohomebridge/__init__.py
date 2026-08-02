@@ -3,18 +3,24 @@ import asyncio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, CONF_FAMILY_ID
 from .coordinator import OrviboMeshCoordinator
-from .selection import CONF_DEVICE_AREAS
+from .selection import CONF_DEVICE_AREAS, selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan")
 
 SERVICE_REFRESH = "refresh_devices"
+
+# 本集成仅通过配置项使用，不读取 configuration.yaml。
+# 新版 HA 要求 empty_config_schema 传入 domain 参数。
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
@@ -50,6 +56,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         _LOGGER.info("开始设置 Orvibo Mesh...")
         await coordinator._async_setup()
         _LOGGER.info("Coordinator 设置完成")
+    except ConfigEntryAuthFailed:
+        raise
     except Exception as e:
         _LOGGER.error(f"Coordinator 设置失败: {e}", exc_info=True)
         raise ConfigEntryNotReady from e
@@ -65,6 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         """等待 coordinator 第一次刷新完成后再应用区域映射。"""
         if not coordinator.last_update_success:
             await coordinator.async_refresh()
+        await _async_assign_areas(hass, entry)
         await _apply_device_areas(hass, entry)
     
     hass.async_create_task(_apply_after_refresh())
@@ -78,7 +87,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry):
     """当配置条目更新时重新应用区域映射。"""
     _LOGGER.info("配置条目已更新，重新应用设备区域映射")
+    await _async_assign_areas(hass, entry)
     await _apply_device_areas(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _async_assign_areas(hass: HomeAssistant, entry: ConfigEntry):
+    """将云端房间自动映射为 Home Assistant 区域（orvibo-lan 同款）。"""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if not coordinator:
+        return
+    area_registry = ar.async_get(hass)
+    device_registry = dr.async_get(hass)
+    selected = selected_device_ids(entry.options, coordinator.devices)
+    for device_id, device in coordinator.devices.items():
+        if device_id not in selected:
+            continue
+        room_name = device.get("room_name")
+        if not room_name:
+            continue
+        area = area_registry.async_get_area_by_name(room_name)
+        if area is None:
+            area = area_registry.async_create(room_name)
+        device_entry = device_registry.async_get_device(
+            identifiers={(DOMAIN, device_id)}
+        )
+        if device_entry is not None and device_entry.area_id != area.id:
+            device_registry.async_update_device(device_entry.id, area_id=area.id)
 
 
 async def _apply_device_areas(hass: HomeAssistant, entry: ConfigEntry):

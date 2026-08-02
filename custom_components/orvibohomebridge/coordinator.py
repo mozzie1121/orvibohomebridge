@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import secrets
 from typing import Dict, Any, Optional
 from datetime import timedelta
 from homeassistant.core import HomeAssistant
@@ -11,6 +12,7 @@ from .ssl_client import SSLClient
 from .https_client import HttpsClient
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .packet import get_api_host
+from .redact import fingerprint, redact_packet
 from .const import (
     SSL_HOST, SSL_PORT,
     HTTPS_HOST, HTTPS_HOST_GLOBAL, SSL_HOST_GLOBAL,
@@ -43,8 +45,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
         
-        # 调试信息：记录最近收到的原始状态推送
+        # 调试信息：记录最近收到的原始状态推送（仅内存，日志/诊断均脱敏）
         self._cmd42_log: list[dict] = []
+        self._redaction_salt = secrets.token_bytes(32)
         self._last_update_time: Dict[str, float] = {}  # 设备最后更新时间戳
         self.OFFLINE_TIMEOUT = 600  # 设备离线超时秒数
 
@@ -803,7 +806,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 self.https_client.family_name = None
 
             if not await self.https_client.ensure_login():
-                raise UpdateFailed("HTTPS登录失败")
+                raise ConfigEntryAuthFailed("HTTPS登录失败")
 
             _LOGGER.debug("第一步：拉取设备列表（三层回退）...")
             device_status_data, devices = await self._discover_devices()
@@ -874,8 +877,19 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             await self._init_ssl_client()
 
             if self.ssl_client:
-                await self.ssl_client.connect_and_login()
-                await self._query_clothes_horse_initial_status()
+                ssl_ok = await self.ssl_client.connect_and_login()
+                login_status = getattr(self.ssl_client, "_login_status", None)
+                if not ssl_ok and login_status is not None and login_status != 0:
+                    # 服务器明确拒绝了登录（如密码错误 status=12），触发 HA 重新认证
+                    raise ConfigEntryAuthFailed(
+                        f"SSL 登录被服务器拒绝 (status={login_status})"
+                    )
+                if ssl_ok:
+                    await self._query_clothes_horse_initial_status()
+                else:
+                    _LOGGER.warning(
+                        "SSL 连接/登录未就绪（非认证拒绝），将在后台重试"
+                    )
 
             _LOGGER.info(f"初始化完成，共 {len(self.devices)} 个设备")
             for device_id, dev in self.devices.items():
@@ -908,6 +922,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 )
 
             self.async_set_updated_data(self.device_states)
+        except ConfigEntryAuthFailed:
+            raise
         except Exception as e:
             raise UpdateFailed(f"初始化失败: {str(e)}") from e
 
@@ -959,9 +975,13 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         def on_status_update(device_id: str, raw_status: dict):
             """处理MQTT状态推送，根据设备类型调用对应的解析方法"""
-            _LOGGER.debug(f"收到MQTT状态更新: deviceId={device_id}, raw_status={raw_status}")
-            
-            # 记录原始推送到调试日志（最多200条）
+            _LOGGER.debug(
+                "收到MQTT状态更新: deviceId=%s cmd=%s",
+                fingerprint(device_id, self._redaction_salt),
+                raw_status.get("cmd"),
+            )
+
+            # 记录原始推送到内存（最多200条，仅诊断页脱敏展示，绝不写入日志）
             self._cmd42_log.append({
                 "ts": __import__("time").time(),
                 "device_id": device_id,
