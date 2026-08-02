@@ -139,6 +139,62 @@
 - **开锁事件**：记录开锁方式（指纹、密码等），5秒后自动恢复
 - **电池电量**：分别显示干电池和锂电池的电量百分比
 
+#### 开锁事件属性
+
+**开锁事件** 传感器（状态显示 `张三开门` / `用户2开门` / `无`）附带以下属性：
+
+| 属性 | 说明 |
+|------|------|
+| `unlock_type` | 开锁方式，见下方取值表 |
+| `unlock_user_id` | 用户 ID |
+| `unlock_user_name` | 用户名称（在配置 → 锁用户映射 中设置后才有） |
+| `unlock_time` | 事件时间戳（Unix 秒） |
+
+`unlock_type` 取值：
+
+| 值 | 含义 |
+|------|------|
+| `fingerprint` | 指纹 |
+| `password` | 密码 |
+| `face` | 人脸 |
+| `card` | 卡片 |
+
+#### 事件总线（自动化推荐）
+
+所有门锁状态/事件都会发布到 HA 事件总线 `orvibohomebridge_lock_event`，开锁事件（`kind=unlock`）字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `kind` | string | `unlock` |
+| `device_id` | string | 锁设备 ID |
+| `unlock_type` | string | 开锁方式：`fingerprint` 指纹 / `password` 密码 / `face` 人脸 / `card` 卡片 |
+| `unlock_user_id` | int | 用户 ID |
+| `unlock_user_name` | string | 用户名称（配置映射后才有） |
+| `time` | int | 事件时间戳（Unix 秒） |
+
+其他事件类型（`kind`）：`error_unlock` 开锁失败、`picklock` 撬锁、`door_unclose` 门未关、
+`leave_home` 离家防护报警、`ring` 门铃、`message` 门锁文本消息。
+
+自动化示例（按用户过滤）：
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: orvibohomebridge_lock_event
+    event_data:
+      kind: unlock
+conditions:
+  - condition: template
+    value_template: "{{ trigger.event.data.unlock_user_id == 2 }}"
+actions:
+  - action: notify.mobile_app_phone
+    data:
+      title: 开门通知
+      message: >-
+        {{ trigger.event.data.unlock_user_name
+           | default('用户' ~ trigger.event.data.unlock_user_id) }} 开门了
+```
+
 ## 📷 界面预览
 
 ### 智能晾衣机控制页面
