@@ -80,8 +80,7 @@
             "state": {
                 "locked": "上锁",
                 "unlocked": "未上锁",
-                "inside_locked": "门内反锁",
-                "open": "门未关"
+                "inside_locked": "门内反锁"
             }
         }
     }

@@ -244,12 +244,12 @@ def derive_lock_status(
 ) -> Optional[str]:
     """从归一化字段推导面向用户的锁状态。
 
-    优先级：门内反锁 > 门未关（绑定门磁）> 上锁 > 未上锁。
+    规则（绑定门磁）：门磁开 = 未上锁；门磁关 = 门内反锁/上锁/未上锁。
     """
+    if door_open is True:
+        return "unlocked"
     if inside_locked is True:
         return "inside_locked"
-    if door_open is True:
-        return "open"
     if locked is True:
         return "locked"
     if locked is False:
