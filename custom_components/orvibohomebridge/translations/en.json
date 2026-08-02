@@ -53,6 +53,20 @@
     },
     "options": {
         "step": {
+            "init": {
+                "title": "ORVIBO options",
+                "menu_options": {
+                    "devices": "Select devices",
+                    "lock_users": "Lock user mapping"
+                }
+            },
+            "lock_users": {
+                "title": "Lock user mapping",
+                "description": "One entry per line: userID=name (e.g. 1=John, 2=Jane). Used to show who opened the door.",
+                "data": {
+                    "lock_user_names": "User mapping"
+                }
+            },
             "devices": {
                 "title": "Select Devices",
                 "description": "Only checked devices will be added to Home Assistant.",
@@ -72,6 +86,19 @@
             "no_devices_selected": "Select at least one device",
             "cannot_connect": "Cannot connect to ORVIBO cloud",
             "no_devices": "No devices found in this family"
+        }
+    },
+    "entity": {
+        "sensor": {
+            "door_lock_state": {
+                "name": "Lock state",
+                "state": {
+                    "locked": "Locked",
+                    "unlocked": "Unlocked",
+                    "inside_locked": "Inside locked",
+                    "abnormal": "Abnormal"
+                }
+            }
         }
     }
 }

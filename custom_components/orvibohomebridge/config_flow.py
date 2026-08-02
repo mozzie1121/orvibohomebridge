@@ -9,9 +9,14 @@ from homeassistant.helpers import selector
 
 from .https_client import HttpsClient
 from .const import (
-    DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_FAMILY_ID,
+    DOMAIN,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_FAMILY_ID,
+    CONF_LOCK_USER_NAMES,
 )
 from .device_types import classify_device, is_hidden_category
+from .lock_status import format_lock_user_names, parse_lock_user_names
 from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
@@ -321,7 +326,40 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         self._devices: list[dict] = []
 
     async def async_step_init(self, user_input=None):
-        return await self.async_step_devices(user_input)
+        """选项菜单：选择设备 / 锁用户映射。"""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["devices", "lock_users"],
+        )
+
+    async def async_step_lock_users(self, user_input=None):
+        """编辑门锁 userId → 名称 映射（每行 用户ID=名称）。"""
+        if user_input is not None:
+            options = dict(self._config_entry.options)
+            options[CONF_LOCK_USER_NAMES] = parse_lock_user_names(
+                user_input.get(CONF_LOCK_USER_NAMES, "")
+            )
+            return self.async_create_entry(title="", data=options)
+
+        current = format_lock_user_names(
+            self._config_entry.options.get(CONF_LOCK_USER_NAMES, {})
+        )
+        return self.async_show_form(
+            step_id="lock_users",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_LOCK_USER_NAMES,
+                        default=current,
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            multiline=True,
+                            type=selector.TextSelectorType.TEXT,
+                        )
+                    )
+                }
+            ),
+        )
 
     async def async_step_devices(self, user_input=None):
         """重新选择要接入的设备。"""
@@ -348,9 +386,11 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
             if not selected:
                 errors["base"] = "no_devices_selected"
             else:
+                options = dict(self._config_entry.options)
+                options[CONF_SELECTED_DEVICE_IDS] = selected
                 return self.async_create_entry(
                     title="",
-                    data={CONF_SELECTED_DEVICE_IDS: selected},
+                    data=options,
                 )
 
         options = [

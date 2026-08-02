@@ -49,6 +49,145 @@
 - config_flow / reauth：新增 `_probe_ssl_login()` 轻量探针（单次握手、快速超时），
   在配置阶段就把错误密码拦截为 `auth_failed`。
 
+### 第9轮：门锁事件走通（代码已完成 2026-08-02，待实机样本校准）
+
+发现并修复两个"事件永远到不了实体"的根因：
+- `ssl_client._handle_state_update` / `_handle_device_status_report` 未把 `cmd`、`action`、
+  `event` 透传到 raw_status 顶层，`on_status_update` 的 `cmd==352` 分支和
+  `_parse_doorbell_event` 永远匹配不上。
+- `respByAcc` 过滤把缺失该字段的主动推送（门锁状态、门铃/开锁事件）整个丢弃。
+
+代码改动：
+- 新增 `lock_status.py`（纯标准库）：两种门锁属性形态归一化
+  （`doorLock.lockState/doorState/insideLockState` 与 `door_status/reverse_lock/handle/clild_lock`）、
+  双电池解析（batteryManager/batteryManager1）、cmd=352 事件解析
+  （unlockEvent / ring / answered / bye）。
+- `ssl_client.py`：透传 `cmd/action/event`；`respByAcc=false` 且非事件才过滤。
+- `coordinator.py`：门锁解析改用归一化；门锁状态/事件发布到 HA 事件总线
+  `orvibohomebridge_lock_event`（device_id/uid/locked/door_open/unlock_type 等，日志脱敏）；
+  门铃/开锁复位改为按 (device, kind) 单任务管理（`LOCK_RESET_DELAY=5`）。
+- 测试：`tests/test_lock_status.py` 13 例，全套 108 例通过。
+- 安全：5 个 tests/ 脚本的硬编码账号密码改为读取环境变量 `ORVIBO_USERNAME` /
+  `ORVIBO_PASSWORD`。
+
+待办：
+- 用 `tests/orvibo_probe.py ... lock` 实机抓包（动作标记 + 脱敏 JSONL），固化 fixtures。
+- 根据真实样本校准归一化键名与事件字段。
+
+### 第9轮补充：实机抓包校准（已完成 2026-08-02）
+
+基于 V5 Eyes 门锁（type=522, subDeviceType=463）实机抓包校准：
+
+确认的报文形态：
+- 锁状态：cmd=42 `properties.doorLock.{lockState,doorState,insideLockState}`（on=锁定/门开/内锁）。
+- `insideLockState` 会**单独推送**（properties 中只有该字段），必须按字段增量更新。
+- 开锁事件：cmd=352 `unlockEvent {type: fingerprint|password, userId}`。
+- 开锁失败告警：cmd=352 `errorUnlockEvent {type}` + cmd=82（infoType=39, isAlarm=1）
+  "开锁身份多次验证失败，门锁暂时被锁定"。
+- 门铃：cmd=352 `doorbell ring`（含抓拍图 url）+ cmd=82（infoType=68）"有客人来访"。
+- 解锁文本消息：cmd=82（infoType=12）"XX 用密码/指纹打开门锁"。
+- 门未关提醒：cmd=352 `doorUnclose`（无 value）+ cmd=82（infoType=39, isAlarm=1）
+  "门未关，请及时关门"。
+- 撬锁/非法侵入：cmd=352 `picklockEvent`（value 可含 videoUrl/url，也可能为空对象）+
+  cmd=82（infoType=39, isAlarm=1）"有人撬开门锁非法侵入，请确认现场情况！"。
+- 离家防护报警：cmd=352 `leaveHomeEvent`（value 可含 videoUrl/url，也可能为空）+
+  cmd=82（infoType=39, isAlarm=1）"离家防护模式下从门内打开门锁"。
+- 离家布防状态：`doorLock.leaveHomeAlarmCfg`（on/off）独立推送，纳入 `leave_home_armed` 状态。
+- 电池状态：cmd=42 独立推送 `batteryManager`（干电池）/ `batteryManager1`（锂电池）。
+  `isSetupBattery=off`（未安装电池）时 level=0 无意义，置为未知。
+- 云端会重复推送同一事件（同一 unlockEvent 出现两次），需按签名去重。
+
+代码更新：
+- `lock_status.py`：新增 `errorUnlockEvent`；消息解析扩展 `pic_url`/`time`；状态归一化支持部分字段。
+- 后续新增 `doorUnclose`（门未关）、`picklockEvent`（撬锁）与 `leaveHomeEvent`（离家防护），
+  均含 video_url/pic_url 且兼容空 value。
+- `coordinator.py`：门锁状态按字段增量更新（避免部分推送误重置）；
+  事件总线按 (kind/type/userId/time 或 state 组合) 签名去重。
+- fixtures：`tests/fixtures/lock_v5eyes_samples.jsonl`（脱敏真实样本 11 条）。
+- 测试：新增 errorUnlock/部分更新/门铃消息/告警消息/样本冒烟，全套 117 例通过。
+
+### 第10轮：开门归属（谁开的门）（已完成代码 2026-08-02）
+
+- 事件总线新增归属字段：
+  - unlock 事件：`unlock_user_name`（配置过名称时）。
+  - door_open=True 的状态事件：`opened_by_user_id` / `opened_by_type` /
+    `opened_by_name`——把窗口内（默认 30s）最近一次开锁归属到本次开门。
+- 新服务 `orvibohomebridge.set_lock_user_name`（entry_id 可选，device_id + user_id + name，
+  name 留空清除），映射保存在内存（重启丢失，后续可持久化到 options）。
+- 开锁事件实体的 extra_state_attributes 增加 `unlock_user_name`。
+- 测试：resolve_opened_by 窗口/缺失归属 4 例，全套 128 例通过。
+
+### 第10轮修复：实机测试发现的问题（已完成 2026-08-02）
+
+- **门铃/开锁事件不更新**：根因是 `ssl_client._listen_loop` 未分发 cmd=352，
+  事件包全部落入"未知cmd包"分支。已把 cmd=352 接入 `_handle_state_update` 通道。
+- **锁状态语义**：新增只读传感器"锁状态"（ENUM）：
+  门内反锁 > 门未关（绑定门磁）> 上锁 > 未上锁 > 未知；
+  二进制锁传感器默认值从 False（已锁定）改为 None（未知），避免初始误报。
+- 新增 `derive_lock_status()` 推导函数 + 传感器实体 + 中英翻译。
+- 全套 132 例通过。
+
+### 第10轮再修：锁状态收敛为单一实体（已完成 2026-08-02）
+
+- 删除旧的二进制"锁状态"传感器（`OrviboDoorLockLockSensor`），
+  只保留 ENUM 三态传感器，避免同名实体重复。
+- 锁状态规则（用户确认）：门磁开=未上锁；门磁关=门内反锁/上锁/未上锁
+  （保留"锁舌收回但门未推开"的临界状态：门关+lockState=off → 未上锁）。
+
+### 第10轮再修：lockState 语义取反（已完成 2026-08-02）
+
+- 实机时序证据（142950：密码解锁事件后紧跟 lockState=on）表明
+  V5 Eyes 的 `lockState="on"=已解锁`、`"off"=已锁定`，原代码注释方向相反。
+- `normalize_door_lock_properties` 已取反；事件总线 `locked` 字段、锁状态
+  传感器与临界状态（门关+lockState=on → 未上锁）随之修正。
+- 132 例测试通过。
+
+### 第10轮再修：开锁事件直接显示"xxx开门"（已完成 2026-08-02）
+
+- "开锁事件"从 binary_sensor 改为 sensor，状态直接显示
+  `张三开门`（配置名称后）或 `用户2开门`（未配置），无事件时显示"无"。
+- 新增 `format_unlock_label()` 与属性 `unlock_time`（事件时间戳）。
+- 二进制开锁实体移除；自动化仍可订阅 `orvibohomebridge_lock_event`。
+- 135 例测试通过。
+
+### 第10轮再修：锁用户映射持久化（已完成 2026-08-02）
+
+- 配置 → 选项新增菜单（选择设备 / 锁用户映射）；
+  "锁用户映射"为多行文本框（每行 `用户ID=名称`），持久化到 entry.options，
+  重启不丢；顺带修复"选设备会覆盖其他选项"的数据丢失问题。
+- 协调器启动时加载映射；服务 `set_lock_user_name` 继续可用（会话内即时生效）。
+- 新增 parse/format_lock_user_names 纯函数 + 4 个测试，全套 139 例通过。
+
+### 第10轮再修：选项菜单翻译键修正（已完成 2026-08-02）
+
+- 配置界面"选择设备 / 锁用户映射"此前显示内部步骤名（devices/lock_users），
+  原因是 HA 选项流菜单的翻译键写成了 `menu`，正确键为 `menu_options`
+  （与 `async_show_menu` 的 `menu_options` 参数对应）。
+- 已修正 `translations/zh-Hans.json` 与 `translations/en.json`，
+  菜单项现在正常显示中文/英文。
+- 全套 139 例测试通过。
+
+### 第10轮再修：锁状态新增"异常"态（已完成 2026-08-02）
+
+- 实机样本（181541）确认存在 `doorState=on + lockState=off`（门磁开、锁上锁）
+  的推送组合，一般出现在异常关门或测试状态，用户确认判定为"异常"。
+- `derive_lock_status` 新增规则：门磁开 + 锁上锁 → `abnormal`；
+  传感器选项与中英翻译同步新增 `abnormal`（异常/Abnormal）。
+- fixtures 固化异常样本 1 条，冒烟测试断言含 `abnormal` 状态，全套 140 例通过。
+
+### 第10轮再修：门内反锁语义取反（已完成 2026-08-02）
+
+- 实机样本（181826 反锁/解除反锁操作）确认 `insideLockState` 与 `lockState`
+  同为反语义：`off`=门内反锁中、`on`=反锁解除（操作反锁后推送 off，
+  解除后推送 on，与原代码假设相反）。
+- `normalize_door_lock_properties` 对 `insideLockState` 取反；
+  扁平形态 `reverse_lock`（其他固件）语义不变，仍直接使用。
+- 更新两条归一化单测断言，fixtures 补充反锁解除样本，全套 141 例通过。
+
+### 第10轮再修：锁状态中文文案（已完成 2026-08-02）
+
+- 锁状态传感器中文显示改为：`已上锁` / `未上锁` / `门内已反锁` / `异常`。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

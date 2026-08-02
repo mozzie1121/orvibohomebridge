@@ -1,6 +1,9 @@
 import logging
 import asyncio
 import secrets
+import time
+import urllib.request
+from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import timedelta
 from homeassistant.core import HomeAssistant
@@ -10,6 +13,9 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .ssl_client import SSLClient
 from .https_client import HttpsClient
+from .cos_media import CosMediaManager
+from .video_archive import VideoArchiver
+from .history import history_dir, save_snapshot
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .packet import get_api_host
 from .redact import fingerprint, redact_packet
@@ -29,11 +35,39 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _download_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
+    """下载预签名 URL 返回字节（同步阻塞，调用方应放线程池）。"""
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "orvibohomebridge"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        err_body = e.read(600).decode("utf-8", "replace")
+        _LOGGER.warning(
+            "下载失败 HTTP %s: %s", e.code, err_body[:500]
+        )
+        return None
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.warning("下载失败: %r", e)
+        return None
+
+
 class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     MOTION_RESET_DELAY = 30  # 人体传感器触发后恢复延时（秒）
     EMERGENCY_RESET_DELAY = 180  # 紧急按钮触发后恢复延时（秒），3分钟
+    LOCK_RESET_DELAY = 5  # 门锁门铃/开锁事件触发后恢复延时（秒）
+    LOCK_DOOR_OPEN_WINDOW = 30  # 开锁 → 开门 的归属窗口（秒）
     
-    def __init__(self, hass: HomeAssistant, username: str, password: str, family_id: str = None):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        username: str,
+        password: str,
+        family_id: str = None,
+        lock_user_names: Optional[Dict[str, str]] = None,
+    ):
         self.username = username
         self.password = password
         self.family_id = family_id
@@ -41,9 +75,20 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         self.https_client = HttpsClient(username=username, password=password)
         self.ssl_client = None
+        self.cos_media: Optional[CosMediaManager] = None
+        self.video_archiver: Optional[VideoArchiver] = None
+        self._lock_cameras: Dict[str, Any] = {}  # device_id -> camera 实体
+        self._snapshot_pending: set[tuple[str, str]] = set()  # (device_id, object_key) 进行中
+        self._history_cleanup_unsub = None
+        self.HISTORY_KEEP_DAYS = 7  # 历史截图/录像保留天数
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
+        self._lock_reset_tasks: Dict[tuple, asyncio.Task] = {}  # 门锁事件复位任务
+        self._last_lock_events: Dict[str, tuple] = {}  # 门锁事件去重签名
+        self._lock_user_names: Dict[str, Dict[str, str]] = {}  # device_id -> {user_id: 名称}
+        self._lock_user_names_shared: Dict[str, str] = dict(lock_user_names or {})  # 持久化映射（entry 级）
+        self._last_unlock: Dict[str, Dict[str, Any]] = {}  # device_id -> 最近一次开锁
         
         # 调试信息：记录最近收到的原始状态推送（仅内存，日志/诊断均脱敏）
         self._cmd42_log: list[dict] = []
@@ -651,33 +696,57 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         _LOGGER.debug(f"[开关] state={dev_state['state']}")
     
     def _parse_status_door_lock(self, dev_state: dict, raw_status: dict) -> None:
-        """解析智能门锁状态 (deviceType 522, classId 463)
-        状态字段：lockState(锁状态), doorState(门状态), battery(电量)
-        电池类型：batteryManager(干电池), batteryManager1(锂电池)
+        """解析智能门锁状态（type=522 / 属性型门锁）。
+
+        兼容两种形态：
+        - properties.doorLock.{lockState,doorState,insideLockState}
+        - properties.{door_status,reverse_lock,handle,clild_lock}
+        电池：batteryManager（干电池）/ batteryManager1（锂电池）。
         """
-        props = raw_status.get("properties", {})
-        door_lock = props.get("doorLock", {})
-        dry_battery = props.get("batteryManager", {})
-        lithium_battery = props.get("batteryManager1", {})
-        
-        if isinstance(door_lock, dict):
-            # HA BinarySensorDeviceClass.LOCK 语义: is_on=True 表示"未锁/不安全"
-            # 欧瑞博 lockState="on" 表示"已锁"，所以需要取反
-            dev_state["locked"] = door_lock.get("lockState") == "on"
-            dev_state["lock_state"] = door_lock.get("lockState") != "on"  # True=未锁
-            dev_state["door_state"] = door_lock.get("doorState") == "on"
-            dev_state["inside_lock_state"] = door_lock.get("insideLockState") == "on"
-        
-        if isinstance(dry_battery, dict):
-            dev_state["dry_battery_level"] = dry_battery.get("level")
-            dev_state["dry_battery_setup"] = dry_battery.get("isSetupBattery") == "on"
-        
-        if isinstance(lithium_battery, dict):
-            dev_state["lithium_battery_level"] = lithium_battery.get("level")
-            dev_state["lithium_battery_setup"] = lithium_battery.get("isSetupBattery") == "on"
-        
+        from .lock_status import normalize_battery_properties, normalize_door_lock_properties
+
+        lock = normalize_door_lock_properties(raw_status.get("properties"))
+        # HA BinarySensorDeviceClass.LOCK 语义: is_on=True 表示"未锁/不安全"
+        # 欧瑞博 lockState="on" 表示"已锁"，所以 is_on = not locked
+        # 云端可能只推送部分字段（如仅 insideLockState），只更新出现的字段，
+        # 避免把未知字段重置为 False 导致实体误报。
+        if lock["locked"] is not None:
+            dev_state["locked"] = lock["locked"]
+            dev_state["lock_state"] = not lock["locked"]
+        if lock["door_open"] is not None:
+            dev_state["door_state"] = lock["door_open"]
+        if lock["inside_locked"] is not None:
+            dev_state["inside_lock_state"] = lock["inside_locked"]
+        if lock["child_locked"] is not None:
+            dev_state["child_lock_state"] = lock["child_locked"]
+        if lock["leave_home_armed"] is not None:
+            dev_state["leave_home_armed"] = lock["leave_home_armed"]
+
+        battery = normalize_battery_properties(raw_status.get("properties"))
+        for key in (
+            "dry_battery_level",
+            "dry_battery_setup",
+            "lithium_battery_level",
+            "lithium_battery_setup",
+        ):
+            if key in battery:
+                dev_state[key] = battery[key]
+
+        from .lock_status import derive_lock_status
+
+        dev_state["lock_status"] = derive_lock_status(
+            dev_state.get("locked"),
+            dev_state.get("door_state"),
+            dev_state.get("inside_lock_state"),
+        )
         dev_state["state"] = dev_state.get("lock_state", False)
-        _LOGGER.debug(f"[智能门锁] lock_state={dev_state.get('lock_state')}, door_state={dev_state.get('door_state')}, dry_battery={dev_state.get('dry_battery_level')}%, lithium_battery={dev_state.get('lithium_battery_level')}%")
+        _LOGGER.debug(
+            "[智能门锁] locked=%s door=%s dry_battery=%s%% lithium=%s%%",
+            dev_state.get("locked"),
+            dev_state.get("door_state"),
+            dev_state.get("dry_battery_level"),
+            dev_state.get("lithium_battery_level"),
+        )
 
     def _parse_doorbell_event(self, dev_state: dict, raw_status: dict) -> None:
         """解析门铃和开锁事件 (cmd=352)
@@ -696,8 +765,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             dev_state["doorbell_url"] = value.get("url")
             dev_state["doorbell_ip"] = value.get("doorbell_local_Ip")
             _LOGGER.debug(f"[门铃事件] deviceId={raw_status.get('deviceId')}, url={value.get('url')}, ip={value.get('doorbell_local_Ip')}")
-            import asyncio
-            asyncio.create_task(self._schedule_doorbell_reset(raw_status.get("deviceId", "")))
+            self._schedule_lock_reset(raw_status.get("deviceId", ""), "doorbell")
         
         elif server == "doorbell" and name == "answered":
             dev_state["doorbell_answered"] = True
@@ -711,27 +779,447 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             dev_state["unlock_event"] = True
             dev_state["unlock_type"] = value.get("type")
             dev_state["unlock_user_id"] = value.get("userId")
+            dev_state["unlock_time"] = raw_status.get("time")
             _LOGGER.debug(f"[开锁事件] deviceId={raw_status.get('deviceId')}, type={value.get('type')}, userId={value.get('userId')}")
-            import asyncio
-            asyncio.create_task(self._schedule_unlock_reset(raw_status.get("deviceId", "")))
+            self._schedule_lock_reset(raw_status.get("deviceId", ""), "unlock")
 
-    async def _schedule_doorbell_reset(self, device_id: str) -> None:
-        """安排门铃状态重置（5秒后恢复为未触发）"""
-        await asyncio.sleep(5)
-        state = self.device_states.get(device_id)
-        if state and state.get("doorbell_ring"):
-            state["doorbell_ring"] = False
-            _LOGGER.debug(f"[门铃事件] {device_id[:12]}... 延时5秒后恢复")
+    def _schedule_lock_reset(self, device_id: str, kind: str) -> None:
+        """安排门锁事件状态复位（默认5秒后恢复为未触发），同设备同类型只保留一个任务。"""
+        key = (device_id, kind)
+        task = self._lock_reset_tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+
+        async def reset_lock():
+            try:
+                await asyncio.sleep(self.LOCK_RESET_DELAY)
+            except asyncio.CancelledError:
+                return
+            state = self.device_states.get(device_id)
+            if not state:
+                return
+            if kind == "doorbell" and state.get("doorbell_ring"):
+                state["doorbell_ring"] = False
+            elif kind == "unlock" and state.get("unlock_event"):
+                state["unlock_event"] = False
             self.async_set_updated_data(self.device_states)
 
-    async def _schedule_unlock_reset(self, device_id: str) -> None:
-        """安排开锁事件状态重置（5秒后恢复为未触发）"""
-        await asyncio.sleep(5)
-        state = self.device_states.get(device_id)
-        if state and state.get("unlock_event"):
-            state["unlock_event"] = False
-            _LOGGER.debug(f"[开锁事件] {device_id[:12]}... 延时5秒后恢复")
-            self.async_set_updated_data(self.device_states)
+        self._lock_reset_tasks[key] = asyncio.create_task(reset_lock())
+
+    def _publish_lock_event(self, device_id: str, raw_status: dict) -> None:
+        """把归一化后的门锁状态/事件发布到 HA 事件总线（日志脱敏）。"""
+        from .const import LOCK_EVENT
+        from .lock_status import (
+            normalize_door_lock_properties,
+            normalize_lock_event,
+            resolve_opened_by,
+        )
+
+        lock = normalize_door_lock_properties(raw_status.get("properties"))
+        event = normalize_lock_event(raw_status)
+        if (
+            event is None
+            and lock["locked"] is None
+            and lock["door_open"] is None
+            and lock["inside_locked"] is None
+            and lock["child_locked"] is None
+            and lock["leave_home_armed"] is None
+        ):
+            return
+        # 相同事件/相同状态去重（云端可能重复推送同一事件）
+        if event is not None:
+            signature = (
+                event.get("kind"),
+                event.get("unlock_type"),
+                event.get("unlock_user_id"),
+                event.get("time"),
+            )
+        else:
+            signature = (
+                "state",
+                lock["locked"],
+                lock["door_open"],
+                lock["inside_locked"],
+                lock["child_locked"],
+                lock["leave_home_armed"],
+            )
+        if self._last_lock_events.get(device_id) == signature:
+            return
+        self._last_lock_events[device_id] = signature
+        data: Dict[str, Any] = {
+            "device_id": device_id,
+            "uid": raw_status.get("uid", ""),
+            "locked": lock["locked"],
+            "door_open": lock["door_open"],
+            "inside_locked": lock["inside_locked"],
+            "child_locked": lock["child_locked"],
+            "leave_home_armed": lock["leave_home_armed"],
+        }
+        if event is not None:
+            data.update(event)
+        # 记录最近一次开锁，供随后的开门事件归属"谁开的门"
+        if event is not None and event.get("kind") == "unlock":
+            self._last_unlock[device_id] = {
+                "user_id": event.get("unlock_user_id"),
+                "unlock_type": event.get("unlock_type"),
+                "at": time.monotonic(),
+            }
+            name = self.lock_user_name(device_id, event.get("unlock_user_id"))
+            if name:
+                data["unlock_user_name"] = name
+        # 开门事件归属：窗口内最近一次开锁的用户
+        if lock["door_open"] is True:
+            last = self._last_unlock.get(device_id)
+            opened = (
+                resolve_opened_by(last, time.monotonic() - last["at"], self.LOCK_DOOR_OPEN_WINDOW)
+                if last is not None
+                else None
+            )
+            if opened is not None:
+                data["opened_by_user_id"] = opened["user_id"]
+                data["opened_by_type"] = opened["unlock_type"]
+                name = self.lock_user_name(device_id, opened["user_id"])
+                if name:
+                    data["opened_by_name"] = name
+        if event is not None:
+            data.update(self._attach_media_urls(device_id, raw_status, event))
+        self.hass.bus.async_fire(LOCK_EVENT, data)
+        _LOGGER.debug(
+            "[门锁事件总线] device=%s locked=%s door=%s kind=%s",
+            fingerprint(device_id, self._redaction_salt),
+            data.get("locked"),
+            data.get("door_open"),
+            data.get("kind"),
+        )
+
+    def _attach_media_urls(
+        self,
+        device_id: str,
+        raw_status: dict,
+        event: dict,
+    ) -> Dict[str, str]:
+        """把事件里的 COS 对象键签成临时 URL（media_url/pic_media_url/doorbell_media_url）。
+
+        使用已缓存的门锁 COS 凭证同步签名（零网络等待）；无有效凭证时
+        触发后台刷新（cmd=313，36 小时有效），本轮事件不阻塞。
+        """
+        cos = self.cos_media
+        if cos is None or not event:
+            return {}
+        uid = raw_status.get("uid") or event.get("uid") or ""
+        if not uid:
+            dev = self.devices.get(device_id) or {}
+            uid = dev.get("uid", "")
+        # time 字段可能为 None（而非缺失），统一兜底为当前时间戳
+        event_ts = event.get("time") or int(time.time())
+        out: Dict[str, str] = {}
+        for field, target in (
+            ("video_url", "media_url"),
+            ("pic_url", "pic_media_url"),
+            ("doorbell_url", "doorbell_media_url"),
+        ):
+            key = event.get(field)
+            if not key:
+                continue
+            url = cos.try_signed_url(device_id, uid, key)
+            if url:
+                out[target] = url
+            elif cos.cached_credentials(device_id) is None:
+                self.hass.async_create_task(cos.get_credentials(device_id, uid))
+            if field == "video_url":
+                self._schedule_video_archive(
+                    device_id,
+                    uid,
+                    key,
+                    url,
+                    out,
+                    event.get("kind", "event"),
+                    event_ts,
+                )
+        snapshot_key = event.get("pic_url") or event.get("doorbell_url")
+        if snapshot_key:
+            self.hass.async_create_task(
+                self._update_lock_snapshot(
+                    device_id,
+                    uid,
+                    snapshot_key,
+                    event.get("kind", "event"),
+                    event_ts,
+                )
+            )
+        return out
+
+    def register_lock_camera(self, device_id: str, camera: Any) -> None:
+        """camera 平台实体注册（device_id → 实体），事件截图推送用。"""
+        self._lock_cameras[device_id] = camera
+        _LOGGER.debug("门锁截图实体已注册 device=%s", fingerprint(device_id, self._redaction_salt))
+
+    async def _update_lock_snapshot(
+        self,
+        device_id: str,
+        device_uid: str,
+        object_key: str,
+        kind: str,
+        ts: int | str,
+    ) -> None:
+        """获取凭证 → 签名 URL → 下载截图 → 落盘历史 → 推送 camera 实体。"""
+        dedup_key = (device_id, object_key)
+        if dedup_key in self._snapshot_pending:
+            return  # 同一事件已有一个下载任务在跑（cmd352/cmd82 可能重复触发）
+        self._snapshot_pending.add(dedup_key)
+        camera = self._lock_cameras.get(device_id)
+        if camera is None:
+            _LOGGER.debug(
+                "门锁截图实体未注册，跳过截图更新 device=%s",
+                fingerprint(device_id, self._redaction_salt),
+            )
+            self._snapshot_pending.discard(dedup_key)
+            return
+        cos = self.cos_media
+        if cos is None:
+            self._snapshot_pending.discard(dedup_key)
+            return
+        try:
+            url = await cos.signed_url(device_id, device_uid, object_key)
+            if not url:
+                _LOGGER.warning("门锁截图签名 URL 获取失败 device=%s", fingerprint(device_id, self._redaction_salt))
+                return
+            image: Optional[bytes] = None
+            # 门铃图片上传可能在事件推送后数十秒才完成：先等 8 秒再首试，
+            # 失败间隔 10/20/25 秒重试（总窗口 ~63s），给足上传时间
+            retry_delays = (8, 10, 20, 25)
+            for attempt, delay in enumerate(retry_delays):
+                if delay:
+                    await asyncio.sleep(delay)
+                image = await self.hass.async_add_executor_job(_download_bytes, url)
+                if image:
+                    break
+                _LOGGER.debug(
+                    "截图下载重试 %s/%s device=%s",
+                    attempt + 1,
+                    len(retry_delays),
+                    fingerprint(device_id, self._redaction_salt),
+                )
+        except Exception:  # noqa: BLE001 - 截图失败不应影响事件流
+            _LOGGER.exception("门锁截图更新异常 device=%s", fingerprint(device_id, self._redaction_salt))
+            return
+        finally:
+            self._snapshot_pending.discard(dedup_key)
+        if image:
+            try:
+                await self.hass.async_add_executor_job(
+                    lambda: save_snapshot(
+                        history_dir(self.hass.config.path("media"), device_id),
+                        kind,
+                        ts,
+                        image,
+                    )
+                )
+            except OSError as e:
+                _LOGGER.warning("截图落盘失败: %s", e)
+            await camera.async_set_image(image)
+            _LOGGER.info(
+                "门锁截图已更新并归档 device=%s kind=%s bytes=%s",
+                fingerprint(device_id, self._redaction_salt),
+                kind,
+                len(image),
+            )
+        else:
+            _LOGGER.warning(
+                "门锁截图下载为空 device=%s key=%s",
+                fingerprint(device_id, self._redaction_salt),
+                object_key,
+            )
+
+    def _schedule_video_archive(
+        self,
+        device_id: str,
+        device_uid: str,
+        object_key: str,
+        signed_url: Optional[str],
+        out: Dict[str, str],
+        kind: str,
+        ts: int | str,
+    ) -> None:
+        """后台下载事件录像并转 MP4；事件附带预期本地路径与媒体 ID。"""
+        archiver = self.video_archiver
+        if archiver is None:
+            return
+        _h264, mp4_path = archiver.event_paths(device_id, kind, ts)
+        if mp4_path.exists() and mp4_path.stat().st_size > 0:
+            out["video_file"] = str(mp4_path)
+            out["media_id"] = archiver.media_source_id(mp4_path)
+            return
+        # 预期目标（后台填充完成后即为可播放 MP4）
+        out["video_file"] = str(mp4_path)
+        if signed_url:
+            self.hass.async_create_task(
+                self._archive_video(device_id, kind, ts, signed_url)
+            )
+
+    async def _archive_video(
+        self,
+        device_id: str,
+        kind: str,
+        ts: int | str,
+        signed_url: str,
+    ) -> None:
+        """下载 + 转码（executor 中执行，避免阻塞事件循环）。"""
+        archiver = self.video_archiver
+        if archiver is None:
+            return
+        try:
+            result = await self.hass.async_add_executor_job(
+                archiver.archive_event, device_id, kind, ts, signed_url
+            )
+        except Exception as e:  # noqa: BLE001 - 归档失败不应影响事件流
+            _LOGGER.warning(
+                "录像归档失败 device=%s kind=%s: %s",
+                fingerprint(device_id, self._redaction_salt),
+                kind,
+                e,
+            )
+            return
+        if result and result.get("mp4_file") and Path(result["mp4_file"]).exists():
+            _LOGGER.info(
+                "录像已归档 device=%s -> %s",
+                fingerprint(device_id, self._redaction_salt),
+                result["mp4_file"],
+            )
+        else:
+            _LOGGER.debug("录像下载/转码未完成（无 ffmpeg 或下载失败）")
+
+    async def async_fetch_video(
+        self,
+        device_id: str,
+        object_key: str,
+        device_uid: str = "",
+    ) -> Dict[str, Any]:
+        """主动拉取事件录像：返回 {video_file, media_id, mp4_file, h264_file}。
+
+        供 orvibohomebridge.fetch_video 服务调用；凭证缺失时自动换取。
+        """
+        archiver = self.video_archiver
+        cos = self.cos_media
+        if archiver is None or cos is None:
+            return {"error": "录像归档未就绪"}
+        if not device_uid:
+            dev = self.devices.get(device_id) or {}
+            device_uid = dev.get("uid", "")
+        url = await cos.signed_url(device_id, device_uid, object_key)
+        if not url:
+            return {"error": "无法获取 COS 凭证或签名 URL"}
+        result = await self.hass.async_add_executor_job(
+            archiver.archive, device_id, object_key, url
+        )
+        return result or {"error": "录像下载失败"}
+
+    async def async_list_events(
+        self,
+        device_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, str]]:
+        """查询门锁事件历史（截图/录像），按时间倒序。"""
+        from .history import list_history
+
+        return await self.hass.async_add_executor_job(
+            list_history,
+            self.hass.config.path("media"),
+            device_id or None,
+            limit,
+        )
+
+    def start_history_cleanup(self) -> None:
+        """启动历史清理：立即清理一次 + 每周定时清理（保留 7 天）。"""
+        if self._history_cleanup_unsub is not None:
+            return
+        from homeassistant.helpers.event import async_track_time_interval
+        from .history import cleanup
+
+        media_root = self.hass.config.path("media")
+
+        async def _run(_now=None) -> None:
+            try:
+                removed = await self.hass.async_add_executor_job(
+                    cleanup, media_root, self.HISTORY_KEEP_DAYS
+                )
+                if removed:
+                    _LOGGER.info("历史清理完成，删除 %s 个过期文件", removed)
+            except Exception:  # noqa: BLE001 - 清理失败不应影响集成
+                _LOGGER.warning("历史清理异常", exc_info=True)
+
+        # 启动时清一次（处理升级前积压），随后每周执行
+        self.hass.async_create_task(_run())
+        self._history_cleanup_unsub = async_track_time_interval(
+            self.hass, _run, timedelta(days=7)
+        )
+
+    def stop_history_cleanup(self) -> None:
+        """取消历史清理定时任务（集成卸载时调用）。"""
+        if self._history_cleanup_unsub is not None:
+            self._history_cleanup_unsub()
+            self._history_cleanup_unsub = None
+
+    async def async_cleanup_history(
+        self,
+        keep_days: int = 7,
+        device_id: str = "",
+        max_entries: Optional[int] = None,
+    ) -> int:
+        """手动清理历史记录，返回删除文件数。"""
+        from .history import cleanup
+
+        return await self.hass.async_add_executor_job(
+            cleanup,
+            self.hass.config.path("media"),
+            keep_days,
+            device_id or None,
+            max_entries,
+        )
+
+    def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:
+        """返回门锁 userId 配置的显示名称（无配置返回 None）。"""
+        if not isinstance(user_id, (str, int)):
+            return None
+        key = str(user_id)
+        name = self._lock_user_names.get(device_id, {}).get(key)
+        if name is None:
+            name = self._lock_user_names_shared.get(key)
+        return name if isinstance(name, str) and name else None
+
+    def set_lock_user_name(self, device_id: str, user_id: str, name: str) -> bool:
+        """为门锁 userId 设置/清除显示名称。"""
+        device_id = str(device_id or "")
+        user_id = str(user_id or "")
+        if not device_id or not user_id:
+            return False
+        names = self._lock_user_names.setdefault(device_id, {})
+        if name:
+            names[user_id] = str(name)
+            self._lock_user_names_shared[user_id] = str(name)
+        else:
+            names.pop(user_id, None)
+            self._lock_user_names_shared.pop(user_id, None)
+        return True
+
+    def _publish_lock_message(self, device_id: str, raw_status: dict) -> None:
+        """发布 cmd=82 推送消息事件（门锁文本消息/告警，日志脱敏）。"""
+        from .const import LOCK_EVENT
+        from .lock_status import normalize_message_event
+
+        event = normalize_message_event(raw_status)
+        if event is None:
+            return
+        event["device_id"] = device_id or event.get("device_id")
+        event.update(self._attach_media_urls(device_id, raw_status, event))
+        self.hass.bus.async_fire(LOCK_EVENT, event)
+        _LOGGER.debug(
+            "[门锁消息] device=%s kind=%s is_alarm=%s text=%s",
+            fingerprint(device_id, self._redaction_salt),
+            event.get("kind"),
+            event.get("is_alarm"),
+            event.get("text"),
+        )
 
     def _parse_status_generic(self, dev_state: dict, raw_status: dict) -> None:
         """通用状态解析（未知设备类型）"""
@@ -886,6 +1374,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     )
                 if ssl_ok:
                     await self._query_clothes_horse_initial_status()
+                    # 后台预热门锁 COS 媒体凭证，事件到达时可直接签名出 URL
+                    self.hass.async_create_task(self._prewarm_cos_credentials())
                 else:
                     _LOGGER.warning(
                         "SSL 连接/登录未就绪（非认证拒绝），将在后台重试"
@@ -1027,6 +1517,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
             _LOGGER.debug(f"[设备类型] deviceType={device_type}, category={category.name}, deviceId={matched_device_id}")
 
+            # cmd=82 推送消息（门锁文本消息/告警）：只发事件，不改设备状态属性
+            if raw_status.get("cmd") == 82:
+                self._publish_lock_message(matched_device_id, raw_status)
+                return
+
             # 晾衣架专用协议（cmd=99 推送，带 is_clothes_horse 标志）
             if raw_status.get("is_clothes_horse"):
                 self._parse_clothes_horse_state(dev_state, raw_status)
@@ -1102,6 +1597,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 else:
                     self._parse_status_generic(dev_state, raw_status)
 
+            # 门锁状态/事件归一化后发布到 HA 事件总线（供自动化订阅）
+            if (
+                device_type == 522
+                or category == DeviceCategory.DOOR_LOCK
+                or raw_status.get("cmd") == 352
+            ):
+                self._publish_lock_event(matched_device_id, raw_status)
+
             # 通知HA刷新实体状态
             self.hass.add_job(self.async_set_updated_data, self.device_states)
             _LOGGER.debug(f"[{matched_device_id}] MQTT状态同步完成: state={dev_state.get('state')}, bri={dev_state.get('brightness')}, ct={dev_state.get('color_temp')}, pos={dev_state.get('position')}")
@@ -1118,6 +1621,32 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             on_status_update=on_status_update,
             on_session_id_obtained=on_session_id_obtained,
         )
+        self.cos_media = CosMediaManager(
+            ssl_client=self.ssl_client,
+            user_id=self.https_client.user_id or "",
+            family_id=self.https_client.family_id or "",
+        )
+        self.video_archiver = VideoArchiver(
+            media_root=self.hass.config.path("media"),
+        )
+
+    async def _prewarm_cos_credentials(self) -> None:
+        """后台预热所有门锁的 COS 媒体凭证（cmd=313，36 小时有效）。"""
+        cos = self.cos_media
+        if cos is None:
+            return
+        for device_id, device in self.devices.items():
+            if classify_device(device) != DeviceCategory.DOOR_LOCK:
+                continue
+            uid = device.get("uid", "")
+            try:
+                await cos.get_credentials(device_id, uid)
+            except Exception as e:  # noqa: BLE001 - 预热失败不应阻断启动
+                _LOGGER.warning(
+                    "门锁媒体凭证预热失败 device=%s: %s",
+                    fingerprint(device_id, self._redaction_salt),
+                    e,
+                )
 
     async def _query_clothes_horse_initial_status(self) -> None:
         """SSL 登录成功后，对所有晾衣架设备下发 cmd=100 查询初始状态。"""

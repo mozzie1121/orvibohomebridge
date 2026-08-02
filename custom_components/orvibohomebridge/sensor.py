@@ -60,6 +60,8 @@ async def async_setup_entry(
         elif category == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboDoorLockDryBatterySensor(coordinator, device))
             entities.append(OrviboDoorLockLithiumBatterySensor(coordinator, device))
+            entities.append(OrviboDoorLockStateSensor(coordinator, device))
+            entities.append(OrviboDoorLockUnlockSensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -337,3 +339,70 @@ class OrviboDoorLockLithiumBatterySensor(OrviboSensorBase):
         return {
             "is_setup": state.get("lithium_battery_setup"),
         }
+
+
+class OrviboDoorLockStateSensor(OrviboSensorBase):
+    """智能门锁 - 锁状态（已上锁/未上锁/门内已反锁/异常，绑定门磁）。"""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["locked", "unlocked", "inside_locked", "abnormal"]
+    _attr_translation_key = "door_lock_state"
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"orvibohomebridge_door_lock_state_{self._device_id}"
+        self._attr_name = "锁状态"
+        self._attr_icon = "mdi:lock"
+
+    @property
+    def native_value(self) -> Optional[str]:
+        state = self.coordinator.get_device_state(self._device_id)
+        return state.get("lock_status") if state else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        state = self.coordinator.get_device_state(self._device_id) or {}
+        return {
+            "door_open": state.get("door_state"),
+            "inside_locked": state.get("inside_lock_state"),
+            "leave_home_armed": state.get("leave_home_armed"),
+            "locked": state.get("locked"),
+        }
+
+
+class OrviboDoorLockUnlockSensor(OrviboSensorBase):
+    """智能门锁 - 开锁事件（状态直接显示"xxx开门"）。"""
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"orvibohomebridge_door_lock_unlock_{self._device_id}"
+        self._attr_name = "开锁事件"
+        self._attr_icon = "mdi:key"
+
+    @property
+    def native_value(self) -> str:
+        from .lock_status import format_unlock_label
+
+        state = self.coordinator.get_device_state(self._device_id)
+        if not state:
+            return "无"
+        user_id = state.get("unlock_user_id")
+        name = self.coordinator.lock_user_name(self._device_id, user_id)
+        return format_unlock_label(user_id, name)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        state = self.coordinator.get_device_state(self._device_id) or {}
+        attributes = {
+            "unlock_type": state.get("unlock_type"),
+            "unlock_user_id": state.get("unlock_user_id"),
+        }
+        user_name = self.coordinator.lock_user_name(
+            self._device_id,
+            state.get("unlock_user_id"),
+        )
+        if user_name:
+            attributes["unlock_user_name"] = user_name
+        if state.get("unlock_time") is not None:
+            attributes["unlock_time"] = state.get("unlock_time")
+        return attributes

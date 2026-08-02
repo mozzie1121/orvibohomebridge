@@ -1,0 +1,93 @@
+set_lock_user_name:
+  name: 设置门锁用户名称
+  description: 为门锁的 userId 设置显示名称，用于区分"谁开的门"（自动化可读取 opened_by_name）
+  target: {}
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID（如 w-xxxx，可在设备信息中查看）
+      required: true
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    user_id:
+      name: 用户 ID
+      description: 门锁用户编号（来自 unlockEvent 的 unlock_user_id）
+      required: true
+      example: "2"
+    name:
+      name: 用户名称
+      description: 用户名称（留空清除）
+      required: true
+      example: "张三"
+
+fetch_video:
+  name: 拉取门锁事件录像
+  description: 下载事件录像（.h264）并转封装为 MP4，返回本地路径与媒体 ID
+  target: {}
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID（如 w-xxxx，可在设备信息中查看）
+      required: true
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    object_key:
+      name: 录像对象键
+      description: 事件里的 video_url（如 /uid/videoPicklockEvent/xxx.h264）
+      required: true
+      example: "/77c139c4d27f4fa6a20e1f459849aa47/videoPicklockEvent/picklockEvent_1785652830.h264"
+
+list_events:
+  name: 查询门锁事件历史
+  description: 列出历史截图/录像记录（按时间倒序），返回 media_id 供回溯播放
+  target: {}
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID（留空查询所有门锁）
+      required: false
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    limit:
+      name: 返回条数
+      description: 最多返回的记录数（默认 100）
+      required: false
+      example: 50
+
+cleanup_history:
+  name: 清理门锁历史记录
+  description: 删除超过保留天数的截图/录像（默认保留 7 天，每周自动执行一次）
+  target: {}
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    keep_days:
+      name: 保留天数
+      description: 保留最近 N 天的记录（默认 7）
+      required: false
+      example: 7
+    device_id:
+      name: 设备 ID
+      description: 只清理指定门锁（留空清理所有）
+      required: false
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    max_entries:
+      name: 最大条数
+      description: 每个设备最多保留的记录数（可选，按时间裁剪最旧的）
+      required: false
+      example: 500

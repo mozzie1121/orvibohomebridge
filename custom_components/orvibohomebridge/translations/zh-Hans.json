@@ -53,6 +53,20 @@
     },
     "options": {
         "step": {
+            "init": {
+                "title": "Orvibo 配置",
+                "menu_options": {
+                    "devices": "选择设备",
+                    "lock_users": "锁用户映射"
+                }
+            },
+            "lock_users": {
+                "title": "锁用户映射",
+                "description": "每行一个：用户ID=名称（例如 1=张三，2=李四）。用于开锁事件显示\"谁开的门\"。",
+                "data": {
+                    "lock_user_names": "用户映射"
+                }
+            },
             "devices": {
                 "title": "选择设备",
                 "description": "只有勾选的设备才会添加到 Home Assistant。",
@@ -72,6 +86,19 @@
             "no_devices_selected": "请至少勾选一台设备",
             "cannot_connect": "无法连接欧瑞博云",
             "no_devices": "该家庭中没有发现设备"
+        }
+    },
+    "entity": {
+        "sensor": {
+            "door_lock_state": {
+                "name": "锁状态",
+                "state": {
+                    "locked": "已上锁",
+                    "unlocked": "未上锁",
+                    "inside_locked": "门内已反锁",
+                    "abnormal": "异常"
+                }
+            }
         }
     }
 }

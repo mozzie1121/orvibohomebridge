@@ -18,6 +18,7 @@ CMD_GET_DEVICE_LIST = 263
 CMD_CLOTHES_HORSE_CONTROL = 98
 CMD_CLOTHES_HORSE_STATE = 99
 CMD_CLOTHES_HORSE_QUERY = 100
+CMD_COS_AUTH = 313  # Skill.GetCOSAuthorization：换取门锁媒体（图片/视频）COS 凭证
 
 SOFTWARE_NAME = "ZhiJia365"
 SOFTWARE_VERSION = "50103309"
@@ -30,6 +31,9 @@ DEBUG_INFO = "Android_ZhiJia365_34_5.1.3.309"
 
 DOMAIN = "orvibohomebridge"
 MANUFACTURER = "ORVIBO"
+
+# HA 事件总线：门锁状态/事件（解锁、门铃、锁状态、门状态）
+LOCK_EVENT = "orvibohomebridge_lock_event"
 
 HTTPS_HOST = "china.orvibo.com"
 # 国际区集群（Orvibo Home 海外用户，数据与中国区独立分区）
@@ -100,3 +104,4 @@ CLASS_ID_MAP = {
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_FAMILY_ID = "family_id"
+CONF_LOCK_USER_NAMES = "lock_user_names"  # {user_id: 名称}，持久化于 entry.options
