@@ -22,3 +22,24 @@ set_lock_user_name:
       description: 用户名称（留空清除）
       required: true
       example: "张三"
+
+fetch_video:
+  name: 拉取门锁事件录像
+  description: 下载事件录像（.h264）并转封装为 MP4，返回本地路径与媒体 ID
+  returns_response: true
+  fields:
+    entry_id:
+      name: 配置项 ID
+      description: 集成配置项 ID（可选；有多个配置项时建议提供）
+      required: false
+      example: "0123456789abcdef"
+    device_id:
+      name: 设备 ID
+      description: 门锁设备 ID（如 w-xxxx，可在设备信息中查看）
+      required: true
+      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+    object_key:
+      name: 录像对象键
+      description: 事件里的 video_url（如 /uid/videoPicklockEvent/xxx.h264）
+      required: true
+      example: "/77c139c4d27f4fa6a20e1f459849aa47/videoPicklockEvent/picklockEvent_1785652830.h264"
