@@ -22,6 +22,7 @@ class OrviboDoorLockCard extends HTMLElement {
     this._deviceName = "";
     this._tempResult = "";
     this._tempError = "";
+    this._entitiesLoaded = false;
     this.attachShadow({ mode: "open" });
   }
 
@@ -36,7 +37,11 @@ class OrviboDoorLockCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    if (!this._entitiesLoaded) {
+      this._loadEntities();
+    } else {
+      this._render();
+    }
   }
 
   getCardSize() {
@@ -50,8 +55,15 @@ class OrviboDoorLockCard extends HTMLElement {
       const devices = await this._hass.callWS({ type: "config/device_registry/list" });
       const lockDevices = new Map();
       for (const dev of devices) {
-        const ids = (dev.identifiers || []).map((x) => x[1] || "").join(",");
-        if (ids.includes("w-") || (dev.model || "").toLowerCase().includes("lock")) {
+        const ids = (dev.identifiers || [])
+          .map((x) => (Array.isArray(x) ? x[1] : x) || "")
+          .join(",");
+        const model = String(dev.model || "").toLowerCase();
+        if (
+          ids.includes("w-") ||
+          model.includes("lock") ||
+          model.includes("orvibo")
+        ) {
           lockDevices.set(dev.id, { name: dev.name || "门锁", deviceId: ids });
         }
       }
@@ -81,6 +93,7 @@ class OrviboDoorLockCard extends HTMLElement {
         this._deviceId = deviceId;
         this._deviceName = byDevice[deviceId].name;
         this._entities = byDevice[deviceId].entities;
+        this._entitiesLoaded = true;
       }
     } catch (e) {
       console.error("ORVIBO card: 加载实体失败", e);
