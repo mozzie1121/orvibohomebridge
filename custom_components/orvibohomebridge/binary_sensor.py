@@ -45,7 +45,6 @@ async def async_setup_entry(
             entities.append(OrviboDoorWindowSensor(coordinator, device))
         elif category == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboDoorLockDoorSensor(coordinator, device))
-            entities.append(OrviboDoorLockLockSensor(coordinator, device))
             entities.append(OrviboDoorLockDoorbellSensor(coordinator, device))
             entities.append(OrviboDoorLockUnlockSensor(coordinator, device))
         elif category == DeviceCategory.SMOKE_SENSOR:
@@ -132,34 +131,6 @@ class OrviboDoorLockDoorSensor(CoordinatorEntity, BinarySensorEntity):
     def is_on(self) -> Optional[bool]:
         state = self.coordinator.get_device_state(self._device_id)
         return state.get("door_state", False) if state else False
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._device_id)},
-            "name": self._device.get("device_name", "Orvibo Door Lock"),
-            "manufacturer": MANUFACTURER,
-            "model": "Smart Lock",
-            "sw_version": "1.0",
-        }
-
-
-class OrviboDoorLockLockSensor(CoordinatorEntity, BinarySensorEntity):
-    """智能门锁 - 锁状态（deviceType=522）。"""
-
-    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
-        super().__init__(coordinator)
-        self._device = device
-        self._device_id = device.get("device_id", "")
-        self._attr_unique_id = f"orvibohomebridge_door_lock_lock_{self._device_id}"
-        self._attr_name = "锁状态"
-        self._attr_device_class = BinarySensorDeviceClass.LOCK
-        self._attr_icon = "mdi:lock"
-
-    @property
-    def is_on(self) -> Optional[bool]:
-        state = self.coordinator.get_device_state(self._device_id)
-        return state.get("lock_state") if state else None
 
     @property
     def device_info(self):
