@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from homeassistant.components.camera import Camera
@@ -24,6 +25,13 @@ from .device_types import DeviceCategory, classify_device
 from .selection import selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
+
+try:
+    _PLACEHOLDER_IMAGE = (
+        Path(__file__).with_name("snapshot_placeholder.png").read_bytes()
+    )
+except OSError:
+    _PLACEHOLDER_IMAGE = None
 
 
 async def async_setup_entry(
@@ -62,8 +70,8 @@ class OrviboLockSnapshotCamera(CoordinatorEntity, Camera):
     def camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """返回最近一次事件截图（HA camera_proxy 拉取）。"""
-        return self._image
+        """返回最近一次事件截图；无截图时显示默认占位图。"""
+        return self._image if self._image is not None else _PLACEHOLDER_IMAGE
 
     async def async_set_image(self, image: bytes | None) -> None:
         """事件到达时由 coordinator 推送最新截图。"""
