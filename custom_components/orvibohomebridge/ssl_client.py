@@ -730,6 +730,8 @@ class SSLClient:
                     await self._handle_state_update(data)
                 elif cmd == CMD_CLOTHES_HORSE_STATE:
                     await self._handle_clothes_horse_state(data)
+                elif cmd == 82:
+                    await self._handle_push_message(data)
                 elif cmd in (CMD_HEARTBEAT, CMD_HANDSHAKE):
                     continue
                 else:
@@ -838,6 +840,9 @@ class SSLClient:
             "properties": dev_data.get("properties", {}),
             "deviceId": dev_id,
             "uid": dev_data.get("uid", ""),
+            "cmd": data.get("cmd"),
+            "action": data.get("action"),
+            "event": data.get("event"),
             "online": True,
         }
         
@@ -848,8 +853,10 @@ class SSLClient:
         """处理cmd=42 MQTT设备状态推送，只提取原始数据，不做状态解析"""
         # 输出所有cmd=42消息，用于诊断
         _LOGGER.debug(f"[SSL接收] cmd=42完整数据: {data}")
-        
-        if not data.get("respByAcc"):
+
+        # 控制回显（respByAcc=false 且非主动事件）才过滤；主动推送
+        # （门铃/开锁事件、锁状态等）必须继续处理，否则事件永远到不了实体。
+        if data.get("respByAcc") is False and not isinstance(data.get("event"), dict):
             _LOGGER.debug(f"[SSL过滤] respByAcc=false，跳过处理: deviceId={data.get('deviceId')}")
             return
         
@@ -872,6 +879,9 @@ class SSLClient:
             "value4": data.get("value4"),  # 其他参数
             "statusType": data.get("statusType"),  # 状态类型
             "subDeviceType": data.get("subDeviceType"),  # 子设备类型
+            "cmd": data.get("cmd"),
+            "action": data.get("action"),
+            "event": data.get("event"),
             "deviceId": dev_id,
             "uid": uid,
             "online": True,  # MQTT推送的设备默认在线
@@ -911,3 +921,18 @@ class SSLClient:
         )
 
         self.on_status_update(dev_id, raw_status)
+
+    async def _handle_push_message(self, data: dict):
+        """处理 cmd=82 推送消息（门锁文本消息/告警等）。"""
+        raw_status = {
+            "raw_data": data,
+            "cmd": 82,
+            "data": data.get("data"),
+            "text": data.get("text"),
+            "infoType": data.get("infoType"),
+            "messageType": data.get("messageType"),
+            "deviceId": data.get("deviceId", ""),
+            "uid": data.get("uid", ""),
+            "online": True,
+        }
+        self.on_status_update(raw_status.get("deviceId") or "", raw_status)

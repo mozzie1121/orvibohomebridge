@@ -1,20 +1,26 @@
 """查看设备的完整描述信息和可能控制方式"""
 import hashlib, json, asyncio, aiohttp, sys, time
+import os
 from pathlib import Path
+
+USER = os.environ.get("ORVIBO_USERNAME", "")
+PASSWORD = os.environ.get("ORVIBO_PASSWORD", "")
+if not USER or not PASSWORD:
+    sys.exit("请先设置环境变量 ORVIBO_USERNAME 和 ORVIBO_PASSWORD")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "custom_components"))
 _init = Path(sys.path[0]) / "orvibohomebridge" / "__init__.py"
-_orig = _init.read_text()
-if "homeassistant" in _orig: _init.write_text("#")
+_orig = _init.read_bytes()
+if b"homeassistant" in _orig: _init.write_bytes(b"#")
 from orvibohomebridge.const import HTTPS_HOST, HTTP_HEADERS
 from orvibohomebridge.packet import HomemateJsonData, generate_serial, generate_uuid
 from orvibohomebridge.functions import hmac_sha256
-if _orig: _init.write_text(_orig)
+if _orig: _init.write_bytes(_orig)
 
 async def main():
-    pw_md5 = hashlib.md5("Sunjian21".encode()).hexdigest().upper()
+    pw_md5 = hashlib.md5(PASSWORD.encode()).hexdigest().upper()
     async with aiohttp.ClientSession() as s:
-        r = await s.get(f"https://{HTTPS_HOST}/getOauthToken?userName=65261217@qq.com&type=0&password={pw_md5}",
+        r = await s.get(f"https://{HTTPS_HOST}/getOauthToken?userName={USER}&type=0&password={pw_md5}",
                        headers={**HTTP_HEADERS, "Accept":"*/*"}, ssl=False)
         j = json.loads(await r.text())
         token, uid = j["data"]["access_token"], j["data"]["user_id"]
@@ -47,7 +53,7 @@ async def main():
             params = {
                 "accessToken": token, "deviceId": "834a9801ba2d4b729126648329c3473b",
                 "order": order, "value1": v1, "value2": 0, "value3": 0, "value4": 0,
-                "random": rd, "timestamp": ts, "userId": uid, "userName": "65261217@qq.com",
+                "random": rd, "timestamp": ts, "userId": uid, "userName": USER,
             }
             keys = sorted(params.keys())
             sb = [f"{k}={params[k]}" for k in keys]
@@ -74,7 +80,7 @@ async def main():
             params = {
                 "accessToken": token, "deviceId": "834a9801ba2d4b729126648329c3473b",
                 "order": order, "value1": v1, "value2": 0, "value3": 0, "value4": 0,
-                "random": rd, "timestamp": ts, "userId": uid, "userName": "65261217@qq.com",
+                "random": rd, "timestamp": ts, "userId": uid, "userName": USER,
             }
             keys = sorted(params.keys())
             sb = [f"{k}={params[k]}" for k in keys]

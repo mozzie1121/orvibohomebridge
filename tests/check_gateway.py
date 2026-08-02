@@ -1,18 +1,21 @@
 """查网关和设备的绑定关系"""
 import hashlib, json, asyncio, aiohttp, sys
+import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "custom_components"))
 _init = Path(sys.path[0]) / "orvibohomebridge" / "__init__.py"
-_orig = _init.read_text()
-if "homeassistant" in _orig: _init.write_text("#")
+_orig = _init.read_bytes()
+if b"homeassistant" in _orig: _init.write_bytes(b"#")
 from orvibohomebridge.const import HTTPS_HOST, HTTP_HEADERS
 from orvibohomebridge.packet import HomemateJsonData
 from orvibohomebridge.functions import hmac_sha256, generate_uuid
-if _orig: _init.write_text(_orig)
+if _orig: _init.write_bytes(_orig)
 
-USER = "65261217@qq.com"
-PASS = "Sunjian21"
+USER = os.environ.get("ORVIBO_USERNAME", "")
+PASS = os.environ.get("ORVIBO_PASSWORD", "")
+if not USER or not PASS:
+    sys.exit("请先设置环境变量 ORVIBO_USERNAME 和 ORVIBO_PASSWORD")
 DEV = "834a9801ba2d4b729126648329c3473b"
 
 async def main():

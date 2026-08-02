@@ -44,3 +44,6 @@ build/
 # Home Assistant specific
 .homeassistant/
 check_gas_sensor.py
+
+# 门锁实机抓包（含设备真实标识，仅本地分析，绝不入库）
+lock_capture_*.jsonl
