@@ -80,8 +80,7 @@
             "state": {
                 "locked": "Locked",
                 "unlocked": "Unlocked",
-                "inside_locked": "Inside locked",
-                "open": "Door open"
+                "inside_locked": "Inside locked"
             }
         }
     }

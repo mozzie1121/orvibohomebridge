@@ -341,10 +341,10 @@ class OrviboDoorLockLithiumBatterySensor(OrviboSensorBase):
 
 
 class OrviboDoorLockStateSensor(OrviboSensorBase):
-    """智能门锁 - 锁状态（上锁/未上锁/门内反锁/门未关）。"""
+    """智能门锁 - 锁状态（上锁/未上锁/门内反锁，绑定门磁）。"""
 
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["locked", "unlocked", "inside_locked", "open"]
+    _attr_options = ["locked", "unlocked", "inside_locked"]
     _attr_translation_key = "door_lock_state"
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
