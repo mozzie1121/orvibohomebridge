@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import area_registry as ar
@@ -117,6 +117,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
         DOMAIN,
         SERVICE_FETCH_VIDEO,
         handle_fetch_video,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     async def handle_list_events(call: ServiceCall):
@@ -161,6 +162,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
         DOMAIN,
         SERVICE_LIST_EVENTS,
         handle_list_events,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     async def handle_cleanup_history(call: ServiceCall):
@@ -192,6 +194,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
         DOMAIN,
         SERVICE_CLEANUP_HISTORY,
         handle_cleanup_history,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     return True
 
