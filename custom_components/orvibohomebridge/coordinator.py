@@ -2,6 +2,7 @@ import logging
 import asyncio
 import secrets
 import time
+import urllib.request
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import timedelta
@@ -33,6 +34,18 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _download_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
+    """下载预签名 URL 返回字节（同步阻塞，调用方应放线程池）。"""
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "orvibohomebridge"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     MOTION_RESET_DELAY = 30  # 人体传感器触发后恢复延时（秒）
     EMERGENCY_RESET_DELAY = 180  # 紧急按钮触发后恢复延时（秒），3分钟
@@ -56,6 +69,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.ssl_client = None
         self.cos_media: Optional[CosMediaManager] = None
         self.video_archiver: Optional[VideoArchiver] = None
+        self._lock_cameras: Dict[str, Any] = {}  # device_id -> camera 实体
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
@@ -901,7 +915,28 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 self.hass.async_create_task(cos.get_credentials(device_id, uid))
             if field == "video_url":
                 self._schedule_video_archive(device_id, uid, key, url, out)
+        snapshot_url = out.get("pic_media_url") or out.get("doorbell_media_url")
+        if snapshot_url:
+            self.hass.async_create_task(
+                self._update_lock_snapshot(device_id, snapshot_url)
+            )
         return out
+
+    def register_lock_camera(self, device_id: str, camera: Any) -> None:
+        """camera 平台实体注册（device_id → 实体），事件截图推送用。"""
+        self._lock_cameras[device_id] = camera
+
+    async def _update_lock_snapshot(self, device_id: str, url: str) -> None:
+        """下载最新事件截图并推送到门锁 camera 实体。"""
+        camera = self._lock_cameras.get(device_id)
+        if camera is None:
+            return
+        try:
+            image = await self.hass.async_add_executor_job(_download_bytes, url)
+        except Exception:  # noqa: BLE001 - 截图失败不应影响事件流
+            return
+        if image:
+            await camera.async_set_image(image)
 
     def _schedule_video_archive(
         self,
