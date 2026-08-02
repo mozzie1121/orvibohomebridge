@@ -283,10 +283,9 @@ data:
 **自动回收**：每 6 小时检查一次，已过期（结束时间到）或次数用尽的临时密码自动删除。
 门锁设备下还有"临时密码"传感器，显示最近一次下发的密码及详情属性。
 
-> ⚠️ **半成品说明**：`list_temp_passwords` 目前返回集成**本次会话内存**中下发的记录。
-> 服务器端**完整列表**已确认可通过 REST `readtable` 返回的 `authorizedUnlock` 表获取
-> （实测返回 14 条，字段含 `authorizedId/password/number/unlockNum/startTime/phone`），
-> 解析实现与卡片列表对接待后续抓包验证后补全。
+`list_temp_passwords` 通过 REST `readtable` 的 `authorizedUnlock` 表拉取**服务器端完整列表**
+（实测字段含 `authorizedId/password/number/unlockNum/startTime/phone` 等），
+卡片"临时密码管理"列表即显示服务器端全部授权（含删除/过期状态）。
 
 **自动化示例**（按门铃自动生成并通知）：
 

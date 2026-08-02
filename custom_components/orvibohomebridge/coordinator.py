@@ -16,7 +16,12 @@ from .https_client import HttpsClient
 from .cos_media import CosMediaManager
 from .video_archive import VideoArchiver
 from .history import history_dir, save_snapshot
-from .temp_password import describe_record, is_expired, parse_grant_response
+from .temp_password import (
+    describe_record,
+    is_expired,
+    parse_authorization_item,
+    parse_grant_response,
+)
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .packet import get_api_host
 from .redact import fingerprint, redact_packet
@@ -1284,16 +1289,55 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         return {"ok": True, "authorized_id": authorized_id}
 
     async def async_list_temp_passwords(self, device_id: str = "") -> Dict[str, Any]:
-        """列出当前记录的临时密码（含过期状态）。"""
-        result: Dict[str, Any] = {}
+        """列出服务器端全部临时密码（readtable authorizedUnlock，含过期状态）。"""
+        records = await self.async_fetch_server_temp_passwords()
         if device_id:
-            result[device_id] = [
-                describe_record(r) for r in self._temp_passwords.get(device_id, [])
-            ]
-        else:
-            for did, records in self._temp_passwords.items():
-                result[did] = [describe_record(r) for r in records]
+            records = [r for r in records if r.get("device_id") == device_id]
+        result: Dict[str, Any] = {}
+        for r in records:
+            did = r.get("device_id") or "unknown"
+            result.setdefault(did, []).append(describe_record(r))
         return result
+
+    async def async_fetch_server_temp_passwords(self) -> list[dict]:
+        """从 readtable（REST 全量同步）拉取 authorizedUnlock 表。"""
+        client = self.https_client
+        if client is None or not client.is_logged_in:
+            return []
+        try:
+            data = await client._readtable(device_flag=0)
+        except Exception as e:  # noqa: BLE001 - 列表失败不影响其他功能
+            _LOGGER.warning("拉取临时密码列表失败: %s", e)
+            return []
+        if not isinstance(data, dict):
+            return []
+        records = []
+        for item in data.get("authorizedUnlock") or []:
+            rec = parse_authorization_item(item)
+            if rec is None:
+                continue
+            rec["device_id"] = item.get("deviceId") or ""
+            records.append(rec)
+        # 同步内存记录（供传感器展示，保留下发时的 name）
+        mem = self._temp_passwords
+        self._temp_passwords = {}
+        for rec in records:
+            did = rec["device_id"]
+            self._temp_passwords.setdefault(did, [])
+            existing = next(
+                (
+                    m
+                    for m in mem.get(did, [])
+                    if int(m.get("authorized_id", -1)) == rec["authorized_id"]
+                ),
+                None,
+            )
+            merged = dict(rec)
+            if existing:
+                merged["name"] = existing.get("name") or ""
+                merged["type"] = existing.get("type") or 0
+            self._temp_passwords[did].append(merged)
+        return records
 
     def temp_password_state(self, device_id: str) -> Optional[dict]:
         """给传感器用：返回最近一条有效临时密码的展示信息。"""
