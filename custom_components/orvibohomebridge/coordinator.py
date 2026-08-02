@@ -694,6 +694,13 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if key in battery:
                 dev_state[key] = battery[key]
 
+        from .lock_status import derive_lock_status
+
+        dev_state["lock_status"] = derive_lock_status(
+            dev_state.get("locked"),
+            dev_state.get("door_state"),
+            dev_state.get("inside_lock_state"),
+        )
         dev_state["state"] = dev_state.get("lock_state", False)
         _LOGGER.debug(
             "[智能门锁] locked=%s door=%s dry_battery=%s%% lithium=%s%%",

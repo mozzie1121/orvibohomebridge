@@ -117,6 +117,16 @@
 - 开锁事件实体的 extra_state_attributes 增加 `unlock_user_name`。
 - 测试：resolve_opened_by 窗口/缺失归属 4 例，全套 128 例通过。
 
+### 第10轮修复：实机测试发现的问题（已完成 2026-08-02）
+
+- **门铃/开锁事件不更新**：根因是 `ssl_client._listen_loop` 未分发 cmd=352，
+  事件包全部落入"未知cmd包"分支。已把 cmd=352 接入 `_handle_state_update` 通道。
+- **锁状态语义**：新增只读传感器"锁状态"（ENUM）：
+  门内反锁 > 门未关（绑定门磁）> 上锁 > 未上锁 > 未知；
+  二进制锁传感器默认值从 False（已锁定）改为 None（未知），避免初始误报。
+- 新增 `derive_lock_status()` 推导函数 + 传感器实体 + 中英翻译。
+- 全套 132 例通过。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

@@ -732,6 +732,10 @@ class SSLClient:
                     await self._handle_clothes_horse_state(data)
                 elif cmd == 82:
                     await self._handle_push_message(data)
+                elif cmd == 352:
+                    # 门锁事件（unlockEvent/errorUnlockEvent/picklockEvent/
+                    # leaveHomeEvent/doorUnclose/doorbell ring）走同一状态通道
+                    await self._handle_state_update(data)
                 elif cmd in (CMD_HEARTBEAT, CMD_HANDSHAKE):
                     continue
                 else:

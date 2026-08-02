@@ -357,5 +357,36 @@ class DoorAttributionTests(unittest.TestCase):
         self.assertIsNone(lock_status.resolve_opened_by(None, 1.0))
 
 
+class LockStatusDerivationTests(unittest.TestCase):
+    def test_inside_lock_priority(self) -> None:
+        self.assertEqual(
+            lock_status.derive_lock_status(False, True, True),
+            "inside_locked",
+        )
+
+    def test_door_open_binds_status(self) -> None:
+        self.assertEqual(
+            lock_status.derive_lock_status(True, True, False),
+            "open",
+        )
+        self.assertEqual(
+            lock_status.derive_lock_status(True, True, None),
+            "open",
+        )
+
+    def test_locked_and_unlocked(self) -> None:
+        self.assertEqual(
+            lock_status.derive_lock_status(True, False, False),
+            "locked",
+        )
+        self.assertEqual(
+            lock_status.derive_lock_status(False, False, False),
+            "unlocked",
+        )
+
+    def test_unknown_when_no_fields(self) -> None:
+        self.assertIsNone(lock_status.derive_lock_status(None, None, None))
+
+
 if __name__ == "__main__":
     unittest.main()

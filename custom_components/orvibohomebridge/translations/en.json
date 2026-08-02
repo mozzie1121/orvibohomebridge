@@ -73,5 +73,16 @@
             "cannot_connect": "Cannot connect to ORVIBO cloud",
             "no_devices": "No devices found in this family"
         }
+    },
+    "sensor": {
+        "door_lock_state": {
+            "name": "Lock state",
+            "state": {
+                "locked": "Locked",
+                "unlocked": "Unlocked",
+                "inside_locked": "Inside locked",
+                "open": "Door open"
+            }
+        }
     }
 }

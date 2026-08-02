@@ -235,3 +235,23 @@ def resolve_opened_by(
         "user_id": str(user_id),
         "unlock_type": last_unlock.get("unlock_type"),
     }
+
+
+def derive_lock_status(
+    locked: Optional[bool],
+    door_open: Optional[bool],
+    inside_locked: Optional[bool],
+) -> Optional[str]:
+    """从归一化字段推导面向用户的锁状态。
+
+    优先级：门内反锁 > 门未关（绑定门磁）> 上锁 > 未上锁。
+    """
+    if inside_locked is True:
+        return "inside_locked"
+    if door_open is True:
+        return "open"
+    if locked is True:
+        return "locked"
+    if locked is False:
+        return "unlocked"
+    return None

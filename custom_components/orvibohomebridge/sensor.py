@@ -60,6 +60,7 @@ async def async_setup_entry(
         elif category == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboDoorLockDryBatterySensor(coordinator, device))
             entities.append(OrviboDoorLockLithiumBatterySensor(coordinator, device))
+            entities.append(OrviboDoorLockStateSensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -336,4 +337,33 @@ class OrviboDoorLockLithiumBatterySensor(OrviboSensorBase):
             return {}
         return {
             "is_setup": state.get("lithium_battery_setup"),
+        }
+
+
+class OrviboDoorLockStateSensor(OrviboSensorBase):
+    """智能门锁 - 锁状态（上锁/未上锁/门内反锁/门未关）。"""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["locked", "unlocked", "inside_locked", "open"]
+    _attr_translation_key = "door_lock_state"
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"orvibohomebridge_door_lock_state_{self._device_id}"
+        self._attr_name = "锁状态"
+        self._attr_icon = "mdi:lock"
+
+    @property
+    def native_value(self) -> Optional[str]:
+        state = self.coordinator.get_device_state(self._device_id)
+        return state.get("lock_status") if state else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        state = self.coordinator.get_device_state(self._device_id) or {}
+        return {
+            "door_open": state.get("door_state"),
+            "inside_locked": state.get("inside_lock_state"),
+            "leave_home_armed": state.get("leave_home_armed"),
+            "locked": state.get("locked"),
         }
