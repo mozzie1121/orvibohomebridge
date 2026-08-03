@@ -188,6 +188,17 @@
 
 - 锁状态传感器中文显示改为：`已上锁` / `未上锁` / `门内已反锁` / `异常`。
 
+### 第11轮：云区、传输、状态与服务边界重构（已完成 2026-08-03）
+
+- 配置项升级到 v3：只保存 password hash，并持久化中国区/国际区检测结果。
+- REST 与 SSL endpoint 改为实例级，多个区域账号不再共享模块全局主机。
+- 抽出 `ssl_transport.py`、`pending_requests.py`，统一 TLS 生命周期与响应关联。
+- 抽出 `state_store.py`，按 SSL / cloud / optimistic 来源做字段级状态对账。
+- README 支持表固化为真机验证 profile；未知设备仅注册，不下发兜底控制。
+- 服务注册迁移到 `service_handlers.py`；媒体对象键、门锁类型、临时密码参数增加双层校验。
+- 临时密码只在下发响应中一次性返回；列表、事件、传感器不含密码。
+- 媒体服务响应不再暴露 Home Assistant 主机绝对路径。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

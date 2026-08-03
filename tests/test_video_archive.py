@@ -50,6 +50,20 @@ class InferEventNameTests(unittest.TestCase):
     def test_unmatched(self) -> None:
         self.assertIsNone(video_archive.infer_event_name("/uid/random/file.bin"))
 
+    def test_object_key_rejects_url_traversal_and_query(self) -> None:
+        valid = "/uid/videoPicklockEvent/picklockEvent_1785652830.h264"
+        self.assertEqual(video_archive.normalize_event_object_key(valid), valid)
+        for unsafe in (
+            "https://example.com/uid/videoPicklockEvent/picklockEvent_1.h264",
+            "/uid/../videoPicklockEvent/picklockEvent_1.h264",
+            "/uid/videoPicklockEvent/picklockEvent_1.h264?token=secret",
+            "\\uid\\videoPicklockEvent\\picklockEvent_1.h264",
+        ):
+            with self.subTest(unsafe=unsafe):
+                self.assertIsNone(
+                    video_archive.normalize_event_object_key(unsafe)
+                )
+
 
 class BuildMediaPathsTests(unittest.TestCase):
     def setUp(self) -> None:

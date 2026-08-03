@@ -6,18 +6,23 @@ from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .https_client import HttpsClient
+from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_for_region
 from .const import (
     DOMAIN,
     CONF_USERNAME,
     CONF_PASSWORD,
+    CONF_PASSWORD_HASH,
+    CONF_CLOUD_REGION,
     CONF_FAMILY_ID,
     CONF_LOCK_USER_NAMES,
 )
 from .device_types import classify_device, is_hidden_category
 from .lock_status import format_lock_user_names, parse_lock_user_names
 from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
+from .protocol import password_hash
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,14 +35,21 @@ def _device_label(device_id: str, name: str, room: str) -> str:
 
 
 async def _fetch_devices(
+    hass: HomeAssistant,
     username: str,
-    password: str,
+    password_digest: str,
     family_id: str,
+    cloud: CloudEndpoint = CHINA_CLOUD,
 ) -> list[dict]:
     """拉取设备列表（含房间信息），过滤隐藏类别。"""
     client = None
     try:
-        client = HttpsClient(username=username, password=password)
+        client = HttpsClient(
+            username=username,
+            password_hash=password_digest,
+            session=async_get_clientsession(hass),
+            cloud=cloud,
+        )
         if family_id:
             client.family_id = family_id
         if not await client.ensure_login():
@@ -57,11 +69,12 @@ async def _fetch_devices(
 
 
 class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 3
 
     def __init__(self) -> None:
         self._devices: list[dict] = []
         self._pending_selected_ids: list[str] = []
+        self._cloud = CHINA_CLOUD
 
     async def async_step_user(
         self, user_input: Optional[dict] = None
@@ -81,16 +94,21 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # 临时 client 用于验证登录并获取家庭列表
                 temp_client = None
                 try:
-                    temp_client = HttpsClient(username=username, password=password)
-                    success = await temp_client.ensure_login()
+                    self._password_hash = password_hash(password)
+                    temp_client = HttpsClient(
+                        username=username,
+                        password_hash=self._password_hash,
+                        session=async_get_clientsession(self.hass),
+                    )
+                    success = await temp_client.async_detect_cloud()
 
                     if success:
                         # 保存数据到 self，后续步骤使用
                         self._username = username
-                        self._password = password
                         self._family_list = temp_client.family_list
                         self._family_id = temp_client.family_id
                         self._family_name = temp_client.family_name
+                        self._cloud = temp_client.cloud
 
                         # 前置认证校验：拿到第一个家庭 ID 后立即做 SSL 探针，
                         # 密码错误时在凭据表单直接提示，不再展示家庭列表
@@ -166,7 +184,11 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if not self._devices:
             self._devices = await _fetch_devices(
-                self._username, self._password, self._family_id or ""
+                self.hass,
+                self._username,
+                self._password_hash,
+                self._family_id or "",
+                self._cloud,
             )
             if not self._devices:
                 errors["base"] = "no_devices"
@@ -238,8 +260,18 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 temp_client = None
                 success = False
                 try:
-                    temp_client = HttpsClient(username=username, password=password)
-                    success = await temp_client.ensure_login()
+                    password_digest = password_hash(password)
+                    temp_client = HttpsClient(
+                        username=username,
+                        password_hash=password_digest,
+                        session=async_get_clientsession(self.hass),
+                        cloud=cloud_for_region(entry.data.get(CONF_CLOUD_REGION)),
+                    )
+                    success = await temp_client.async_detect_cloud(
+                        str(entry.data.get(CONF_FAMILY_ID, "")) or None
+                    )
+                    if success:
+                        self._cloud = temp_client.cloud
                 except Exception:
                     success = False
                 finally:
@@ -247,12 +279,15 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         await temp_client.close()
                 if success:
                     self._username = username
-                    self._password = password
+                    self._password_hash = password_digest
                     family_id = str(entry.data.get(CONF_FAMILY_ID, ""))
                     if await self._probe_ssl_login(family_id):
                         return self.async_update_reload_and_abort(
                             entry,
-                            data_updates={CONF_PASSWORD: password},
+                            data_updates={
+                                CONF_PASSWORD_HASH: password_digest,
+                                CONF_CLOUD_REGION: self._cloud.region.value,
+                            },
                         )
                 errors["base"] = "auth_failed"
 
@@ -271,14 +306,14 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         判定为认证失败；网络/超时类失败不阻塞配置流程。
         """
         from .ssl_client import SSLClient
-        from .const import SSL_HOST, SSL_PORT
+        from .const import SSL_PORT
 
         client = SSLClient(
             hass=self.hass,
-            ssl_host=SSL_HOST,
+            ssl_host=self._cloud.ssl_host,
             ssl_port=SSL_PORT,
             username=self._username,
-            password=self._password,
+            password_hash=self._password_hash,
             family_id=family_id,
             on_session_id_obtained=lambda sid: None,
             on_status_update=lambda did, raw: None,
@@ -303,8 +338,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             title=f"{self._username} - {self._family_name}",
             data={
                 CONF_USERNAME: self._username,
-                CONF_PASSWORD: self._password,
+                CONF_PASSWORD_HASH: self._password_hash,
                 CONF_FAMILY_ID: self._family_id,
+                CONF_CLOUD_REGION: self._cloud.region.value,
             },
             options={
                 CONF_SELECTED_DEVICE_IDS: self._pending_selected_ids,
@@ -366,9 +402,13 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
         if not self._devices:
             self._devices = await _fetch_devices(
+                self.hass,
                 str(self._config_entry.data.get(CONF_USERNAME, "")),
-                str(self._config_entry.data.get(CONF_PASSWORD, "")),
+                str(self._config_entry.data.get(CONF_PASSWORD_HASH, "")),
                 str(self._config_entry.data.get(CONF_FAMILY_ID, "")),
+                cloud_for_region(
+                    self._config_entry.data.get(CONF_CLOUD_REGION)
+                ),
             )
             if not self._devices:
                 errors["base"] = "no_devices"

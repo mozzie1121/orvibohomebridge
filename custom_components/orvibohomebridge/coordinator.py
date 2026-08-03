@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .ssl_client import SSLClient
 from .https_client import HttpsClient
@@ -22,12 +23,18 @@ from .temp_password import (
     parse_authorization_item,
     parse_grant_response,
 )
-from .device_types import DeviceCategory, classify_device, is_hidden_category
-from .packet import get_api_host
+from .device_types import (
+    DeviceCategory,
+    classify_device,
+    get_device_profile,
+    is_hidden_category,
+)
 from .redact import fingerprint, redact_packet
+from .models import AccountCredentials
+from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_candidates
+from .state_store import StateSource, StateStore
 from .const import (
-    SSL_HOST, SSL_PORT,
-    HTTPS_HOST, HTTPS_HOST_GLOBAL, SSL_HOST_GLOBAL,
+    SSL_PORT,
     UPDATE_INTERVAL,
     DEVICE_TYPE_SWITCH,
     DEVICE_TYPE_LIGHT,
@@ -69,17 +76,23 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def __init__(
         self,
         hass: HomeAssistant,
-        username: str,
-        password: str,
-        family_id: str = None,
+        credentials: AccountCredentials,
         lock_user_names: Optional[Dict[str, str]] = None,
+        cloud: CloudEndpoint = CHINA_CLOUD,
     ):
-        self.username = username
-        self.password = password
-        self.family_id = family_id
+        self.credentials = credentials
+        self.username = credentials.username
+        self.password_hash = credentials.password_hash
+        self.family_id = credentials.family_id
         self.hass = hass
 
-        self.https_client = HttpsClient(username=username, password=password)
+        self.https_client = HttpsClient(
+            username=credentials.username,
+            password_hash=credentials.password_hash,
+            session=async_get_clientsession(hass),
+            cloud=cloud,
+        )
+        self.https_client.family_id = credentials.family_id or None
         self.ssl_client = None
         self.cos_media: Optional[CosMediaManager] = None
         self.video_archiver: Optional[VideoArchiver] = None
@@ -114,6 +127,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         self.devices: Dict[str, Any] = {}
         self.device_states: Dict[str, Any] = {}
+        self.state_store = StateStore(self.device_states)
 
     def _parse_status_light_colortemp(self, dev_state: dict, raw_status: dict) -> None:
         """解析调光调色灯状态 (deviceType 38)
@@ -1113,8 +1127,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         cos = self.cos_media
         if archiver is None or cos is None:
             return {"error": "录像归档未就绪"}
+        dev = self.devices.get(device_id)
+        if dev is None or classify_device(dev) != DeviceCategory.DOOR_LOCK:
+            return {"error": "设备不存在或不是门锁"}
+        from .video_archive import normalize_event_object_key
+
+        object_key = normalize_event_object_key(object_key) or ""
+        if not object_key:
+            return {"error": "无效的事件录像对象键"}
         if not device_uid:
-            dev = self.devices.get(device_id) or {}
             device_uid = dev.get("uid", "")
         url = await cos.signed_url(device_id, device_uid, object_key)
         if not url:
@@ -1208,6 +1229,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         sslc = self.ssl_client
         if sslc is None:
             return {"error": "SSL 客户端未就绪"}
+        dev = self.devices.get(device_id)
+        if dev is None or classify_device(dev) != DeviceCategory.DOOR_LOCK:
+            return {"error": "设备不存在或不是门锁"}
+        if auth_type not in (1, 2):
+            return {"error": "授权类型必须为 1 或 2"}
+        if not 1 <= minutes <= 525600:
+            return {"error": "有效期必须在 1 到 525600 分钟之间"}
+        if not 0 <= number <= 100:
+            return {"error": "可用次数必须在 0 到 100 之间"}
         # 先同步服务器端授权状态（App 删除/过期后 readtable 会反映），
         # 避免本地内存累积导致误判上限
         server_records = await self.async_fetch_server_temp_passwords()
@@ -1218,7 +1248,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             return {"error": f"临时密码已达上限（{self.TEMP_PASSWORD_MAX} 个），请先删除旧密码"}
         records = self._temp_passwords.setdefault(device_id, [])
         if not device_uid:
-            dev = self.devices.get(device_id) or {}
             device_uid = dev.get("uid", "")
         name = name or f"临时用户 {time.strftime('%m%d%H%M')}"
         resp = await sslc.send_temp_password(
@@ -1245,9 +1274,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if len(records) > 10:
             self._temp_passwords[device_id] = records[-10:]
         info = describe_record(record)
+        event_info = {key: value for key, value in info.items() if key != "password"}
         self.hass.bus.async_fire(
             TEMP_PASSWORD_EVENT,
-            {"device_id": device_id, **info},
+            {"device_id": device_id, **event_info},
         )
         # 触发实体刷新（临时密码传感器重新读取）
         self.device_states.setdefault(device_id, {})["temp_password_ts"] = time.time()
@@ -1269,8 +1299,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         sslc = self.ssl_client
         if sslc is None:
             return {"error": "SSL 客户端未就绪"}
+        dev = self.devices.get(device_id)
+        if dev is None or classify_device(dev) != DeviceCategory.DOOR_LOCK:
+            return {"error": "设备不存在或不是门锁"}
+        if authorized_id <= 0:
+            return {"error": "authorized_id 必须为正整数"}
         if not device_uid:
-            dev = self.devices.get(device_id) or {}
             device_uid = dev.get("uid", "")
         resp = await sslc.delete_authorization(
             device_id=device_id,
@@ -1302,7 +1336,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         result: Dict[str, Any] = {}
         for r in records:
             did = r.get("device_id") or "unknown"
-            result.setdefault(did, []).append(describe_record(r))
+            info = describe_record(r)
+            info.pop("password", None)
+            result.setdefault(did, []).append(info)
         return result
 
     async def async_fetch_server_temp_passwords(self) -> list[dict]:
@@ -1525,21 +1561,33 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 self.https_client.family_id = self.family_id
                 self.https_client.family_name = None
 
-            if not await self.https_client.ensure_login():
+            if not await self.https_client.async_detect_cloud(self.family_id):
                 raise ConfigEntryAuthFailed("HTTPS登录失败")
 
             _LOGGER.debug("第一步：拉取设备列表（三层回退）...")
             device_status_data, devices = await self._discover_devices()
 
-            if not devices and get_api_host() == HTTPS_HOST:
-                _LOGGER.warning(f"中国区云端未发现任何设备，尝试国际区服务器 {HTTPS_HOST_GLOBAL} ...")
-                await self.https_client.switch_host(HTTPS_HOST_GLOBAL)
+            if not devices:
+                fallback_cloud = cloud_candidates(self.https_client.cloud)[1]
+                _LOGGER.warning(
+                    "%s 云端未发现设备，尝试 %s 云端 ...",
+                    self.https_client.cloud.region.value,
+                    fallback_cloud.region.value,
+                )
+                await self.https_client.switch_cloud(
+                    fallback_cloud,
+                    family_id=self.family_id or None,
+                )
                 if await self.https_client.ensure_login():
                     device_status_data, devices = await self._discover_devices()
                     if devices:
-                        _LOGGER.warning(f"国际区服务器发现 {len(devices)} 个设备，本实例将使用国际区云端")
+                        _LOGGER.warning(
+                            "%s 云端发现 %s 个设备，本实例将使用该区域",
+                            fallback_cloud.region.value,
+                            len(devices),
+                        )
                 else:
-                    _LOGGER.error("国际区服务器登录失败")
+                    _LOGGER.error("%s 云端登录失败", fallback_cloud.region.value)
 
             if device_status_data is None and not devices:
                 raise UpdateFailed("获取设备列表失败")
@@ -1679,6 +1727,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         # 已存在的隐藏设备从字典中移除
                         self.devices.pop(device_id, None)
                         self.device_states.pop(device_id, None)
+                        self.state_store.remove(device_id)
                         continue
 
                     self.devices[device_id] = device
@@ -1691,14 +1740,34 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                             "color_temp": device.get("color_temp"),
                             "properties": {}
                         }
+                    cloud_state = {
+                        field: device[field]
+                        for field in (
+                            "state",
+                            "online",
+                            "position",
+                            "brightness",
+                            "color_temp",
+                            "temperature",
+                            "humidity",
+                        )
+                        if field in device and device[field] is not None
+                    }
                     status = device.get("status", {})
-                    if status:
-                        self.device_states[device_id].update(status)
+                    if isinstance(status, dict):
+                        cloud_state.update(status)
+                    if cloud_state:
+                        self.state_store.merge(
+                            device_id,
+                            cloud_state,
+                            StateSource.CLOUD,
+                        )
                     # 电池低频推送：定期刷新时从 readtable 设备属性同步
                     if category == DeviceCategory.DOOR_LOCK:
                         from .lock_status import normalize_battery_properties as _nb
 
                         battery = _nb(device.get("properties") or {})
+                        battery_updates = {}
                         for bkey in (
                             "dry_battery_level",
                             "dry_battery_setup",
@@ -1706,7 +1775,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                             "lithium_battery_setup",
                         ):
                             if bkey in battery:
-                                self.device_states[device_id][bkey] = battery[bkey]
+                                battery_updates[bkey] = battery[bkey]
+                        self.state_store.merge(
+                            device_id,
+                            battery_updates,
+                            StateSource.CLOUD,
+                        )
             return self.device_states
         except Exception as e:
             raise UpdateFailed(f"更新失败: {str(e)}") from e
@@ -1765,6 +1839,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 return
 
             dev_state = self.device_states[matched_device_id]
+            state_before = dict(dev_state)
             dev_state["properties"] = raw_status.get("properties", {})
             dev_state["online"] = True
             self._last_update_time[matched_device_id] = __import__("time").time()
@@ -1780,6 +1855,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             # cmd=82 推送消息（门锁文本消息/告警）：只发事件，不改设备状态属性
             if raw_status.get("cmd") == 82:
                 self._publish_lock_message(matched_device_id, raw_status)
+                self.state_store.mark(
+                    matched_device_id,
+                    ("online", "properties"),
+                    StateSource.SSL,
+                )
                 return
 
             # 晾衣架专用协议（cmd=99 推送，带 is_clothes_horse 标志）
@@ -1857,6 +1937,20 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 else:
                     self._parse_status_generic(dev_state, raw_status)
 
+            changed_fields = {
+                field
+                for field in set(state_before) | set(dev_state)
+                if state_before.get(field) != dev_state.get(field)
+            }
+            # 即使值未变化，SSL 回包也确认了当前快照；短保护窗口内
+            # 不应被可能稍旧的 readtable 结果回滚。
+            confirmed_fields = changed_fields | set(dev_state)
+            self.state_store.mark(
+                matched_device_id,
+                confirmed_fields,
+                StateSource.SSL,
+            )
+
             # 门锁状态/事件归一化后发布到 HA 事件总线（供自动化订阅）
             if (
                 device_type == 522
@@ -1869,14 +1963,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self.hass.add_job(self.async_set_updated_data, self.device_states)
             _LOGGER.debug(f"[{matched_device_id}] MQTT状态同步完成: state={dev_state.get('state')}, bri={dev_state.get('brightness')}, ct={dev_state.get('color_temp')}, pos={dev_state.get('position')}")
 
-        # SSL 控制通道跟随 HTTPS API 所在区域（中国区/国际区）
-        ssl_host = SSL_HOST_GLOBAL if get_api_host() == HTTPS_HOST_GLOBAL else SSL_HOST
+        # SSL 控制通道跟随当前客户端的云端区域，不依赖模块级全局状态。
+        ssl_host = self.https_client.cloud.ssl_host
         self.ssl_client = SSLClient(
             hass=self.hass,
             ssl_host=ssl_host,
             ssl_port=SSL_PORT,
             username=self.username,
-            password=self.password,
+            password_hash=self.password_hash,
             family_id=self.https_client.family_id,
             on_status_update=on_status_update,
             on_session_id_obtained=on_session_id_obtained,
@@ -1928,6 +2022,19 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             return None
         return await self.ssl_client._wait_for_control_response(device_id)
 
+    def _apply_optimistic_state(
+        self,
+        device_id: str,
+        values: Dict[str, Any],
+    ) -> None:
+        """Apply a local command fallback until SSL/cloud confirms it."""
+        self.state_store.merge(
+            device_id,
+            values,
+            StateSource.OPTIMISTIC,
+            force=True,
+        )
+
     async def async_turn_on(self, device_id: str, brightness: int = None, color_temp: int = None) -> bool:
         """打开设备（基于 category 路由控制命令）。
 
@@ -1940,6 +2047,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         device = self.devices.get(device_id)
         if not device:
             _LOGGER.error(f"设备不存在: {device_id}")
+            return False
+        if get_device_profile(device).registration_only:
+            _LOGGER.warning("未知设备仅注册展示，拒绝下发控制: %s", device_id)
             return False
 
         device_uid = device.get("uid", "")
@@ -2016,11 +2126,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 pass
             else:
                 # 超时，保留乐观更新兜底
-                self.device_states.setdefault(device_id, {})["state"] = True
+                optimistic = {"state": True}
                 if brightness is not None:
-                    self.device_states[device_id]["brightness"] = brightness
+                    optimistic["brightness"] = brightness
                 if color_temp is not None:
-                    self.device_states[device_id]["color_temp"] = color_temp
+                    optimistic["color_temp"] = color_temp
+                self._apply_optimistic_state(device_id, optimistic)
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -2033,6 +2144,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         device = self.devices.get(device_id)
         if not device:
             _LOGGER.error(f"设备不存在: {device_id}")
+            return False
+        if get_device_profile(device).registration_only:
+            _LOGGER.warning("未知设备仅注册展示，拒绝下发控制: %s", device_id)
             return False
 
         device_uid = device.get("uid", "")
@@ -2089,7 +2203,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             response = await self._wait_for_control_response(device_id)
             if not response:
                 # 超时，保留乐观更新兜底
-                self.device_states.setdefault(device_id, {})["state"] = False
+                self._apply_optimistic_state(device_id, {"state": False})
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -2100,6 +2214,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         device = self.devices.get(device_id)
         if not device:
             _LOGGER.error(f"设备不存在: {device_id}")
+            return False
+        if get_device_profile(device).registration_only:
+            _LOGGER.warning("未知设备仅注册展示，拒绝下发窗帘控制: %s", device_id)
             return False
         device_uid = device.get("uid", "")
         _LOGGER.debug(f"设置窗帘位置: {device_id} position={position}")
@@ -2113,8 +2230,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     self.device_states.setdefault(device_id, {})["position"] = pos
                     self.device_states[device_id]["state"] = pos > 0
             else:
-                self.device_states.setdefault(device_id, {})["position"] = position
-                self.device_states[device_id]["state"] = position > 0
+                self._apply_optimistic_state(
+                    device_id,
+                    {"position": position, "state": position > 0},
+                )
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -2126,6 +2245,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         device = self.devices.get(device_id)
         if not device:
             _LOGGER.error(f"设备不存在: {device_id}")
+            return False
+        if get_device_profile(device).registration_only:
+            _LOGGER.warning("未知设备仅注册展示，拒绝下发窗帘控制: %s", device_id)
             return False
         device_uid = device.get("uid", "")
         _LOGGER.debug(f"停止窗帘: {device_id}")
@@ -2140,6 +2262,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if not device:
             _LOGGER.error(f"设备不存在: {device_id}")
             return False
+        if get_device_profile(device).registration_only:
+            _LOGGER.warning("未知设备仅注册展示，拒绝下发亮度控制: %s", device_id)
+            return False
         uid = device.get("uid", "")
         category = classify_device(device)
 
@@ -2150,8 +2275,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if result:
                 response = await self._wait_for_control_response(device_id)
                 if not response:
-                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_percent
-                    self.device_states[device_id]["state"] = True
+                    self._apply_optimistic_state(
+                        device_id,
+                        {"brightness": brightness_percent, "state": True},
+                    )
                 self.async_set_updated_data(self.device_states)
             return result
 
@@ -2162,8 +2289,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if result:
                 response = await self._wait_for_control_response(device_id)
                 if not response:
-                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
-                    self.device_states[device_id]["state"] = True
+                    self._apply_optimistic_state(
+                        device_id,
+                        {"brightness": brightness_255, "state": True},
+                    )
                 self.async_set_updated_data(self.device_states)
             return result
 
@@ -2178,8 +2307,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if result:
                 response = await self._wait_for_control_response(device_id)
                 if not response:
-                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
-                    self.device_states[device_id]["state"] = True
+                    self._apply_optimistic_state(
+                        device_id,
+                        {"brightness": brightness_255, "state": True},
+                    )
                 self.async_set_updated_data(self.device_states)
             return result
 
@@ -2203,8 +2334,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if result:
             response = await self._wait_for_control_response(device_id)
             if not response:
-                self.device_states.setdefault(device_id, {})["brightness"] = brightness
-                self.device_states[device_id]["state"] = True
+                self._apply_optimistic_state(
+                    device_id,
+                    {"brightness": brightness, "state": True},
+                )
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -2216,6 +2349,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         device = self.devices.get(device_id)
         if not device:
             _LOGGER.error(f"设备不存在: {device_id}")
+            return False
+        if get_device_profile(device).registration_only:
+            _LOGGER.warning("未知设备仅注册展示，拒绝下发色温控制: %s", device_id)
             return False
         uid = device.get("uid", "")
         brightness = self.device_states.get(device_id, {}).get("brightness", 255)
@@ -2241,7 +2377,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if result:
             response = await self._wait_for_control_response(device_id)
             if not response:
-                self.device_states.setdefault(device_id, {})["color_temp"] = color_temp_k
+                self._apply_optimistic_state(
+                    device_id,
+                    {"color_temp": color_temp_k},
+                )
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -2317,22 +2456,32 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             # 超时，保留乐观更新兜底
             dev_state = self.get_device_state(device_id)
             if dev_state:
+                optimistic_fields = set()
                 if value1 is not None:
                     dev_state["state"] = value1 == 0
+                    optimistic_fields.add("state")
                 if value2 is not None:
                     ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
                     dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
                     dev_state["ac_mode_raw"] = value2
+                    optimistic_fields.update(("ac_mode", "ac_mode_raw"))
                 if value3 is not None:
                     fan_speed_map = {1: "low", 2: "medium", 3: "high"}
                     dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
                     dev_state["fan_speed_raw"] = value3
+                    optimistic_fields.update(("fan_speed", "fan_speed_raw"))
                 if value4 is not None:
                     try:
                         temp_raw = value4 >> 16
                         dev_state["temperature"] = round(temp_raw / 100.0, 1) if temp_raw else 0
                     except (TypeError, ValueError):
                         dev_state["temperature"] = value4
+                    optimistic_fields.add("temperature")
+                self.state_store.mark(
+                    device_id,
+                    optimistic_fields,
+                    StateSource.OPTIMISTIC,
+                )
                 self.async_set_updated_data(self.device_states)
         else:
             # 有响应就触发 coordinator 更新（SSL 推送会回调 on_status_update）
@@ -2433,6 +2582,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     dev_state["fan_speed"] = "快"
                     dev_state["state"] = True
                 dev_state["value1"] = value1
+                self.state_store.mark(
+                    device_id,
+                    ("fan_speed", "state", "value1"),
+                    StateSource.OPTIMISTIC,
+                )
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -2506,6 +2660,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     dev_state[state_key] = (value == "on")
                     if feature == "main_switch":
                         dev_state["state"] = (value == "on")
+                optimistic_fields = (
+                    ("motor_state",)
+                    if feature == "motor"
+                    else (f"{feature}_state", "state")
+                    if feature == "main_switch"
+                    else (f"{feature}_state",)
+                )
+                self.state_store.mark(
+                    device_id,
+                    optimistic_fields,
+                    StateSource.OPTIMISTIC,
+                )
                 self.async_set_updated_data(self.device_states)
             _LOGGER.debug(f"[控制成功] {device_id} {ctrl_field}={value}")
         return result
