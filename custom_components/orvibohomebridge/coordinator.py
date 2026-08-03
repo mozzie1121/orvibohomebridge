@@ -1683,6 +1683,19 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     status = device.get("status", {})
                     if status:
                         self.device_states[device_id].update(status)
+                    # 电池低频推送：定期刷新时从 readtable 设备属性同步
+                    if category == DeviceCategory.DOOR_LOCK:
+                        from .lock_status import normalize_battery_properties as _nb
+
+                        battery = _nb(device.get("properties") or {})
+                        for bkey in (
+                            "dry_battery_level",
+                            "dry_battery_setup",
+                            "lithium_battery_level",
+                            "lithium_battery_setup",
+                        ):
+                            if bkey in battery:
+                                self.device_states[device_id][bkey] = battery[bkey]
             return self.device_states
         except Exception as e:
             raise UpdateFailed(f"更新失败: {str(e)}") from e
