@@ -264,8 +264,7 @@ class OrviboDoorLockCard extends HTMLElement {
 
   async _loadList() {
     const root = this.shadowRoot;
-    const listEl = root.querySelector("#ov-tp-list");
-    if (!listEl) return;
+    if (!root.querySelector("#ov-tp-list")) return;
     try {
       const res = await this._hass.callService(
         "orvibohomebridge",
@@ -275,6 +274,9 @@ class OrviboDoorLockCard extends HTMLElement {
         true
       );
       const records = (res && res[this._deviceId]) || [];
+      // 异步期间 DOM 可能被 _render 重建，必须重新查询最新节点
+      const listEl = this.shadowRoot.querySelector("#ov-tp-list");
+      if (!listEl) return;
       if (!records.length) {
         listEl.innerHTML = "<div class='meta'>暂无临时密码</div>";
         return;
