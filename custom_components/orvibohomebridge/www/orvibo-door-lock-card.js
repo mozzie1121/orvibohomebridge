@@ -138,9 +138,15 @@ class OrviboDoorLockCard extends HTMLElement {
     const doorLabel = door === "on" ? "开" : door === "off" ? "关" : (door || "-");
     const batteryLabel = dryBattery != null ? `${dryBattery}%` : "-";
     const cameraEntity = e.camera;
-    const cameraUrl = cameraEntity
-      ? `/api/camera_proxy/${cameraEntity}?token=${encodeURIComponent(this._hass.auth.accessToken || "")}`
-      : "";
+    const cameraState = cameraEntity ? this._hass.states[cameraEntity] : null;
+    const cameraToken =
+      cameraState && cameraState.attributes
+        ? cameraState.attributes.access_token
+        : "";
+    const cameraUrl =
+      cameraEntity && cameraToken
+        ? `/api/camera_proxy/${cameraEntity}?token=${encodeURIComponent(cameraToken)}`
+        : "";
 
     root.innerHTML = `
       <ha-card>
