@@ -243,13 +243,14 @@ class OrviboDoorLockCard extends HTMLElement {
       name: root.querySelector("#ov-tp-name").value.trim(),
     };
     try {
-      const res = await this._hass.callService(
-        "orvibohomebridge",
-        "grant_temp_password",
-        data,
-        {},
-        true
-      );
+      const result = await this._hass.callWS({
+        type: "call_service",
+        domain: "orvibohomebridge",
+        service: "grant_temp_password",
+        service_data: data,
+        return_response: true,
+      });
+      const res = result && result.response;
       if (res && res.error) {
         this._tempError = res.error;
       } else if (res && res.password) {
@@ -266,13 +267,14 @@ class OrviboDoorLockCard extends HTMLElement {
     const root = this.shadowRoot;
     if (!root.querySelector("#ov-tp-list")) return;
     try {
-      const res = await this._hass.callService(
-        "orvibohomebridge",
-        "list_temp_passwords",
-        { device_id: this._deviceId },
-        {},
-        true
-      );
+      const result = await this._hass.callWS({
+        type: "call_service",
+        domain: "orvibohomebridge",
+        service: "list_temp_passwords",
+        service_data: { device_id: this._deviceId },
+        return_response: true,
+      });
+      const res = result && result.response;
       const records = (res && res[this._deviceId]) || [];
       console.log("ORVIBO list debug:", {
         deviceId: this._deviceId,
@@ -309,13 +311,15 @@ class OrviboDoorLockCard extends HTMLElement {
 
   async _revoke(authorizedId) {
     try {
-      await this._hass.callService(
-        "orvibohomebridge",
-        "revoke_temp_password",
-        { device_id: this._deviceId, authorized_id: authorizedId },
-        {},
-        true
-      );
+      await this._hass.callWS({
+        type: "call_service",
+        domain: "orvibohomebridge",
+        service: "revoke_temp_password",
+        service_data: {
+          device_id: this._deviceId,
+          authorized_id: authorizedId,
+        },
+      });
     } catch (e) {
       console.error("ORVIBO card: 删除失败", e);
     }
