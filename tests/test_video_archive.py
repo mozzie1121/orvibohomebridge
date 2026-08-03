@@ -79,7 +79,7 @@ class BuildMediaPathsTests(unittest.TestCase):
             "videoPicklockEvent/picklockEvent_1785652830.h264"
         )
         paths = video_archive.build_media_paths(
-            self.root, "w-77c139c4d27f4fa6a20e1f459849aa47", key
+            self.root, "w-test-door-lock-id", key
         )
         assert paths is not None
         h264, mp4 = paths
@@ -87,7 +87,7 @@ class BuildMediaPathsTests(unittest.TestCase):
             h264,
             self.root
             / "orvibohomebridge"
-            / "w-77c139c4d27f4fa6a20e1f459849aa47"
+            / "w-test-door-lock-id"
             / "picklock_1785652830.h264",
         )
         self.assertEqual(mp4.suffix, ".mp4")
