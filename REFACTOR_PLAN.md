@@ -214,6 +214,23 @@
 - `coordinator.py` 从本轮开始前约 2483 行降至约 1942 行；解析/事件/路由均可在
   无 Home Assistant 环境下独立测试。
 
+### 第13轮：协调器生命周期瘦身（已完成 2026-08-04）
+
+- 新增 `status_dispatcher.py`：负责 SSL 推送设备 ID 匹配、分类分发、状态来源确认、
+  门锁消息回调和脱敏诊断环形缓冲；协调器不再承担通用推送解析入口。
+- 新增 `lock_media_manager.py`：统一门锁 COS 凭证预热、签名 URL、截图重试、录像归档、
+  历史查询与定时清理；HA 服务方法继续由协调器提供兼容门面。
+- 新增 `temp_password_manager.py`：统一临时密码下发/删除、服务器列表同步、过期回收和
+  事件脱敏；密码仍只在创建响应中返回一次，列表与事件不暴露密码。
+- 新增 `device_inventory.py`：统一 readtable/getDeviceDesc/queryHomepageData 三层发现、
+  隐藏设备过滤、类别初始状态和云端轮询合并。
+- 新增 `control_executor.py`：统一分类路由执行、设备能力校验、回包等待和乐观状态兜底；
+  已经真机验证的命令参数与公开控制接口保持不变。
+- `coordinator.py` 从约 1942 行进一步降至约 742 行，只保留 Home Assistant 生命周期、
+  SSL 建连、传感器瞬态复位、事件发布门面和空调原始报文等高耦合编排。
+- 每个新边界均有独立单元测试；本轮结束时完整测试基线为 256 项通过、1 项因本地缺少
+  `voluptuous` 跳过。
+
 ## 设计原则
 1. **协议层零依赖** — protocol.py、control.py、parsers、lock_manager.py、control_router.py 只有 Python 标准库
 2. **不破坏现有功能** — 重构过程中现有 import 保持兼容

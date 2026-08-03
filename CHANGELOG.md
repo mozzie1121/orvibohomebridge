@@ -9,6 +9,9 @@
 - TLS transport、响应关联、状态来源对账和 Home Assistant 服务处理器拆分为独立模块。
 - 设备状态解析拆分到 `parsers/`，门锁事件编排拆分到 `lock_manager.py`，
   电源/亮度/色温分流拆分到 `control_router.py`。
+- SSL 状态分发、门锁媒体、临时密码、设备库存和共用控制执行分别拆分到
+  `status_dispatcher.py`、`lock_media_manager.py`、`temp_password_manager.py`、
+  `device_inventory.py` 与 `control_executor.py`；协调器保留兼容接口并聚焦 HA 生命周期。
 - README 支持表中的设备标记为真机验证；未知设备只注册展示，不发送推测控制命令。
 - `list_events` 和 `fetch_video` 不再返回主机绝对文件路径。
 - `list_temp_passwords` 不再返回密码；新密码只在 `grant_temp_password` 本次响应中提供。

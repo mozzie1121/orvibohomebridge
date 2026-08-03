@@ -395,9 +395,17 @@ orvibohomebridge/
 │       ├── __init__.py       # 集成入口，平台注册
 │       ├── manifest.json     # 集成元数据
 │       ├── config_flow.py    # 配置流程
-│       ├── coordinator.py    # 数据协调器，状态管理
+│       ├── coordinator.py    # HA 生命周期与领域编排
 │       ├── const.py          # 常量定义
 │       ├── device_types.py   # 设备分类
+│       ├── device_inventory.py # 设备发现与云端状态合并
+│       ├── parsers/          # 分类状态解析器
+│       ├── status_dispatcher.py # SSL 状态匹配与分发
+│       ├── control_router.py # 纯控制路由决策
+│       ├── control_executor.py # 控制执行与乐观状态兜底
+│       ├── lock_manager.py   # 门锁事件归一化与去重
+│       ├── lock_media_manager.py # 门锁截图、录像与历史
+│       ├── temp_password_manager.py # 临时密码生命周期
 │       ├── https_client.py   # HTTP API 客户端
 │       ├── ssl_client.py     # SSL 连接客户端
 │       ├── packet.py         # 数据包构造
