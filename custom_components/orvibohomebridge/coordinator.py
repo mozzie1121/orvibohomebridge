@@ -13,7 +13,6 @@ from .https_client import HttpsClient
 from .device_types import (
     DeviceCategory,
     classify_device,
-    get_device_profile,
 )
 from .redact import fingerprint, redact_packet
 from .models import AccountCredentials
@@ -21,23 +20,14 @@ from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_candidates
 from .state_store import StateSource, StateStore
 from .parsers import get_state_parser
 from .lock_manager import LockEventManager
-from .control_router import (
-    ControlRoute,
-    brightness_route,
-    color_temp_route,
-    power_route,
-)
 from .status_dispatcher import StatusUpdateDispatcher
 from .lock_media_manager import LockMediaManager
 from .temp_password_manager import TempPasswordManager
 from .device_inventory import DeviceInventory
+from .control_executor import ControlExecutor
 from .const import (
     SSL_PORT,
     UPDATE_INTERVAL,
-    DEVICE_TYPE_SWITCH,
-    DEVICE_TYPE_LIGHT,
-    DEVICE_TYPE_COVER,
-    DEVICE_TYPE_CLOTHES_HORSE,
     CMD_CONTROL,
     DEFAULT_KEY,
     SOFTWARE_VER, DEBUG_INFO,
@@ -106,6 +96,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self.device_states,
             self.state_store,
             self.lock_events.remove,
+        )
+        self.control = ControlExecutor(
+            self.devices,
+            self.device_states,
+            self.state_store,
+            lambda: self.ssl_client,
+            lambda: self,
+            self.get_device_state,
+            lambda: self.async_set_updated_data(self.device_states),
         )
         self.lock_media = LockMediaManager(
             self.hass, self.devices, self._redaction_salt
@@ -583,9 +582,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
     async def _wait_for_control_response(self, device_id: str) -> dict | None:
         """发送控制后等待设备返回状态，3秒超时兜底。"""
-        if not self.ssl_client:
-            return None
-        return await self.ssl_client._wait_for_control_response(device_id)
+        return await self.control.wait_for_response(device_id)
 
     def _apply_optimistic_state(
         self,
@@ -593,225 +590,41 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         values: Dict[str, Any],
     ) -> None:
         """Apply a local command fallback until SSL/cloud confirms it."""
-        self.state_store.merge(
-            device_id,
-            values,
-            StateSource.OPTIMISTIC,
-            force=True,
-        )
-
-    async def _execute_control_route(
-        self, device_id: str, device_uid: str, route: ControlRoute
-    ) -> bool:
-        """Execute an already-selected route while keeping I/O in the coordinator."""
-
-        owner = self.ssl_client if route.scope == "ssl" else self
-        if owner is None:
-            return False
-        method = getattr(owner, route.method)
-        prefix = (
-            (device_id, device_uid)
-            if route.scope in ("ssl", "coordinator_uid")
-            else (device_id,)
-        )
-        return await method(*prefix, *route.args, **route.kwargs)
+        self.control.apply_optimistic(device_id, values)
 
     async def async_turn_on(self, device_id: str, brightness: int = None, color_temp: int = None) -> bool:
         """打开设备（基于 category 路由控制命令）。
 
         可选参数 brightness/color_temp 用于灯光一次性下发。
         """
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        if get_device_profile(device).registration_only:
-            _LOGGER.warning("未知设备仅注册展示，拒绝下发控制: %s", device_id)
-            return False
-
-        device_uid = device.get("uid", "")
-        category = classify_device(device)
-        _LOGGER.debug(f"打开设备: {device_id}, category={category.name}, uid={device_uid}")
-
-        route = power_route(
-            category,
-            True,
-            self.get_device_state(device_id) or {},
-            brightness=brightness,
-            color_temp=color_temp,
+        return await self.control.turn_on(
+            device_id, brightness, color_temp
         )
-        result = await self._execute_control_route(device_id, device_uid, route)
-
-        if result:
-            # ★ 等待设备响应来更新状态
-            response = await self._wait_for_control_response(device_id)
-            if response:
-                # 让 SSL 推送过来的数据通过 on_status_update 更新 coordinator
-                # _update_device_state 已经在 on_status_update 回调中被调用
-                pass
-            else:
-                # 超时，保留乐观更新兜底
-                optimistic = {"state": True}
-                if brightness is not None:
-                    optimistic["brightness"] = brightness
-                if color_temp is not None:
-                    optimistic["color_temp"] = color_temp
-                self._apply_optimistic_state(device_id, optimistic)
-            self.async_set_updated_data(self.device_states)
-        return result
 
     async def async_turn_off(self, device_id: str) -> bool:
         """关闭设备（基于 category 路由控制命令）。"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        if get_device_profile(device).registration_only:
-            _LOGGER.warning("未知设备仅注册展示，拒绝下发控制: %s", device_id)
-            return False
-
-        device_uid = device.get("uid", "")
-        category = classify_device(device)
-        _LOGGER.debug(f"关闭设备: {device_id}, category={category.name}, uid={device_uid}")
-
-        route = power_route(
-            category,
-            False,
-            self.get_device_state(device_id) or {},
-        )
-        result = await self._execute_control_route(device_id, device_uid, route)
-
-        if result:
-            # ★ 等待设备响应
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                # 超时，保留乐观更新兜底
-                self._apply_optimistic_state(device_id, {"state": False})
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.turn_off(device_id)
 
     async def async_set_cover_position(self, device_id: str, position: int) -> bool:
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        if get_device_profile(device).registration_only:
-            _LOGGER.warning("未知设备仅注册展示，拒绝下发窗帘控制: %s", device_id)
-            return False
-        device_uid = device.get("uid", "")
-        _LOGGER.debug(f"设置窗帘位置: {device_id} position={position}")
-        result = await self.ssl_client.send_control_cover(device_id, device_uid, position)
-        if result:
-            # ★ 等待设备响应
-            response = await self._wait_for_control_response(device_id)
-            if response:
-                pos = response.get("value1")
-                if pos is not None and 0 <= pos <= 100:
-                    self.device_states.setdefault(device_id, {})["position"] = pos
-                    self.device_states[device_id]["state"] = pos > 0
-            else:
-                self._apply_optimistic_state(
-                    device_id,
-                    {"position": position, "state": position > 0},
-                )
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.set_cover_position(device_id, position)
 
     async def async_stop_cover(self, device_id: str) -> bool:
         """停止窗帘电机。"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        if get_device_profile(device).registration_only:
-            _LOGGER.warning("未知设备仅注册展示，拒绝下发窗帘控制: %s", device_id)
-            return False
-        device_uid = device.get("uid", "")
-        _LOGGER.debug(f"停止窗帘: {device_id}")
-        return await self.ssl_client.send_control_cover(device_id, device_uid, "stop")
+        return await self.control.stop_cover(device_id)
 
     async def async_set_brightness(self, device_id: str, brightness: int) -> bool:
         """设置亮度（HA LightEntity 使用 0-255 范围）。"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        if get_device_profile(device).registration_only:
-            _LOGGER.warning("未知设备仅注册展示，拒绝下发亮度控制: %s", device_id)
-            return False
-        uid = device.get("uid", "")
-        category = classify_device(device)
-
-        route = brightness_route(
-            category,
-            brightness,
-            self.device_states.get(device_id, {}),
-            device_type_raw=device.get("device_type_raw"),
-        )
-        result = await self._execute_control_route(device_id, uid, route)
-        if result:
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                self._apply_optimistic_state(device_id, dict(route.optimistic))
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.set_brightness(device_id, brightness)
 
     async def async_set_color_temp(self, device_id: str, color_temp_k: int) -> bool:
         """单独设置色温（Kelvin）"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        if get_device_profile(device).registration_only:
-            _LOGGER.warning("未知设备仅注册展示，拒绝下发色温控制: %s", device_id)
-            return False
-        uid = device.get("uid", "")
-        category = classify_device(device)
-        route = color_temp_route(
-            category,
-            color_temp_k,
-            self.device_states.get(device_id, {}),
-            device_type_raw=device.get("device_type_raw"),
-        )
-        result = await self._execute_control_route(device_id, uid, route)
-        if result:
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                self._apply_optimistic_state(device_id, dict(route.optimistic))
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.set_color_temp(device_id, color_temp_k)
 
     async def async_set_light_param(self, device_id: str, brightness: Optional[int], color_temp_k: Optional[int]) -> bool:
         """一次性下发亮度+色温（合并单条cmd15指令，避免两次请求不同步）"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL未连接，无法下发灯光复合参数")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"找不到设备 {device_id}")
-            return False
-        uid = device.get("uid", "")
-        return await self.ssl_client.send_light_bri_ct(device_id, uid, brightness, color_temp_k)
+        return await self.control.set_light_param(
+            device_id, brightness, color_temp_k
+        )
 
     # ------------------------------------------------------------------
     # 空调控制（deviceType=36，cmd=15 set property）
@@ -975,123 +788,26 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """新风系统控制（value1 格式）。
         value1: 0=慢, 50=停, 100=快
         """
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        device_uid = device.get("uid", "")
-
-        result = await self.ssl_client.send_control_ventilation(device_id, device_uid, value1)
-        if result:
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                dev_state = self.device_states.setdefault(device_id, {})
-                if value1 == 0:
-                    dev_state["fan_speed"] = "慢"
-                    dev_state["state"] = True
-                elif value1 == 50:
-                    dev_state["fan_speed"] = "停"
-                    dev_state["state"] = False
-                elif value1 == 100:
-                    dev_state["fan_speed"] = "快"
-                    dev_state["state"] = True
-                dev_state["value1"] = value1
-                self.state_store.mark(
-                    device_id,
-                    ("fan_speed", "state", "value1"),
-                    StateSource.OPTIMISTIC,
-                )
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.ventilation_state_update(device_id, value1)
 
     async def async_set_ventilation_preset_mode(self, device_id: str, preset_mode: str) -> bool:
         """设置新风系统预设模式（停/慢/快）"""
-        preset_map = {"停": 50, "慢": 0, "快": 100}
-        value1 = preset_map.get(preset_mode)
-        if value1 is None:
-            _LOGGER.error(f"无效的新风模式: {preset_mode}")
-            return False
-        return await self.async_ventilation_state_update(device_id, value1)
+        return await self.control.set_ventilation_preset_mode(
+            device_id, preset_mode
+        )
 
     # ------------------------------------------------------------------
     # 晾衣架控制（cmd=98）
     # ------------------------------------------------------------------
-    _CLOTHES_HORSE_FIELD_MAP = {
-        "lighting": "lightingCtrl",
-        "sterilizing": "sterilizingCtrl",
-        "wind_drying": "windDryingCtrl",
-        "heat_drying": "heatDryingCtrl",
-        "main_switch": "mainSwitchCtrl",
-        "motor": "motorCtrl",
-    }
-
     async def async_clothes_horse_control(self, device_id: str, feature: str, value: str) -> bool:
         """晾衣架控制。
 
         feature: lighting/sterilizing/wind_drying/heat_drying/main_switch/motor
         value: on/off (开关类) 或 up/down/stop (电机类)
         """
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-
-        device_uid = device.get("uid", "")
-        ctrl_field = self._CLOTHES_HORSE_FIELD_MAP.get(feature)
-        if not ctrl_field:
-            _LOGGER.error(f"未知晾衣架功能: {feature}")
-            return False
-
-        # 消毒开关特殊判定：只有电机在最顶部（motorPosition=0）时才允许打开
-        if feature == "sterilizing" and value == "on":
-            dev_state = self.device_states.get(device_id, {})
-            motor_position = dev_state.get("position", 0)
-            if motor_position != 0:
-                _LOGGER.warning(
-                    f"[晾衣架] 拒绝消毒开启命令: 电机未在顶部 (motorPosition={motor_position})"
-                )
-                return False
-
-        result = await self.ssl_client.send_clothes_horse_control(
-            device_id=device_id,
-            device_uid=device_uid,
-            ctrl_field=ctrl_field,
-            ctrl_value=value,
+        return await self.control.clothes_horse_control(
+            device_id, feature, value
         )
-
-        if result:
-            # 晾衣架控制返回 cmd=99，不是 cmd=42，所以不等待标准控制响应，保留乐观更新
-            dev_state = self.device_states.get(device_id)
-            if dev_state:
-                if feature == "motor":
-                    dev_state["motor_state"] = value
-                else:
-                    state_key = f"{feature}_state"
-                    dev_state[state_key] = (value == "on")
-                    if feature == "main_switch":
-                        dev_state["state"] = (value == "on")
-                optimistic_fields = (
-                    ("motor_state",)
-                    if feature == "motor"
-                    else (f"{feature}_state", "state")
-                    if feature == "main_switch"
-                    else (f"{feature}_state",)
-                )
-                self.state_store.mark(
-                    device_id,
-                    optimistic_fields,
-                    StateSource.OPTIMISTIC,
-                )
-                self.async_set_updated_data(self.device_states)
-            _LOGGER.debug(f"[控制成功] {device_id} {ctrl_field}={value}")
-        return result
 
     def get_device(self, device_id: str) -> Optional[Dict[str, Any]]:
         return self.devices.get(device_id)
