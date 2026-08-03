@@ -21,8 +21,9 @@ def _load_modules():
     cover = importlib.import_module(f"{package_name}.parsers.cover")
     sensor = importlib.import_module(f"{package_name}.parsers.sensor")
     appliance = importlib.import_module(f"{package_name}.parsers.appliance")
+    lock = importlib.import_module(f"{package_name}.parsers.lock")
     device_types = importlib.import_module(f"{package_name}.device_types")
-    return parsers, light, cover, sensor, appliance, device_types
+    return parsers, light, cover, sensor, appliance, lock, device_types
 
 
 class StateParserTests(unittest.TestCase):
@@ -34,6 +35,7 @@ class StateParserTests(unittest.TestCase):
             cls.cover,
             cls.sensor,
             cls.appliance,
+            cls.lock,
             cls.device_types,
         ) = _load_modules()
 
@@ -223,6 +225,23 @@ class StateParserTests(unittest.TestCase):
         self.assertTrue(patch.values["wind_drying_state"])
         self.assertTrue(patch.values["state"])
 
+    def test_lock_parser_keeps_fields_missing_from_partial_push(self) -> None:
+        current = {
+            "locked": True,
+            "lock_state": False,
+            "door_state": False,
+            "inside_lock_state": False,
+        }
+        patch = self.lock.parse_door_lock(
+            current,
+            {"properties": {"doorLock": {"insideLockState": "off"}}},
+        )
+
+        self.assertNotIn("locked", patch.values)
+        self.assertNotIn("door_state", patch.values)
+        self.assertTrue(patch.values["inside_lock_state"])
+        self.assertFalse(patch.values["state"])
+
     def test_registry_covers_first_migration_categories(self) -> None:
         categories = self.device_types.DeviceCategory
         expected = {
@@ -248,10 +267,11 @@ class StateParserTests(unittest.TestCase):
             categories.FAN_COIL_AC,
             categories.VENTILATION_SYSTEM,
             categories.CLOTHES_HORSE,
+            categories.DOOR_LOCK,
         }
 
         self.assertTrue(all(self.parsers.get_state_parser(item) for item in expected))
-        self.assertIsNone(self.parsers.get_state_parser(categories.DOOR_LOCK))
+        self.assertIsNone(self.parsers.get_state_parser(categories.UNKNOWN))
 
 
 if __name__ == "__main__":

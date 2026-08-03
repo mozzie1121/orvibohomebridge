@@ -34,6 +34,7 @@ from .models import AccountCredentials
 from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_candidates
 from .state_store import StateSource, StateStore
 from .parsers import get_state_parser
+from .lock_manager import LockEventManager
 from .const import (
     SSL_PORT,
     UPDATE_INTERVAL,
@@ -108,10 +109,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
         self._lock_reset_tasks: Dict[tuple, asyncio.Task] = {}  # 门锁事件复位任务
-        self._last_lock_events: Dict[str, tuple] = {}  # 门锁事件去重签名
         self._lock_user_names: Dict[str, Dict[str, str]] = {}  # device_id -> {user_id: 名称}
         self._lock_user_names_shared: Dict[str, str] = dict(lock_user_names or {})  # 持久化映射（entry 级）
-        self._last_unlock: Dict[str, Dict[str, Any]] = {}  # device_id -> 最近一次开锁
+        self.lock_events = LockEventManager(
+            self.lock_user_name,
+            door_open_window=self.LOCK_DOOR_OPEN_WINDOW,
+        )
         
         # 调试信息：记录最近收到的原始状态推送（仅内存，日志/诊断均脱敏）
         self._cmd42_log: list[dict] = []
@@ -222,93 +225,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if task and not task.done():
             task.cancel()
 
-    def _parse_status_door_lock(self, dev_state: dict, raw_status: dict) -> None:
-        """解析智能门锁状态（type=522 / 属性型门锁）。
+    def _apply_lock_transient_event(
+        self, device_id: str, dev_state: dict, raw_status: dict
+    ) -> None:
+        """Apply transient cmd=352 flags and schedule their reset."""
 
-        兼容两种形态：
-        - properties.doorLock.{lockState,doorState,insideLockState}
-        - properties.{door_status,reverse_lock,handle,clild_lock}
-        电池：batteryManager（干电池）/ batteryManager1（锂电池）。
-        """
-        from .lock_status import normalize_battery_properties, normalize_door_lock_properties
-
-        lock = normalize_door_lock_properties(raw_status.get("properties"))
-        # HA BinarySensorDeviceClass.LOCK 语义: is_on=True 表示"未锁/不安全"
-        # 欧瑞博 lockState="on" 表示"已锁"，所以 is_on = not locked
-        # 云端可能只推送部分字段（如仅 insideLockState），只更新出现的字段，
-        # 避免把未知字段重置为 False 导致实体误报。
-        if lock["locked"] is not None:
-            dev_state["locked"] = lock["locked"]
-            dev_state["lock_state"] = not lock["locked"]
-        if lock["door_open"] is not None:
-            dev_state["door_state"] = lock["door_open"]
-        if lock["inside_locked"] is not None:
-            dev_state["inside_lock_state"] = lock["inside_locked"]
-        if lock["child_locked"] is not None:
-            dev_state["child_lock_state"] = lock["child_locked"]
-        if lock["leave_home_armed"] is not None:
-            dev_state["leave_home_armed"] = lock["leave_home_armed"]
-
-        battery = normalize_battery_properties(raw_status.get("properties"))
-        for key in (
-            "dry_battery_level",
-            "dry_battery_setup",
-            "lithium_battery_level",
-            "lithium_battery_setup",
-        ):
-            if key in battery:
-                dev_state[key] = battery[key]
-
-        from .lock_status import derive_lock_status
-
-        dev_state["lock_status"] = derive_lock_status(
-            dev_state.get("locked"),
-            dev_state.get("door_state"),
-            dev_state.get("inside_lock_state"),
-        )
-        dev_state["state"] = dev_state.get("lock_state", False)
-        _LOGGER.debug(
-            "[智能门锁] locked=%s door=%s dry_battery=%s%% lithium=%s%%",
-            dev_state.get("locked"),
-            dev_state.get("door_state"),
-            dev_state.get("dry_battery_level"),
-            dev_state.get("lithium_battery_level"),
-        )
-
-    def _parse_doorbell_event(self, dev_state: dict, raw_status: dict) -> None:
-        """解析门铃和开锁事件 (cmd=352)
-        门铃事件格式: {"event":{"server":"doorbell","name":"ring","value":{"url":"..."}}}
-        开锁事件格式: {"event":{"server":"doorLock","name":"unlockEvent","value":{"type":"fingerprint","userId":1}}}
-        门铃接听: {"event":{"server":"doorbell","name":"answered","value":{"uid":"..."}}}
-        门铃挂断: {"event":{"server":"doorbell","name":"bye","value":{"uid":"..."}}}
-        """
-        event = raw_status.get("event", {})
-        server = event.get("server")
-        name = event.get("name")
-        value = event.get("value", {})
-        
-        if server == "doorbell" and name == "ring":
-            dev_state["doorbell_ring"] = True
-            dev_state["doorbell_url"] = value.get("url")
-            dev_state["doorbell_ip"] = value.get("doorbell_local_Ip")
-            _LOGGER.debug(f"[门铃事件] deviceId={raw_status.get('deviceId')}, url={value.get('url')}, ip={value.get('doorbell_local_Ip')}")
-            self._schedule_lock_reset(raw_status.get("deviceId", ""), "doorbell")
-        
-        elif server == "doorbell" and name == "answered":
-            dev_state["doorbell_answered"] = True
-            _LOGGER.debug(f"[门铃接听] deviceId={raw_status.get('deviceId')}, uid={value.get('uid')}")
-        
-        elif server == "doorbell" and name == "bye":
-            dev_state["doorbell_answered"] = False
-            _LOGGER.debug(f"[门铃挂断] deviceId={raw_status.get('deviceId')}")
-        
-        elif server == "doorLock" and name == "unlockEvent":
-            dev_state["unlock_event"] = True
-            dev_state["unlock_type"] = value.get("type")
-            dev_state["unlock_user_id"] = value.get("userId")
-            dev_state["unlock_time"] = raw_status.get("time")
-            _LOGGER.debug(f"[开锁事件] deviceId={raw_status.get('deviceId')}, type={value.get('type')}, userId={value.get('userId')}")
-            self._schedule_lock_reset(raw_status.get("deviceId", ""), "unlock")
+        update = self.lock_events.transient_update(raw_status)
+        update.patch.apply_to(dev_state)
+        if update.reset_kind:
+            self._schedule_lock_reset(device_id, update.reset_kind)
 
     def _schedule_lock_reset(self, device_id: str, kind: str) -> None:
         """安排门锁事件状态复位（默认5秒后恢复为未触发），同设备同类型只保留一个任务。"""
@@ -336,80 +261,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def _publish_lock_event(self, device_id: str, raw_status: dict) -> None:
         """把归一化后的门锁状态/事件发布到 HA 事件总线（日志脱敏）。"""
         from .const import LOCK_EVENT
-        from .lock_status import (
-            normalize_door_lock_properties,
-            normalize_lock_event,
-            resolve_opened_by,
-        )
 
-        lock = normalize_door_lock_properties(raw_status.get("properties"))
-        event = normalize_lock_event(raw_status)
-        if (
-            event is None
-            and lock["locked"] is None
-            and lock["door_open"] is None
-            and lock["inside_locked"] is None
-            and lock["child_locked"] is None
-            and lock["leave_home_armed"] is None
-        ):
+        data = self.lock_events.build_event(device_id, raw_status)
+        if data is None:
             return
-        # 相同事件/相同状态去重（云端可能重复推送同一事件）
-        if event is not None:
-            signature = (
-                event.get("kind"),
-                event.get("unlock_type"),
-                event.get("unlock_user_id"),
-                event.get("time"),
-            )
-        else:
-            signature = (
-                "state",
-                lock["locked"],
-                lock["door_open"],
-                lock["inside_locked"],
-                lock["child_locked"],
-                lock["leave_home_armed"],
-            )
-        if self._last_lock_events.get(device_id) == signature:
-            return
-        self._last_lock_events[device_id] = signature
-        data: Dict[str, Any] = {
-            "device_id": device_id,
-            "uid": raw_status.get("uid", ""),
-            "locked": lock["locked"],
-            "door_open": lock["door_open"],
-            "inside_locked": lock["inside_locked"],
-            "child_locked": lock["child_locked"],
-            "leave_home_armed": lock["leave_home_armed"],
-        }
-        if event is not None:
-            data.update(event)
-        # 记录最近一次开锁，供随后的开门事件归属"谁开的门"
-        if event is not None and event.get("kind") == "unlock":
-            self._last_unlock[device_id] = {
-                "user_id": event.get("unlock_user_id"),
-                "unlock_type": event.get("unlock_type"),
-                "at": time.monotonic(),
-            }
-            name = self.lock_user_name(device_id, event.get("unlock_user_id"))
-            if name:
-                data["unlock_user_name"] = name
-        # 开门事件归属：窗口内最近一次开锁的用户
-        if lock["door_open"] is True:
-            last = self._last_unlock.get(device_id)
-            opened = (
-                resolve_opened_by(last, time.monotonic() - last["at"], self.LOCK_DOOR_OPEN_WINDOW)
-                if last is not None
-                else None
-            )
-            if opened is not None:
-                data["opened_by_user_id"] = opened["user_id"]
-                data["opened_by_type"] = opened["unlock_type"]
-                name = self.lock_user_name(device_id, opened["user_id"])
-                if name:
-                    data["opened_by_name"] = name
-        if event is not None:
-            data.update(self._attach_media_urls(device_id, raw_status, event))
+        if data.get("kind"):
+            data.update(self._attach_media_urls(device_id, raw_status, data))
         self.hass.bus.async_fire(LOCK_EVENT, data)
         _LOGGER.debug(
             "[门锁事件总线] device=%s locked=%s door=%s kind=%s",
@@ -967,13 +824,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def _publish_lock_message(self, device_id: str, raw_status: dict) -> None:
         """发布 cmd=82 推送消息事件（门锁文本消息/告警，日志脱敏）。"""
         from .const import LOCK_EVENT
-        from .lock_status import normalize_message_event
 
-        event = normalize_message_event(raw_status)
+        event = self.lock_events.build_message(device_id, raw_status)
         if event is None:
             return
-        event["device_id"] = device_id or event.get("device_id")
-        event["snapshot_kind"] = self._message_snapshot_kind(event.get("text") or "")
         event.update(self._attach_media_urls(device_id, raw_status, event))
         self.hass.bus.async_fire(LOCK_EVENT, event)
         _LOGGER.debug(
@@ -983,15 +837,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             event.get("is_alarm"),
             event.get("text"),
         )
-
-    @staticmethod
-    def _message_snapshot_kind(text: str) -> str:
-        """按消息文本区分截图归档前缀（逗留/来访，便于卡片分组展示）。"""
-        if "逗留" in text:
-            return "loiter"
-        if "来访" in text or "访客" in text:
-            return "visit"
-        return "message"
 
     def _parse_status_generic(self, dev_state: dict, raw_status: dict) -> None:
         """通用状态解析（未知设备类型）"""
@@ -1182,7 +1027,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 elif category == DeviceCategory.GAS_SENSOR:
                     self._apply_registered_state_parser(category, state, {"value1": state.get("value1"), "value4": state.get("value4")})
                 elif category == DeviceCategory.DOOR_LOCK:
-                    self._parse_status_door_lock(state, {"properties": state.get("properties", {})})
+                    self._apply_registered_state_parser(
+                        category, state, {"properties": state.get("properties", {})}
+                    )
                 elif category == DeviceCategory.VENTILATION_SYSTEM:
                     self._apply_registered_state_parser(category, state, {"properties": state.get("properties", {}), "value1": state.get("value1")})
                 
@@ -1214,6 +1061,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         self.devices.pop(device_id, None)
                         self.device_states.pop(device_id, None)
                         self.state_store.remove(device_id)
+                        self.lock_events.remove(device_id)
                         continue
 
                     self.devices[device_id] = device
@@ -1354,7 +1202,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     DeviceCategory.CLOTHES_HORSE, dev_state, raw_status
                 )
             elif raw_status.get("cmd") == 352:
-                self._parse_doorbell_event(dev_state, raw_status)
+                self._apply_lock_transient_event(
+                    matched_device_id, dev_state, raw_status
+                )
             elif device_type == 38:
                 if sub_type == 6:
                     self._apply_registered_state_parser(
@@ -1403,7 +1253,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     DeviceCategory.WATER_LEAK_SENSOR, dev_state, raw_status
                 )
             elif device_type == 522:
-                self._parse_status_door_lock(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.DOOR_LOCK, dev_state, raw_status
+                )
             elif device_type in (102, 501):
                 self._apply_registered_state_parser(
                     DeviceCategory.LEGACY_LIGHT
@@ -1463,6 +1315,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 elif category == DeviceCategory.WATER_LEAK_SENSOR:
                     self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.GAS_SENSOR:
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
+                elif category == DeviceCategory.DOOR_LOCK:
                     self._apply_registered_state_parser(category, dev_state, raw_status)
                 else:
                     self._parse_status_generic(dev_state, raw_status)
