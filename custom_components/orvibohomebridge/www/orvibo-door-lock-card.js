@@ -274,6 +274,11 @@ class OrviboDoorLockCard extends HTMLElement {
         true
       );
       const records = (res && res[this._deviceId]) || [];
+      console.log("ORVIBO list debug:", {
+        deviceId: this._deviceId,
+        res,
+        count: records.length,
+      });
       // 异步期间 DOM 可能被 _render 重建，必须重新查询最新节点
       const listEl = this.shadowRoot.querySelector("#ov-tp-list");
       if (!listEl) return;
