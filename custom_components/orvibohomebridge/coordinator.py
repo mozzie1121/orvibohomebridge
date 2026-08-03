@@ -33,6 +33,7 @@ from .redact import fingerprint, redact_packet
 from .models import AccountCredentials
 from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_candidates
 from .state_store import StateSource, StateStore
+from .parsers import get_state_parser
 from .const import (
     SSL_PORT,
     UPDATE_INTERVAL,
@@ -129,316 +130,57 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.device_states: Dict[str, Any] = {}
         self.state_store = StateStore(self.device_states)
 
-    def _parse_status_light_colortemp(self, dev_state: dict, raw_status: dict) -> None:
-        """解析调光调色灯状态 (deviceType 38)
-        核心控制参数: value1开关、value2亮度、value3色温
-        """
-        props = raw_status.get("properties", {})
+    def _apply_registered_state_parser(
+        self, category: DeviceCategory, dev_state: dict, raw_status: dict
+    ) -> bool:
+        """Apply a pure state parser registered for the device category."""
 
-        bri = raw_status.get("value2")
-        if bri is None:
-            bri = props.get("brightness")
-        if bri is not None:
-            bri = int(bri)
-        dev_state["brightness"] = bri
+        parser = get_state_parser(category)
+        if parser is None:
+            return False
+        parser(dev_state, raw_status).apply_to(dev_state)
+        return True
 
-        ct = raw_status.get("value3")
-        if ct is not None:
-            ct = int(ct)
-            if 150 <= ct <= 400:
-                ct = 1000000 // ct
-        else:
-            ct = props.get("colortemp")
-            if ct is not None:
-                ct = int(ct)
-        if ct is not None:
-            if ct < 2700:
-                ct = 2700
-            elif ct > 6500:
-                ct = 6500
-        dev_state["color_temp"] = ct
+    def _apply_motion_state_parser(
+        self, dev_state: dict, raw_status: dict, device_id: Optional[str]
+    ) -> None:
+        """Parse motion state, then own its coordinator-level reset lifecycle."""
 
-        value1 = raw_status.get("value1")
-        if value1 is not None:
-            value1 = int(value1)
-            sub_device_type = raw_status.get("subDeviceType", 0)
-            if isinstance(sub_device_type, str):
-                sub_device_type = int(sub_device_type)
-            if sub_device_type == -2:
-                dev_state["state"] = value1 == 0
-            else:
-                dev_state["state"] = value1 == 1
-        else:
-            onoff_obj = props.get("onoff", {})
-            if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-                dev_state["state"] = onoff_obj.get("status") == "on"
-            elif bri is not None:
-                dev_state["state"] = bri > 0
-            elif "state" not in dev_state:
-                dev_state["state"] = False
-
-        _LOGGER.debug(f"[调光调色灯] state={dev_state['state']}, brightness={bri}, color_temp={ct}")
-
-    def _parse_status_fast_move_dim_color_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析Fast Move调光调色灯状态 (statusType 2, subDeviceType 6)
-        使用 value1/value2/value3 格式：
-        - value1=0 为开, value1=1 为关
-        - value2 为亮度 (0-255)
-        - value3 为色温 (mireds)
-        """
-        value1 = raw_status.get("value1")
-        value2 = raw_status.get("value2")
+        self._apply_registered_state_parser(
+            DeviceCategory.MOTION_SENSOR, dev_state, raw_status
+        )
         value3 = raw_status.get("value3")
-
-        if value1 is not None:
-            value1 = int(value1)
-            dev_state["state"] = value1 == 0
-
-        if value2 is not None:
-            value2 = int(value2)
-            if value2 < 0:
-                value2 = 0
-            elif value2 > 255:
-                value2 = 255
-            dev_state["brightness"] = value2
-            if value2 == 0:
-                dev_state["state"] = False
-
-        if value3 is not None:
-            value3 = int(value3)
-            if 150 <= value3 <= 400:
-                color_temp_k = 1000000 // value3
-                if color_temp_k < 2700:
-                    color_temp_k = 2700
-                elif color_temp_k > 6000:
-                    color_temp_k = 6000
-                dev_state["color_temp"] = color_temp_k
-
-        _LOGGER.debug(f"[Fast Move调光调色灯] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}%, color_temp={dev_state.get('color_temp')}K, raw_value2={value2}, raw_value3={value3}")
-
-    def _parse_status_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析单色普通灯状态 (deviceType 102, 501)
-        核心控制参数: value1开关 (value1==0 为开)
-        """
-        props = raw_status.get("properties", {})
-        parsed = False
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-            parsed = True
-        elif isinstance(props.get("onoff_status"), str):
-            dev_state["state"] = props["onoff_status"] == "on"
-            parsed = True
-        if not parsed:
-            value1 = raw_status.get("value1")
-            if value1 is not None:
-                value1 = int(value1)
-                dev_state["state"] = value1 == 0
-            elif "state" not in dev_state:
-                dev_state["state"] = False
-        _LOGGER.debug(f"[单色灯] state={dev_state['state']}")
-
-    def _parse_status_cct_light_strip(self, dev_state: dict, raw_status: dict) -> None:
-        """解析色温灯带状态 (deviceType 503)
-        使用 properties.onoff.status / brightness.percent / colorTemp.value
-        """
-        props = raw_status.get("properties", {})
-
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            if "state" not in dev_state:
-                dev_state["state"] = False
-
-        bri_obj = props.get("brightness", {})
-        if isinstance(bri_obj, dict):
-            bri = bri_obj.get("percent")
-        else:
-            bri = bri_obj
-        if bri is not None:
-            bri = int(bri)
-            if bri < 0:
-                bri = 0
-            elif bri > 100:
-                bri = 100
-            dev_state["brightness"] = bri
-            if bri == 0:
-                dev_state["state"] = False
-
-        ct_obj = props.get("colorTemp", {})
-        if isinstance(ct_obj, dict):
-            ct = ct_obj.get("value")
-        else:
-            ct = ct_obj
-        if ct is not None:
-            ct = int(ct)
-            if ct < 2000:
-                ct = 2000
-            elif ct > 6500:
-                ct = 6500
-            dev_state["color_temp"] = ct
-
-        _LOGGER.debug(f"[色温灯带] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}, color_temp={dev_state.get('color_temp')}")
-
-    def _parse_status_dimmable_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析可调光灯状态 (deviceType 502)
-        使用 properties.onoff.status / properties.brightness.percent
-        """
-        props = raw_status.get("properties", {})
-
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            if "state" not in dev_state:
-                dev_state["state"] = False
-
-        bri_obj = props.get("brightness", {})
-        if isinstance(bri_obj, dict):
-            bri = bri_obj.get("percent")
-        else:
-            bri = bri_obj
-        if bri is not None:
-            bri = int(bri)
-            if bri < 0:
-                bri = 0
-            elif bri > 100:
-                bri = 100
-            dev_state["brightness"] = bri
-            if bri == 0:
-                dev_state["state"] = False
-
-        _LOGGER.debug(f"[可调光灯] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}")
-
-    def _parse_status_zigbee_dimmable_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析0-10v调光灯 (deviceType 0, subDeviceType -2)
-        使用 value1/value2 格式：
-        - value1=0 为开, value1=1 为关（subDeviceType=-2 时反转）
-        - value2 为亮度 (0-255)
-        """
-        value1 = raw_status.get("value1")
-        value2 = raw_status.get("value2")
-
-        if value1 is not None:
-            value1 = int(value1)
-            sub_device_type = raw_status.get("subDeviceType", 0)
-            if isinstance(sub_device_type, str):
-                sub_device_type = int(sub_device_type)
-            if sub_device_type == -2:
-                dev_state["state"] = value1 == 0
-            else:
-                dev_state["state"] = value1 == 1
-
-        if value2 is not None:
-            value2 = int(value2)
-            if value2 < 0:
-                value2 = 0
-            elif value2 > 255:
-                value2 = 255
-            dev_state["brightness"] = value2
-            if value2 == 0:
-                dev_state["state"] = False
-
-        _LOGGER.debug(f"[0-10v调光灯] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}%, raw_value2={value2}")
-
-    def _parse_status_temp_humidity_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析温湿度传感器状态 (deviceType 300, subType=491)
-        使用 properties.temperature.value / properties.humidity.value / properties.battery.power
-        """
-        props = raw_status.get("properties", {})
-
-        temp_obj = props.get("temperature", {})
-        if isinstance(temp_obj, dict):
-            temp = temp_obj.get("value")
-        else:
-            temp = temp_obj
-        if temp is not None:
-            try:
-                dev_state["temperature"] = float(temp)
-            except (TypeError, ValueError):
-                dev_state["temperature"] = temp
-
-        hum_obj = props.get("humidity", {})
-        if isinstance(hum_obj, dict):
-            hum = hum_obj.get("value")
-        else:
-            hum = hum_obj
-        if hum is not None:
-            try:
-                dev_state["humidity"] = float(hum)
-            except (TypeError, ValueError):
-                dev_state["humidity"] = hum
-
-        bat_obj = props.get("battery", {})
-        if isinstance(bat_obj, dict):
-            bat = bat_obj.get("power") or bat_obj.get("value")
-        else:
-            bat = bat_obj
-        if bat is not None:
-            try:
-                dev_state["battery"] = int(float(bat))
-            except (TypeError, ValueError):
-                dev_state["battery"] = bat
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[温湿度传感器] temp={dev_state.get('temperature')}, humidity={dev_state.get('humidity')}, battery={dev_state.get('battery')}")
-
-    def _parse_status_door_window_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析门窗传感器状态 (deviceType 46)
-        value1=0为开门, value1=1为关门; value3=1始终为1(传感器激活标志); value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["door_state"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["door_state"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[门窗传感器] door_state={'OPEN' if dev_state.get('door_state') else 'CLOSED'}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_motion_sensor(self, dev_state: dict, raw_status: dict, device_id: str = None) -> None:
-        """解析人体传感器状态 (deviceType 26)
-        value3=1为检测到人体, value3=0为无检测; value4为电量百分比
-        人体传感器只发送触发信号, 需要软件实现延时恢复(默认30秒)
-        """
-        value3 = raw_status.get("value3")
-        value4 = raw_status.get("value4")
-        # 优先使用外部传入的规范化 device_id（matched_device_id），兜底用 raw_status.deviceId
         reset_key = device_id or raw_status.get("deviceId", "")
+        if value3 is None or not reset_key:
+            return
+        try:
+            detected = int(value3) == 1
+        except (TypeError, ValueError):
+            return
+        if detected:
+            asyncio.create_task(self._schedule_motion_reset(reset_key))
+        else:
+            self._cancel_motion_reset(reset_key)
 
-        if value3 is not None:
-            try:
-                value3 = int(value3)
-                if value3 == 1:
-                    dev_state["motion_detected"] = True
-                    if reset_key:
-                        asyncio.create_task(self._schedule_motion_reset(reset_key))
-                else:
-                    dev_state["motion_detected"] = False
-                    if reset_key:
-                        self._cancel_motion_reset(reset_key)
-            except (TypeError, ValueError):
-                dev_state["motion_detected"] = False
+    def _apply_emergency_state_parser(
+        self, dev_state: dict, raw_status: dict, device_id: Optional[str]
+    ) -> None:
+        """Parse an emergency button, then own its reset-task lifecycle."""
 
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[人体传感器] motion_detected={dev_state.get('motion_detected')}, battery={dev_state.get('battery')}%")
+        self._apply_registered_state_parser(
+            DeviceCategory.EMERGENCY_BUTTON, dev_state, raw_status
+        )
+        value1 = raw_status.get("value1")
+        if value1 is None or not device_id:
+            return
+        try:
+            triggered = int(value1) == 1
+        except (TypeError, ValueError):
+            return
+        if triggered:
+            asyncio.create_task(self._schedule_emergency_reset(device_id))
+        else:
+            self._cancel_emergency_reset(device_id)
 
     async def _schedule_motion_reset(self, device_id: str) -> None:
         """安排人体传感器状态重置"""
@@ -480,244 +222,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if task and not task.done():
             task.cancel()
 
-    def _parse_status_smoke_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析烟雾传感器状态 (deviceType 27)
-        value1=1为检测到烟雾, value1=0为正常; value3=1始终为1(传感器激活标志); value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["smoke_detected"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["smoke_detected"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[烟雾传感器] smoke_detected={dev_state.get('smoke_detected')}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_emergency_button(self, dev_state: dict, raw_status: dict, device_id: str = None) -> None:
-        """解析紧急按钮状态 (deviceType 56)
-        value1=1为按钮被按下, value1=0为正常; value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["emergency_state"] = value1 == 1
-                if value1 == 1 and device_id:
-                    asyncio.create_task(self._schedule_emergency_reset(device_id))
-                elif value1 == 0 and device_id:
-                    self._cancel_emergency_reset(device_id)
-            except (TypeError, ValueError):
-                dev_state["emergency_state"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        _LOGGER.debug(f"[紧急按钮] state={'TRIGGERED' if dev_state.get('state') else 'NORMAL'}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_water_leak_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析水浸探测器状态 (deviceType 54)
-        value1=1为检测到水浸, value1=0为正常; value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["water_leak_detected"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["water_leak_detected"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[水浸探测器] water_leak_detected={dev_state.get('water_leak_detected')}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_gas_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析可燃气体探测器状态 (deviceType 25)
-        value1=1为检测到气体, value1=0为正常; value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["gas_detected"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["gas_detected"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[可燃气体探测器] gas_detected={dev_state.get('gas_detected')}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_fan_coil_ac(self, dev_state: dict, raw_status: dict) -> None:
-        """解析风机盘管空调状态 (deviceType 36)
-        value1=0为开/1为关; value2模式(2除湿/3制冷/4制热/7送风); value3风速(1低/2中/3高); 
-        value4=32位整数(高16位=目标温度×100, 低16位=当前温度×100)
-        """
-        value1 = raw_status.get("value1")
-        value2 = raw_status.get("value2")
-        value3 = raw_status.get("value3")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            value1 = int(value1)
-            dev_state["state"] = value1 == 0
-            dev_state["value1"] = value1
-
-        if value2 is not None:
-            value2 = int(value2)
-            ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
-            dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
-            dev_state["ac_mode_raw"] = value2
-            dev_state["value2"] = value2
-
-        if value3 is not None:
-            value3 = int(value3)
-            fan_speed_map = {1: "low", 2: "medium", 3: "high"}
-            dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
-            dev_state["fan_speed_raw"] = value3
-            dev_state["value3"] = value3
-
-        if value4 is not None:
-            value4 = int(value4)
-            dev_state["value4"] = value4
-            try:
-                target_temp = (value4 >> 16) / 100.0
-                current_temp = (value4 & 0xFFFF) / 100.0
-                dev_state["temperature"] = target_temp
-                dev_state["target_temperature"] = target_temp
-                dev_state["current_temperature"] = current_temp
-            except (TypeError, ValueError):
-                dev_state["temperature"] = 25
-
-        _LOGGER.debug(f"[空调] state={dev_state.get('state')}, mode={dev_state.get('ac_mode')}, fan_speed={dev_state.get('fan_speed')}, temperature={dev_state.get('temperature')}")
-    
-    def _parse_status_ventilation(self, dev_state: dict, raw_status: dict) -> None:
-        """解析新风系统状态 (deviceType 516, classId 1114)
-        properties.fanControl.fanMode: off/low/high -> 停/慢/快
-        properties.temperature.value: 温度
-        也支持 value1 格式: 0=慢, 50=停, 100=快
-        """
-        props = raw_status.get("properties", {})
-        value1 = raw_status.get("value1")
-
-        if value1 is not None:
-            value1 = int(value1)
-            # value1 映射: 0=慢, 50=停, 100=快
-            if value1 == 0:
-                dev_state["fan_speed"] = "慢"
-                dev_state["state"] = True
-            elif value1 == 50:
-                dev_state["fan_speed"] = "停"
-                dev_state["state"] = False
-            elif value1 == 100:
-                dev_state["fan_speed"] = "快"
-                dev_state["state"] = True
-            dev_state["value1"] = value1
-
-        fan_control = props.get("fanControl", {}) if isinstance(props, dict) else {}
-        if isinstance(fan_control, dict):
-            fan_mode = fan_control.get("fanMode")
-            if fan_mode:
-                fan_speed_map = {"off": "停", "low": "慢", "high": "快"}
-                dev_state["fan_speed"] = fan_speed_map.get(fan_mode, fan_mode)
-                dev_state["state"] = fan_mode != "off"
-
-        temp_obj = props.get("temperature", {}) if isinstance(props, dict) else {}
-        if isinstance(temp_obj, dict):
-            temp_val = temp_obj.get("value")
-            if temp_val is not None:
-                try:
-                    dev_state["temperature"] = float(temp_val)
-                except (TypeError, ValueError):
-                    pass
-
-        _LOGGER.debug(f"[新风系统] state={dev_state.get('state')}, fan_speed={dev_state.get('fan_speed')}, temperature={dev_state.get('temperature')}")
-    
-    def _parse_status_curtain(self, dev_state: dict, raw_status: dict) -> None:
-        """解析百分比窗帘状态 (deviceType 34)
-        核心控制参数: value1 (0-100) 开度
-        """
-        props = raw_status.get("properties", {})
-        
-        # 窗帘位置 (value1 或 properties.percent)
-        position = raw_status.get("value1")
-        if position is None:
-            position = props.get("percent")
-        if position is not None:
-            try:
-                position = int(position)
-            except (TypeError, ValueError):
-                _LOGGER.debug(f"[窗帘] 位置值异常: {position}, 跳过")
-                position = None
-        dev_state["position"] = position
-        
-        # 开关状态基于位置判断：100为全开，0为全关
-        if position is not None:
-            if position == 100:
-                dev_state["state"] = True
-            elif position == 0:
-                dev_state["state"] = False
-            else:
-                # 部分打开时，保持当前状态
-                dev_state["state"] = dev_state.get("state", False)
-        else:
-            dev_state["state"] = False
-        
-        _LOGGER.debug(f"[窗帘] state={dev_state['state']}, position={position}")
-    
-    def _parse_status_switch(self, dev_state: dict, raw_status: dict) -> None:
-        """解析开关状态 (deviceType 135, 136)
-        核心控制参数: 回路通道区分
-        """
-        props = raw_status.get("properties", {})
-        
-        # 开关状态（properties.onoff 或 value1）
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            value1 = raw_status.get("value1")
-            sub_device_type = raw_status.get("subDeviceType", 0)
-            if value1 is not None:
-                value1 = int(value1)
-                sub_device_type = int(sub_device_type)
-                # subDeviceType=-2 时反转
-                if sub_device_type == -2:
-                    dev_state["state"] = value1 == 0
-                else:
-                    dev_state["state"] = value1 == 1
-            else:
-                dev_state["state"] = False
-        
-        _LOGGER.debug(f"[开关] state={dev_state['state']}")
-    
     def _parse_status_door_lock(self, dev_state: dict, raw_status: dict) -> None:
         """解析智能门锁状态（type=522 / 属性型门锁）。
 
@@ -1506,24 +1010,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         
         _LOGGER.debug(f"[通用设备] state={dev_state['state']}")
 
-    def _parse_clothes_horse_state(self, dev_state: dict, raw_status: dict) -> None:
-        """解析晾衣架 cmd=99 状态推送。"""
-        dev_state["motor_state"] = raw_status.get("motor_state", "stop")
-        dev_state["position"] = raw_status.get("motor_position", 0)
-        dev_state["lighting_state"] = raw_status.get("lighting_state", "off") == "on"
-        dev_state["heat_drying_state"] = raw_status.get("heat_drying_state", "off") == "on"
-        dev_state["wind_drying_state"] = raw_status.get("wind_drying_state", "off") == "on"
-        dev_state["sterilizing_state"] = raw_status.get("sterilizing_state", "off") == "on"
-        dev_state["main_switch_state"] = raw_status.get("main_switch_state", "off") == "on"
-        # state 字段用主开关状态兜底（兼容通用实体）
-        dev_state["state"] = dev_state["main_switch_state"]
-        _LOGGER.info(
-            f"[晾衣架] motor={dev_state['motor_state']}, pos={dev_state['position']}, "
-            f"lighting={dev_state['lighting_state']}, heat={dev_state['heat_drying_state']}, "
-            f"wind={dev_state['wind_drying_state']}, steril={dev_state['sterilizing_state']}, "
-            f"main={dev_state['main_switch_state']}"
-        )
-
     async def _discover_devices(self):
         """拉取并解析设备列表：readtable → getDeviceDesc → queryHomepageData 三层回退"""
         device_status_data = await self.https_client.fetch_device_status()
@@ -1682,23 +1168,23 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 category = classify_device(dev)
                 
                 if category == DeviceCategory.TEMP_HUMIDITY_SENSOR:
-                    self._parse_status_temp_humidity_sensor(state, {"properties": state.get("properties", {}), "value3": state.get("value3"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"properties": state.get("properties", {}), "value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.DOOR_WINDOW_SENSOR:
-                    self._parse_status_door_window_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.MOTION_SENSOR:
-                    self._parse_status_motion_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")}, device_id)
+                    self._apply_motion_state_parser(state, {"value3": state.get("value3"), "value4": state.get("value4")}, device_id)
                 elif category == DeviceCategory.SMOKE_SENSOR:
-                    self._parse_status_smoke_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.EMERGENCY_BUTTON:
-                    self._parse_status_emergency_button(state, {"value1": state.get("value1"), "value4": state.get("value4")}, device_id)
+                    self._apply_emergency_state_parser(state, {"value1": state.get("value1"), "value4": state.get("value4")}, device_id)
                 elif category == DeviceCategory.WATER_LEAK_SENSOR:
-                    self._parse_status_water_leak_sensor(state, {"value1": state.get("value1"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value1": state.get("value1"), "value4": state.get("value4")})
                 elif category == DeviceCategory.GAS_SENSOR:
-                    self._parse_status_gas_sensor(state, {"value1": state.get("value1"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value1": state.get("value1"), "value4": state.get("value4")})
                 elif category == DeviceCategory.DOOR_LOCK:
                     self._parse_status_door_lock(state, {"properties": state.get("properties", {})})
                 elif category == DeviceCategory.VENTILATION_SYSTEM:
-                    self._parse_status_ventilation(state, {"properties": state.get("properties", {}), "value1": state.get("value1")})
+                    self._apply_registered_state_parser(category, state, {"properties": state.get("properties", {}), "value1": state.get("value1")})
                 
                 _LOGGER.debug(
                     f"  设备: name={dev.get('device_name')}, device_id={device_id}, "
@@ -1864,76 +1350,120 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
             # 晾衣架专用协议（cmd=99 推送，带 is_clothes_horse 标志）
             if raw_status.get("is_clothes_horse"):
-                self._parse_clothes_horse_state(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.CLOTHES_HORSE, dev_state, raw_status
+                )
             elif raw_status.get("cmd") == 352:
                 self._parse_doorbell_event(dev_state, raw_status)
             elif device_type == 38:
                 if sub_type == 6:
-                    self._parse_status_fast_move_dim_color_light(dev_state, raw_status)
+                    self._apply_registered_state_parser(
+                        DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT,
+                        dev_state,
+                        raw_status,
+                    )
                 else:
-                    self._parse_status_light_colortemp(dev_state, raw_status)
+                    self._apply_registered_state_parser(
+                        DeviceCategory.DIM_COLOR_LIGHT, dev_state, raw_status
+                    )
             elif device_type == 502:
-                self._parse_status_dimmable_light(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.DIMMABLE_LIGHT, dev_state, raw_status
+                )
             elif device_type == 0 and sub_type == -2:
-                self._parse_status_zigbee_dimmable_light(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.ZIGBEE_DIMMABLE_LIGHT, dev_state, raw_status
+                )
             elif device_type == 503:
-                self._parse_status_cct_light_strip(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.CCT_LIGHT, dev_state, raw_status
+                )
             elif device_type == 300 and sub_type == 491:
-                self._parse_status_temp_humidity_sensor(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.TEMP_HUMIDITY_SENSOR, dev_state, raw_status
+                )
             elif device_type == 46:
-                self._parse_status_door_window_sensor(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.DOOR_WINDOW_SENSOR, dev_state, raw_status
+                )
             elif device_type == 26:
-                self._parse_status_motion_sensor(dev_state, raw_status, matched_device_id)
+                self._apply_motion_state_parser(
+                    dev_state, raw_status, matched_device_id
+                )
             elif device_type == 27:
-                self._parse_status_smoke_sensor(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.SMOKE_SENSOR, dev_state, raw_status
+                )
             elif device_type == 56:
-                self._parse_status_emergency_button(dev_state, raw_status, matched_device_id)
+                self._apply_emergency_state_parser(
+                    dev_state, raw_status, matched_device_id
+                )
             elif device_type == 54:
-                self._parse_status_water_leak_sensor(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.WATER_LEAK_SENSOR, dev_state, raw_status
+                )
             elif device_type == 522:
                 self._parse_status_door_lock(dev_state, raw_status)
             elif device_type in (102, 501):
-                self._parse_status_light(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.LEGACY_LIGHT
+                    if device_type == 102
+                    else DeviceCategory.MONO_LIGHT,
+                    dev_state,
+                    raw_status,
+                )
             elif device_type == 34:
-                self._parse_status_curtain(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.ZIGBEE_CURTAIN, dev_state, raw_status
+                )
             elif device_type == 36:
-                self._parse_status_fan_coil_ac(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.FAN_COIL_AC, dev_state, raw_status
+                )
             elif device_type == 516:
-                self._parse_status_ventilation(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.VENTILATION_SYSTEM, dev_state, raw_status
+                )
             elif device_type in (135, 136):
-                self._parse_status_switch(dev_state, raw_status)
+                self._apply_registered_state_parser(
+                    DeviceCategory.MIX_SWITCH, dev_state, raw_status
+                )
             else:
                 # 用 category 兜底路由
                 if category in (DeviceCategory.SIMPLE_ZIGBEE_LIGHT, DeviceCategory.MONO_LIGHT, DeviceCategory.LIGHT_VIRTUAL_GROUP):
-                    self._parse_status_light(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.ZIGBEE_CURTAIN:
-                    self._parse_status_curtain(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category in (DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.CCT_LIGHT):
-                    self._parse_status_cct_light_strip(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.FAN_COIL_AC:
-                    self._parse_status_fan_coil_ac(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.VENTILATION_SYSTEM:
-                    self._parse_status_ventilation(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.DIMMABLE_LIGHT:
-                    self._parse_status_dimmable_light(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-                    self._parse_status_zigbee_dimmable_light(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-                    self._parse_status_fast_move_dim_color_light(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.TEMP_HUMIDITY_SENSOR:
-                    self._parse_status_temp_humidity_sensor(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.DOOR_WINDOW_SENSOR:
-                    self._parse_status_door_window_sensor(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.MOTION_SENSOR:
-                    self._parse_status_motion_sensor(dev_state, raw_status, matched_device_id)
+                    self._apply_motion_state_parser(
+                        dev_state, raw_status, matched_device_id
+                    )
                 elif category == DeviceCategory.SMOKE_SENSOR:
-                    self._parse_status_smoke_sensor(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.EMERGENCY_BUTTON:
-                    self._parse_status_emergency_button(dev_state, raw_status, matched_device_id)
+                    self._apply_emergency_state_parser(
+                        dev_state, raw_status, matched_device_id
+                    )
                 elif category == DeviceCategory.WATER_LEAK_SENSOR:
-                    self._parse_status_water_leak_sensor(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 elif category == DeviceCategory.GAS_SENSOR:
-                    self._parse_status_gas_sensor(dev_state, raw_status)
+                    self._apply_registered_state_parser(category, dev_state, raw_status)
                 else:
                     self._parse_status_generic(dev_state, raw_status)
 
