@@ -237,7 +237,13 @@ class OrviboDoorLockCard extends HTMLElement {
       name: root.querySelector("#ov-tp-name").value.trim(),
     };
     try {
-      const res = await this._hass.callService("orvibohomebridge", "grant_temp_password", data);
+      const res = await this._hass.callService(
+        "orvibohomebridge",
+        "grant_temp_password",
+        data,
+        {},
+        true
+      );
       if (res && res.error) {
         this._tempError = res.error;
       } else if (res && res.password) {
@@ -255,9 +261,13 @@ class OrviboDoorLockCard extends HTMLElement {
     const listEl = root.querySelector("#ov-tp-list");
     if (!listEl) return;
     try {
-      const res = await this._hass.callService("orvibohomebridge", "list_temp_passwords", {
-        device_id: this._deviceId,
-      });
+      const res = await this._hass.callService(
+        "orvibohomebridge",
+        "list_temp_passwords",
+        { device_id: this._deviceId },
+        {},
+        true
+      );
       const records = (res && res[this._deviceId]) || [];
       if (!records.length) {
         listEl.innerHTML = "<div class='meta'>暂无临时密码</div>";
@@ -286,10 +296,13 @@ class OrviboDoorLockCard extends HTMLElement {
 
   async _revoke(authorizedId) {
     try {
-      await this._hass.callService("orvibohomebridge", "revoke_temp_password", {
-        device_id: this._deviceId,
-        authorized_id: authorizedId,
-      });
+      await this._hass.callService(
+        "orvibohomebridge",
+        "revoke_temp_password",
+        { device_id: this._deviceId, authorized_id: authorizedId },
+        {},
+        true
+      );
     } catch (e) {
       console.error("ORVIBO card: 删除失败", e);
     }
