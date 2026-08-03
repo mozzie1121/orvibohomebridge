@@ -1207,10 +1207,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         sslc = self.ssl_client
         if sslc is None:
             return {"error": "SSL 客户端未就绪"}
-        records = self._temp_passwords.setdefault(device_id, [])
-        active = [r for r in records if not is_expired(r)]
-        if len(active) >= self.TEMP_PASSWORD_MAX:
+        # 先同步服务器端授权状态（App 删除/过期后 readtable 会反映），
+        # 避免本地内存累积导致误判上限
+        server_records = await self.async_fetch_server_temp_passwords()
+        device_active = [
+            r for r in server_records if r.get("device_id") == device_id
+        ]
+        if len(device_active) >= self.TEMP_PASSWORD_MAX:
             return {"error": f"临时密码已达上限（{self.TEMP_PASSWORD_MAX} 个），请先删除旧密码"}
+        records = self._temp_passwords.setdefault(device_id, [])
         if not device_uid:
             dev = self.devices.get(device_id) or {}
             device_uid = dev.get("uid", "")
