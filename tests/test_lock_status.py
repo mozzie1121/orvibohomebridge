@@ -107,13 +107,12 @@ class BatteryTests(unittest.TestCase):
         self.assertEqual(result["lithium_battery_level"], 62)
         self.assertIs(result["lithium_battery_setup"], True)
 
-    def test_uninstalled_battery_keeps_level(self) -> None:
-        # 实测 isSetupBattery=off 是读取抖动（同一电池 on/off 交替），
-        # 不再清空 level，避免覆盖成 unknown
+    def test_uninstalled_battery_reports_unknown_level(self) -> None:
+        # isSetupBattery=off 表示电池被取出（实测：扣电池触发推送），level 置未知
         result = lock_status.normalize_battery_properties(
             {"batteryManager": {"level": 0, "isSetupBattery": "off"}}
         )
-        self.assertEqual(result["dry_battery_level"], 0)
+        self.assertIsNone(result["dry_battery_level"])
         self.assertIs(result["dry_battery_setup"], False)
 
     def test_missing_battery_managers(self) -> None:
