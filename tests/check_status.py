@@ -39,7 +39,7 @@ async def main():
             sts = d.get("deviceStatus", [])
             print(f"  设备: {len(devs)}, 状态: {len(sts)}")
 
-            target = "834a9801ba2d4b729126648329c3473b"
+            target = "example-device-id"
             for st in sts:
                 if st.get("deviceId") == target:
                     print(f"  🔌 插线板: {json.dumps(st, ensure_ascii=False, indent=2)}")

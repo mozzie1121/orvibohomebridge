@@ -56,6 +56,16 @@ class CategoryInfo:
     is_container: bool = False
 
 
+@dataclass(frozen=True)
+class DeviceProfile:
+    """Resolved capability and hardware-verification metadata."""
+
+    category: DeviceCategory
+    info: CategoryInfo
+    hardware_verified: bool
+    registration_only: bool
+
+
 _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
     DeviceCategory.SIMPLE_ZIGBEE_LIGHT: CategoryInfo(
         category=DeviceCategory.SIMPLE_ZIGBEE_LIGHT,
@@ -293,6 +303,7 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     150: DeviceCategory.SMART_REMOTE,
     511: DeviceCategory.MIXPAD_4WAY_BASE,
     502: DeviceCategory.DIMMABLE_LIGHT,
+    300: DeviceCategory.TEMP_HUMIDITY_SENSOR,
     0: DeviceCategory.ZIGBEE_DIMMABLE_LIGHT,
     46: DeviceCategory.DOOR_WINDOW_SENSOR,
     516: DeviceCategory.VENTILATION_SYSTEM,
@@ -327,10 +338,52 @@ HIDDEN_CATEGORIES: set = {
     DeviceCategory.MIXPAD_4WAY_BASE,    # deviceTypeId=511
 }
 
+# README 支持表由维护者使用真机验证；未列入此集合不等于不兼容，
+# 仅表示当前不作“真机验证通过”的能力承诺。
+HARDWARE_VERIFIED_CATEGORIES = frozenset({
+    DeviceCategory.SIMPLE_ZIGBEE_LIGHT,
+    DeviceCategory.ZIGBEE_CURTAIN,
+    DeviceCategory.FAN_COIL_AC,
+    DeviceCategory.MIX_SWITCH,
+    DeviceCategory.MONO_LIGHT,
+    DeviceCategory.CCT_LIGHT_STRIP,
+    DeviceCategory.CCT_LIGHT,
+    DeviceCategory.BACH_SWITCH,
+    DeviceCategory.DOOR_LOCK,
+    DeviceCategory.DIM_COLOR_LIGHT,
+    DeviceCategory.LEGACY_LIGHT,
+    DeviceCategory.CLOTHES_HORSE,
+    DeviceCategory.MOTION_SENSOR,
+    DeviceCategory.SMOKE_SENSOR,
+    DeviceCategory.EMERGENCY_BUTTON,
+    DeviceCategory.WATER_LEAK_SENSOR,
+    DeviceCategory.GAS_SENSOR,
+    DeviceCategory.DIMMABLE_LIGHT,
+    DeviceCategory.ZIGBEE_DIMMABLE_LIGHT,
+    DeviceCategory.TEMP_HUMIDITY_SENSOR,
+    DeviceCategory.DOOR_WINDOW_SENSOR,
+    DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT,
+    DeviceCategory.VENTILATION_SYSTEM,
+})
+
 
 def is_hidden_category(category: DeviceCategory) -> bool:
     """判断该类别是否应被隐藏（不展示、不加入 HA）。"""
     return category in HIDDEN_CATEGORIES
+
+
+def get_device_profile(device: Dict[str, Any]) -> DeviceProfile:
+    """Resolve a device without granting control to unknown categories."""
+    category = classify_device(device)
+    return DeviceProfile(
+        category=category,
+        info=get_category_info(category),
+        hardware_verified=category in HARDWARE_VERIFIED_CATEGORIES,
+        registration_only=category in {
+            DeviceCategory.UNKNOWN,
+            DeviceCategory.OTHER,
+        },
+    )
 
 
 def _safe_int(value: Any) -> Optional[int]:

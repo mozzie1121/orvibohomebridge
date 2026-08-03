@@ -38,6 +38,10 @@
 
 ## 🔧 支持的设备
 
+下表列出的设备均由项目维护者使用真实设备验证通过，并非仅依据协议字段推测支持。
+后续重构会将这些型号作为已验证设备档案保留；未列出的型号即使能够被发现，也不代表
+已经验证控制能力，建议先提交设备信息和日志确认兼容性。
+
 ### 灯光设备
 | 设备类型 | 支持功能 |
 |---------|---------|
@@ -106,16 +110,18 @@
 
 1. 在 Home Assistant 中，进入 **设置** → **设备与服务** → **添加集成**
 2. 搜索 **ORVIBO HomeBridge**
-3. 输入您的欧瑞博账号（手机号）和密码
-4. 选择家庭（如果有多个）
-5. 完成配置，所有支持的设备将自动添加
+3. 集成会自动检测账号属于中国区还是国际区，并将区域记录在配置项中；多个区域的
+   账号可以同时使用，彼此不会共享或覆盖 API/SSL 主机状态。
+4. 输入您的欧瑞博账号（手机号）和密码
+5. 选择家庭（如果有多个）
+6. 完成配置，所有支持的设备将自动添加
 
 ### 配置参数
 
 | 参数 | 说明 |
 |------|------|
 | username | 欧瑞博账号（手机号） |
-| password | 欧瑞博密码 |
+| password | 欧瑞博密码（仅在提交配置时用于生成协议摘要，不保存明文） |
 | family_id | 家庭 ID（可选，自动获取） |
 
 ## 📱 使用说明
@@ -204,7 +210,7 @@
 ```yaml
 action: orvibohomebridge.fetch_video
 data:
-  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+  device_id: w-example-door-lock-id
   object_key: "{{ trigger.event.data.video_url }}"
 response_variable: video_result
 ```
@@ -224,13 +230,14 @@ HA 侧边栏 → **媒体** → 媒体浏览器打开即可按时间倒序浏览
 ```yaml
 action: orvibohomebridge.list_events
 data:
-  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+  device_id: w-example-door-lock-id
   limit: 50
 response_variable: history
 ```
 
 返回每条记录含 `kind`（ring/picklock/leave_home 等）、`time`、`type`
-（image/video）、`file`（本地路径）与 `media_id`（媒体浏览器引用）。
+（image/video）与 `media_id`（媒体浏览器引用）。服务响应不会暴露 Home Assistant
+主机上的绝对文件路径。
 有"有人逗留"等新事件类型时也会自动归档，无需额外配置。
 
 **自动清理**：历史记录默认保留 7 天，集成启动时清理一次，之后每周自动执行
@@ -253,7 +260,7 @@ data:
 ```yaml
 action: orvibohomebridge.grant_temp_password
 data:
-  device_id: w-77c139c4d27f4fa6a20e1f459849aa47   # 可选，留空自动选第一把门锁
+  device_id: w-example-door-lock-id   # 可选，留空自动选第一把门锁
   type: 2              # 1=限时 2=临时（默认）
   minutes: 1440        # 有效期（分钟），type=1 可用 start_time/end_time 指定绝对时间
   number: 1            # 可用次数（0=不限）
@@ -262,8 +269,13 @@ data:
 response_variable: temp
 ```
 
+`grant_temp_password` 的服务响应会一次性包含新生成的密码，请将响应按密钥处理，
+不要写入持久日志或公开通知。`list_temp_passwords` 只返回授权元数据，不会再次返回
+密码明文；事件总线和传感器状态同样不包含密码。
+
 返回：`password`（6 位临时密码）、`authorized_id`、`start_time`/`end_time`、`number` 等。
-同时触发事件 `orvibohomebridge_temp_password_event`（自动化可直接在通知里用密码）。
+同时触发事件 `orvibohomebridge_temp_password_event`，但事件不会携带密码；密码只在本次
+服务响应的 `password` 字段中返回，避免进入事件总线和 Recorder 历史。
 
 ### 管理
 
@@ -271,17 +283,17 @@ response_variable: temp
 # 删除（authorized_id 来自下发响应或查询）
 action: orvibohomebridge.revoke_temp_password
 data:
-  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+  device_id: w-example-door-lock-id
   authorized_id: 101
 
 # 查询当前有效密码（含过期状态）
 action: orvibohomebridge.list_temp_passwords
 data:
-  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+  device_id: w-example-door-lock-id
 ```
 
 **自动回收**：每 6 小时检查一次，已过期（结束时间到）或次数用尽的临时密码自动删除。
-门锁设备下还有"临时密码"传感器，显示最近一次下发的密码及详情属性。
+集成不会创建显示密码的传感器，以免临时密码被状态历史和备份长期保存。
 
 `list_temp_passwords` 通过 REST `readtable` 的 `authorizedUnlock` 表拉取**服务器端完整列表**
 （实测字段含 `authorizedId/password/number/unlockNum/startTime/phone` 等），
@@ -319,7 +331,7 @@ actions:
 
 ```yaml
 type: custom:orvibo-door-lock-card
-device_id: w-77c139c4d27f4fa6a20e1f459849aa47   # 可选，留空自动选第一把门锁
+device_id: w-example-door-lock-id   # 可选，留空自动选第一把门锁
 ```
 
 自动化示例（按用户过滤）：
@@ -383,9 +395,17 @@ orvibohomebridge/
 │       ├── __init__.py       # 集成入口，平台注册
 │       ├── manifest.json     # 集成元数据
 │       ├── config_flow.py    # 配置流程
-│       ├── coordinator.py    # 数据协调器，状态管理
+│       ├── coordinator.py    # HA 生命周期与领域编排
 │       ├── const.py          # 常量定义
 │       ├── device_types.py   # 设备分类
+│       ├── device_inventory.py # 设备发现与云端状态合并
+│       ├── parsers/          # 分类状态解析器
+│       ├── status_dispatcher.py # SSL 状态匹配与分发
+│       ├── control_router.py # 纯控制路由决策
+│       ├── control_executor.py # 控制执行与乐观状态兜底
+│       ├── lock_manager.py   # 门锁事件归一化与去重
+│       ├── lock_media_manager.py # 门锁截图、录像与历史
+│       ├── temp_password_manager.py # 临时密码生命周期
 │       ├── https_client.py   # HTTP API 客户端
 │       ├── ssl_client.py     # SSL 连接客户端
 │       ├── packet.py         # 数据包构造
@@ -411,6 +431,22 @@ orvibohomebridge/
 1. **HTTP API**：获取设备列表、家庭信息、初始状态
 2. **SSL 长连接**：实时接收设备状态推送和事件通知
 3. **MQTT 推送**：通过 SSL 通道接收设备状态变化
+
+### SSL 客户端证书说明
+
+`certs/client_cert.pem` 与 `certs/client_key.pem` 来自公开 GitHub 项目中可获取的
+厂商 App 共享客户端证书。本集成已验证：连接 ORVIBO SSL 推送服务时必须提供这组
+证书，因此它们会随 HACS 安装包一同分发。
+
+这组文件是协议兼容材料，而不是每位用户独有的秘密或身份凭据。任何安装本集成的
+人都能读取其中的私钥；服务端也不能据此区分不同 Home Assistant 实例。对 PEM 文件
+做可逆加密或代码混淆没有实际安全收益，因为无人值守连接所需的解密密钥仍必须随
+集成分发。真正需要保护的是 HomeMate 账户密码、访问令牌和临时门锁密码；本集成不
+会把这些信息写入证书文件。
+
+配置项不会保存 HomeMate 明文密码，而是保存协议要求的大写 MD5 摘要。旧版配置项
+会在升级时自动迁移并删除原有明文字段。该摘要可以直接用于认证，安全等级等同密码，
+仍应作为秘密保护，不应出现在日志、诊断或 URL 查询参数中。
 
 ## 🐛 已知问题
 

@@ -8,7 +8,7 @@
  *
  * 用法（Lovelace 卡片）：
  *   type: custom:orvibo-door-lock-card
- *   device_id: w-77c139c4d27f4fa6a20e1f459849aa47   # 可选，留空自动选第一把门锁
+ *   device_id: "<your-door-lock-device-id>"   # 可选，留空自动选第一把门锁
  */
 
 const ORVIBO_PREFIX = "orvibohomebridge_";

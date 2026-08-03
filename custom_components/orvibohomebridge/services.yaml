@@ -12,7 +12,7 @@ set_lock_user_name:
       name: 设备 ID
       description: 门锁设备 ID（如 w-xxxx，可在设备信息中查看）
       required: true
-      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+      example: "w-example-door-lock-id"
     user_id:
       name: 用户 ID
       description: 门锁用户编号（来自 unlockEvent 的 unlock_user_id）
@@ -26,7 +26,7 @@ set_lock_user_name:
 
 fetch_video:
   name: 拉取门锁事件录像
-  description: 下载事件录像（.h264）并转封装为 MP4，返回本地路径与媒体 ID
+  description: 下载事件录像（.h264）并转封装为 MP4，返回媒体 ID（不暴露主机绝对路径）
   target: {}
   fields:
     entry_id:
@@ -38,12 +38,12 @@ fetch_video:
       name: 设备 ID
       description: 门锁设备 ID（如 w-xxxx，可在设备信息中查看）
       required: true
-      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+      example: "w-example-door-lock-id"
     object_key:
       name: 录像对象键
       description: 事件里的 video_url（如 /uid/videoPicklockEvent/xxx.h264）
       required: true
-      example: "/77c139c4d27f4fa6a20e1f459849aa47/videoPicklockEvent/picklockEvent_1785652830.h264"
+      example: "/example-device-id/videoPicklockEvent/picklockEvent_1700000000.h264"
 
 list_events:
   name: 查询门锁事件历史
@@ -59,7 +59,7 @@ list_events:
       name: 设备 ID
       description: 门锁设备 ID（留空查询所有门锁）
       required: false
-      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+      example: "w-example-door-lock-id"
     limit:
       name: 返回条数
       description: 最多返回的记录数（默认 100）
@@ -85,7 +85,7 @@ cleanup_history:
       name: 设备 ID
       description: 只清理指定门锁（留空清理所有）
       required: false
-      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+      example: "w-example-door-lock-id"
     max_entries:
       name: 最大条数
       description: 每个设备最多保留的记录数（可选，按时间裁剪最旧的）
@@ -106,7 +106,7 @@ grant_temp_password:
       name: 设备 ID
       description: 门锁设备 ID（留空自动选第一把门锁）
       required: false
-      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+      example: "w-example-door-lock-id"
     type:
       name: 授权类型
       description: "1=限时（start_time/end_time 或 minutes） 2=临时（minutes+number，默认）"
@@ -157,7 +157,7 @@ revoke_temp_password:
       name: 设备 ID
       description: 门锁设备 ID
       required: true
-      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+      example: "w-example-door-lock-id"
     authorized_id:
       name: 授权 ID
       description: 下发响应或 list_temp_passwords 里的 authorized_id
@@ -166,7 +166,7 @@ revoke_temp_password:
 
 list_temp_passwords:
   name: 查询临时密码
-  description: 列出当前临时密码（含过期状态）
+  description: 列出当前临时授权元数据（含过期状态，不返回密码明文）
   target: {}
   fields:
     entry_id:
@@ -178,4 +178,4 @@ list_temp_passwords:
       name: 设备 ID
       description: 门锁设备 ID（留空查询所有）
       required: false
-      example: "w-77c139c4d27f4fa6a20e1f459849aa47"
+      example: "w-example-door-lock-id"

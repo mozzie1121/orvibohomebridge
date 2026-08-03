@@ -1,8 +1,16 @@
 import logging
 import json
 import aiohttp
+from aiohttp import ClientSession
 from typing import Optional, Any, Dict, List
 from .packet import HomemateJsonData
+from .protocol import normalize_password_hash
+from .cloud import (
+    CHINA_CLOUD,
+    CloudEndpoint,
+    cloud_candidates,
+    cloud_for_api_host,
+)
 from .const import (
     ID_UNSET,
     HTTP_HEADERS,
@@ -18,9 +26,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class HttpsClient:
-    def __init__(self, username: str, password: str):
+    def __init__(
+        self,
+        username: str,
+        password_hash: str,
+        session: ClientSession | None = None,
+        cloud: CloudEndpoint = CHINA_CLOUD,
+    ):
         self.username = username
-        self.password = password
+        self.password_hash = normalize_password_hash(password_hash)
+        self._session = session
+        self.cloud = cloud
 
         self.user_id = None
         self.session_id: Optional[str] = None
@@ -40,27 +56,40 @@ class HttpsClient:
     def set_session_id(self, session_id: str):
         self.session_id = session_id
 
-    async def _send_request(self, url, data):
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector()
-        ) as session:
+    @property
+    def api_host(self) -> str:
+        """REST endpoint owned by this client instance."""
+        return self.cloud.api_host
+
+    async def _send_request(self, url, data, params=None):
+        session = self._session
+        owns_session = session is None
+        if session is None:
+            session = aiohttp.ClientSession(connector=aiohttp.TCPConnector())
+        try:
             if not data:
-                resp = await session.get(
+                request = session.get(
                     url=url,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=10),
                     headers=HTTP_HEADERS,
                     skip_auto_headers=["Accept", "Connection"],
                 )
             else:
-                resp = await session.post(
+                request = session.post(
                     url=url,
                     timeout=aiohttp.ClientTimeout(total=10),
                     data=data,
                     headers=HTTP_HEADERS,
                     skip_auto_headers=["Accept", "Connection"],
                 )
-            resp.raise_for_status()
-            data = await resp.text()
-            return json.loads(data)
+            async with request as resp:
+                resp.raise_for_status()
+                response_text = await resp.text()
+                return json.loads(response_text)
+        finally:
+            if owns_session:
+                await session.close()
 
     async def ensure_login(self) -> bool:
         if not self.access_token or not self.user_id:
@@ -68,6 +97,8 @@ class HttpsClient:
             if data:
                 self.access_token = data.get("access_token", "")
                 self.user_id = data.get("user_id", "")
+            if not self.access_token or not self.user_id:
+                return False
 
         # 获取家庭信息（即使已有family_id，也需要获取family_name和family_list）
         data = await self._fetch_family()
@@ -77,15 +108,23 @@ class HttpsClient:
                 self.family_id = data.get("familyId", "")
             self.family_name = data.get("familyName", "")
 
-        return self.access_token and self.user_id and self.family_id
+        return bool(self.access_token and self.user_id and self.family_id)
 
     async def _fetch_access_token(self) -> dict:
         try:
             if self.session_id is None or self.session_id == bytes(ID_UNSET).decode('utf-8'):
-                ret = HomemateJsonData.get_access_token_by_password(self.username, self.password)
+                ret = HomemateJsonData.get_access_token_by_password(
+                    self.username, self.password_hash, api_host=self.api_host
+                )
             else:
-                ret = HomemateJsonData.get_access_token_by_session_id(self.session_id)
-            resp = await self._send_request(ret['url'], ret['data'])
+                ret = HomemateJsonData.get_access_token_by_session_id(
+                    self.session_id, api_host=self.api_host
+                )
+            resp = await self._send_request(
+                ret["url"],
+                ret["data"],
+                params=ret.get("params"),
+            )
             if "message" in resp:
                 _LOGGER.error(resp["message"])
                 return {}
@@ -104,9 +143,11 @@ class HttpsClient:
     async def _fetch_family(self) -> dict:
         try:
             if not self.user_id or not self.access_token:
-                _LOGGER.error("缺少[userId]或[accessToken]")
+                _LOGGER.debug("跳过家庭请求：缺少 userId 或 accessToken")
                 return {}
-            ret = HomemateJsonData.get_family_statistics_users(self.user_id, self.access_token)
+            ret = HomemateJsonData.get_family_statistics_users(
+                self.user_id, self.access_token, api_host=self.api_host
+            )
             resp = await self._send_request(ret['url'], ret['data'])
             if "message" in resp:
                 _LOGGER.error(resp["message"])
@@ -126,8 +167,25 @@ class HttpsClient:
             ]
             _LOGGER.info(f"获取到 {len(self.family_list)} 个家庭")
             
-            # 如果还没有选定家庭，选择第一个
-            if not self.family_id and self.family_list:
+            # 已有家庭时必须确认它确实属于当前区域，避免区域探测假命中。
+            if self.family_id:
+                selected = next(
+                    (
+                        family
+                        for family in self.family_list
+                        if family["familyId"] == self.family_id
+                    ),
+                    None,
+                )
+                if selected is None:
+                    _LOGGER.info(
+                        "家庭 %s 不属于当前云端区域 %s",
+                        self.family_id,
+                        self.cloud.region.value,
+                    )
+                    return {}
+                self.family_name = selected["familyName"]
+            elif self.family_list:
                 first_family = self.family_list[0]
                 self.family_id = first_family["familyId"]
                 self.family_name = first_family["familyName"]
@@ -149,17 +207,34 @@ class HttpsClient:
                 break
         _LOGGER.info(f"切换到家庭: {self.family_name} ({self.family_id})")
 
-    async def switch_host(self, host: str) -> None:
-        """切换云端主机（中国区/国际区数据独立分区），清空登录态以便重新认证"""
-        from .packet import set_api_host
-        set_api_host(host)
+    async def switch_cloud(
+        self,
+        cloud: CloudEndpoint,
+        *,
+        family_id: str | None = None,
+    ) -> None:
+        """Switch this client to another account partition and clear auth state."""
+        self.cloud = cloud
         self.access_token = None
         self.user_id = None
         self.session_id = None
-        self.family_id = None
+        self.family_id = family_id
         self.family_name = None
         self.family_list = []
-        _LOGGER.warning(f"已切换云端主机为 {host}，将重新登录")
+        _LOGGER.info("云端区域切换为 %s (%s)", cloud.region.value, cloud.api_host)
+
+    async def switch_host(self, host: str) -> None:
+        """Compatibility wrapper accepting only known ORVIBO API hosts."""
+        await self.switch_cloud(cloud_for_api_host(host))
+
+    async def async_detect_cloud(self, family_id: str | None = None) -> bool:
+        """Select the first partition where this account/family can log in."""
+        preferred_family = str(family_id or self.family_id or "").strip() or None
+        for cloud in cloud_candidates(self.cloud):
+            await self.switch_cloud(cloud, family_id=preferred_family)
+            if await self.ensure_login():
+                return True
+        return False
 
     async def _readtable(self, device_flag: int) -> Optional[Dict[str, Any]]:
         """发送一次 readtable 请求并返回合并后的数据字典"""
@@ -169,7 +244,8 @@ class HttpsClient:
             user_id=self.user_id,
             user_name=self.username,
             family_id=self.family_id,
-            device_flag=device_flag
+            device_flag=device_flag,
+            api_host=self.api_host,
         )
         resp = await self._send_request(ret['url'], ret['data'])
 
@@ -243,14 +319,13 @@ class HttpsClient:
                 _LOGGER.error("accessToken 为空")
                 return None
 
-            from .packet import get_api_host
-            url = f"https://{get_api_host()}/getDeviceDesc?source=ZhiJia365&lastUpdateTime={last_update_time}&accessToken={self.access_token}"
+            url = f"https://{self.api_host}/getDeviceDesc?source=ZhiJia365&lastUpdateTime={last_update_time}&accessToken={self.access_token}"
 
             headers = {
                 **HTTP_HEADERS,
             }
 
-            _LOGGER.debug("请求 getDeviceDesc API: host=%s", get_api_host())
+            _LOGGER.debug("请求 getDeviceDesc API: host=%s", self.api_host)
 
             async with aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector()
@@ -492,7 +567,12 @@ class HttpsClient:
                 _LOGGER.error("HTTPS 未登录")
                 return None
 
-            ret = HomemateJsonData.get_homepage_data(self.family_id, self.user_id, self.access_token)
+            ret = HomemateJsonData.get_homepage_data(
+                self.family_id,
+                self.user_id,
+                self.access_token,
+                api_host=self.api_host,
+            )
             resp = await self._send_request(ret['url'], ret['data'])
 
             if "message" in resp:
@@ -567,7 +647,12 @@ class HttpsClient:
                 _LOGGER.error("HTTPS 未登录")
                 return None
 
-            ret = HomemateJsonData.get_homepage_data(self.family_id, self.user_id, self.access_token)
+            ret = HomemateJsonData.get_homepage_data(
+                self.family_id,
+                self.user_id,
+                self.access_token,
+                api_host=self.api_host,
+            )
             resp = await self._send_request(ret['url'], ret['data'])
 
             if "message" in resp:

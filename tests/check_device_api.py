@@ -38,7 +38,7 @@ async def main():
         print(f"\n📋 queryDeviceById...")
         tid = int(time.time() * 1000)
         url = f"https://{HTTPS_HOST}/v2/device/queryDeviceById"
-        data = json.dumps({"accessToken": token, "deviceId": "834a9801ba2d4b729126648329c3473b", "timestamp": tid, "random": generate_uuid()})
+        data = json.dumps({"accessToken": token, "deviceId": "example-device-id", "timestamp": tid, "random": generate_uuid()})
         async with s.post(url, data=data, headers=HTTP_HEADERS, ssl=False) as r:
             text = await r.text()
             print(json.dumps(json.loads(text), ensure_ascii=False)[:2000])
@@ -51,7 +51,7 @@ async def main():
             ts = int(time.time() * 1000)
             rd = generate_uuid()
             params = {
-                "accessToken": token, "deviceId": "834a9801ba2d4b729126648329c3473b",
+                "accessToken": token, "deviceId": "example-device-id",
                 "order": order, "value1": v1, "value2": 0, "value3": 0, "value4": 0,
                 "random": rd, "timestamp": ts, "userId": uid, "userName": USER,
             }
@@ -78,7 +78,7 @@ async def main():
             ts = int(time.time() * 1000)
             rd = generate_uuid()
             params = {
-                "accessToken": token, "deviceId": "834a9801ba2d4b729126648329c3473b",
+                "accessToken": token, "deviceId": "example-device-id",
                 "order": order, "value1": v1, "value2": 0, "value3": 0, "value4": 0,
                 "random": rd, "timestamp": ts, "userId": uid, "userName": USER,
             }

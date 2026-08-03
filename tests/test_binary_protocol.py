@@ -33,6 +33,47 @@ class BinaryProtocolTests(unittest.TestCase):
                 raise unittest.SkipTest("cryptography is not installed") from err
             raise
 
+    def test_oauth_credentials_are_not_put_in_url(self) -> None:
+        request = self.packet.HomemateJsonData.get_access_token_by_password(
+            "account@example.com", "ABCDEF0123456789"
+        )
+
+        self.assertNotIn("account@example.com", request["url"])
+        self.assertNotIn("ABCDEF0123456789", request["url"])
+        self.assertIsNone(request["data"])
+        self.assertEqual(request["params"]["userName"], "account@example.com")
+        self.assertEqual(request["params"]["password"], "ABCDEF0123456789")
+
+        session_request = self.packet.HomemateJsonData.get_access_token_by_session_id(
+            "private-session-id"
+        )
+        self.assertNotIn("private-session-id", session_request["url"])
+        self.assertIsNone(session_request["data"])
+        self.assertEqual(
+            session_request["params"]["sessionId"], "private-session-id"
+        )
+
+    def test_request_builder_can_use_instance_specific_api_host(self) -> None:
+        china_request = self.packet.HomemateJsonData.get_access_token_by_password(
+            "account@example.com",
+            "ABCDEF0123456789",
+            api_host="china.orvibo.com",
+        )
+        global_request = self.packet.HomemateJsonData.get_access_token_by_password(
+            "account@example.com",
+            "ABCDEF0123456789",
+            api_host="homemate.orvibo.com",
+        )
+
+        self.assertEqual(
+            china_request["url"],
+            "https://china.orvibo.com/getOauthToken",
+        )
+        self.assertEqual(
+            global_request["url"],
+            "https://homemate.orvibo.com/getOauthToken",
+        )
+
     def test_static_packet_round_trip(self) -> None:
         """验证用静态密钥构建的包可以正确解析。"""
         payload = {"cmd": 230, "familyId": "family-1", "serial": 1}

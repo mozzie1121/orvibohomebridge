@@ -33,7 +33,10 @@ sys.modules["homeassistant.helpers.area_registry"] = MagicMock()
 sys.modules["homeassistant.helpers.selector"] = MagicMock()
 
 # Patch vol — only need Required/Optional/Invalid
-import voluptuous as vol
+try:
+    import voluptuous as vol
+except ModuleNotFoundError as err:
+    raise unittest.SkipTest("voluptuous is not installed") from err
 # Keep real voluptuous but patch Schema to be a pass-through for our tests
 
 

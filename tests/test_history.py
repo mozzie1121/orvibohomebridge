@@ -26,10 +26,10 @@ class HistoryDirTests(unittest.TestCase):
     def test_dir_created_and_sanitized(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            d = history.history_dir(root, "w-77c139c4d27f4fa6a20e1f459849aa47")
+            d = history.history_dir(root, "w-test-door-lock-id")
             self.assertTrue(d.is_dir())
             self.assertEqual(
-                d, root / "orvibohomebridge" / "w-77c139c4d27f4fa6a20e1f459849aa47"
+                d, root / "orvibohomebridge" / "w-test-door-lock-id"
             )
 
 

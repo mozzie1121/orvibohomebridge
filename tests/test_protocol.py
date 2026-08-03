@@ -27,6 +27,28 @@ class ProtocolTests(unittest.TestCase):
             "5F4DCC3B5AA765D61D8327DEB882CF99",
         )
 
+    def test_migrates_plaintext_password_without_retaining_it(self) -> None:
+        migrated = protocol.migrate_password_credentials(
+            {"username": "account", "password": "password", "family_id": "family"}
+        )
+
+        self.assertNotIn("password", migrated)
+        self.assertEqual(
+            migrated["password_hash"],
+            "5F4DCC3B5AA765D61D8327DEB882CF99",
+        )
+        self.assertEqual(migrated["family_id"], "family")
+
+    def test_normalizes_existing_password_hash(self) -> None:
+        migrated = protocol.migrate_password_credentials(
+            {"password_hash": "5f4dcc3b5aa765d61d8327deb882cf99"}
+        )
+
+        self.assertEqual(
+            migrated["password_hash"],
+            "5F4DCC3B5AA765D61D8327DEB882CF99",
+        )
+
     def test_family_request_is_stable_and_signed(self) -> None:
         body = protocol.build_family_request(
             access_token="access",

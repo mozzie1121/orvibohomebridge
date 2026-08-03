@@ -46,12 +46,34 @@ def infer_event_name(object_key: str) -> Optional[tuple[str, str]]:
     return m.group(1).lower(), m.group(2)
 
 
+def normalize_event_object_key(object_key: str) -> Optional[str]:
+    """Validate a COS event key and return a canonical absolute object path."""
+    value = str(object_key or "").strip()
+    if (
+        not value
+        or len(value) > 1024
+        or "\x00" in value
+        or "\\" in value
+        or "?" in value
+        or "#" in value
+        or "://" in value
+    ):
+        return None
+    normalized = "/" + value.lstrip("/")
+    if any(part in {"", ".", ".."} for part in normalized.split("/")[1:]):
+        return None
+    if infer_event_name(normalized) is None:
+        return None
+    return normalized
+
+
 def build_media_paths(
     media_root: Path,
     device_id: str,
     object_key: str,
 ) -> Optional[tuple[Path, Path]]:
     """返回 (h264 原始路径, mp4 目标路径)；无法推断事件名时返回 None。"""
+    object_key = normalize_event_object_key(object_key) or ""
     info = infer_event_name(object_key)
     if not info:
         return None

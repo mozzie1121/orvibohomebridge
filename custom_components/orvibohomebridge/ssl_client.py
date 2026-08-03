@@ -1,6 +1,3 @@
-import os
-import ssl
-import hashlib
 import logging
 import asyncio
 import time
@@ -9,9 +6,12 @@ from datetime import datetime
 from typing import Optional, Callable
 from homeassistant.core import HomeAssistant
 from .packet import HomematePacket, HomemateJsonData
+from .protocol import normalize_password_hash
+from .ssl_transport import SSLTransport, TlsFiles
+from .pending_requests import PendingRequests
 
 from .const import (
-    SSL_HOST, SSL_PORT, CLIENT_CERT, CLIENT_KEY, SERVER_CA, ID_UNSET, DEFAULT_KEY,
+    CLIENT_CERT, CLIENT_KEY, SERVER_CA, ID_UNSET, DEFAULT_KEY,
     SSL_MAX_RECONNECT_ATTEMPTS,
     CMD_HELLO, CMD_LOGIN, CMD_STATE_UPDATE, CMD_CONTROL, CMD_HEARTBEAT, CMD_HANDSHAKE,
     CMD_CLOTHES_HORSE_CONTROL, CMD_CLOTHES_HORSE_STATE, CMD_CLOTHES_HORSE_QUERY,
@@ -24,7 +24,6 @@ _LOGGER = logging.getLogger(__name__)
 class SSLClient:
     _initial_keys = {}
 
-    _reconnect_lock = asyncio.Lock()
     RECONNECT_TIMEOUT = 30
 
     def __init__(
@@ -33,7 +32,7 @@ class SSLClient:
         ssl_host: str,
         ssl_port: int,
         username: str,
-        password: str,
+        password_hash: str,
         family_id: str,
         on_session_id_obtained: Callable[[str], None],
         on_status_update: Callable[[str, dict], None],
@@ -44,7 +43,7 @@ class SSLClient:
         self.ssl_host = ssl_host
         self.ssl_port = ssl_port
         self.username = username
-        self.password = password
+        self.password_hash = normalize_password_hash(password_hash)
         self.family_id = family_id
 
         self.on_session_id_obtained = on_session_id_obtained
@@ -56,28 +55,22 @@ class SSLClient:
         self.keyfile = Path(CLIENT_KEY)
         self.cafile = Path(SERVER_CA)
 
-        self.ssl_context = None
-        self.reader: Optional[asyncio.StreamReader] = None
-        self.writer: Optional[asyncio.StreamWriter] = None
+        self.transport = SSLTransport(
+            hass,
+            ssl_host,
+            ssl_port,
+            TlsFiles(self.certfile, self.keyfile, self.cafile),
+        )
         self.session_id: Optional[str] = None
         self.session_key: Optional[bytes] = None
-        self.connected: bool = False
         self._closed: bool = False
+        self._reconnect_lock = asyncio.Lock()
         self._listening_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_failures: int = 0
         self.HEARTBEAT_MAX_FAILURES = 2
 
-        # 控制等待响应机制：device_id → asyncio.Event（等待 cmd=42 回复）
-        self._pending_control: dict[str, asyncio.Event] = {}
-        # device_id → 完整的 cmd=42 dict
-        self._pending_results: dict[str, dict] = {}
-        # COS 授权等待机制：cmd=313 响应（Skill.GetCOSAuthorization）
-        self._pending_cos: Optional[asyncio.Event] = None
-        self._pending_cos_result: Optional[dict] = None
-        # 临时密码/删除授权等待机制：cmd=246/247 响应
-        self._pending_temp: Optional[asyncio.Event] = None
-        self._pending_temp_result: Optional[dict] = None
+        self._pending_requests = PendingRequests()
         # 控制响应超时（秒）
         self._control_response_timeout: float = 3.0
         # 登录等待机制
@@ -106,51 +99,54 @@ class SSLClient:
             return DEFAULT_KEY.encode("utf-8")
 
     @property
+    def connected(self) -> bool:
+        return self.transport.connected
+
+    @connected.setter
+    def connected(self, value: bool) -> None:
+        self.transport.connected = value
+
+    @property
+    def reader(self):
+        return self.transport.reader
+
+    @reader.setter
+    def reader(self, value) -> None:
+        self.transport.reader = value
+
+    @property
+    def writer(self):
+        return self.transport.writer
+
+    @writer.setter
+    def writer(self, value) -> None:
+        self.transport.writer = value
+
+    @property
+    def ssl_context(self):
+        return self.transport.ssl_context
+
+    @ssl_context.setter
+    def ssl_context(self, value) -> None:
+        self.transport.ssl_context = value
+
+    @property
     def is_connected(self):
         return self.connected
 
     async def _create_ssl_context(self):
-        def _sync_create_context():
-            try:
-                if not os.path.exists(self.certfile):
-                    raise FileNotFoundError(f"找不到证书文件: {self.certfile}")
-                if not os.path.exists(self.keyfile):
-                    raise FileNotFoundError(f"找不到密钥文件: {self.keyfile}")
-                if not os.path.exists(self.cafile):
-                    raise FileNotFoundError(f"找不到CA证书文件: {self.cafile}")
-                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                context.load_cert_chain(certfile=self.certfile, keyfile=self.keyfile)
-                context.load_verify_locations(cafile=self.cafile)
-                context.check_hostname = True
-                context.verify_mode = ssl.CERT_REQUIRED
-                return context
-            except Exception as e:
-                _LOGGER.error(f"创建SSL上下文失败: {str(e)}")
-                raise
-
-        return await self.hass.async_add_executor_job(_sync_create_context)
+        return await self.transport.create_ssl_context()
 
     async def _connect(self):
         if self.connected:
             return True
         try:
-            if not self.ssl_context:
-                self.ssl_context = await self._create_ssl_context()
             _LOGGER.debug("SSL正在连接...")
-            self.reader, self.writer = await asyncio.wait_for(
-                asyncio.open_connection(
-                    host=self.ssl_host,
-                    port=self.ssl_port,
-                    ssl=self.ssl_context,
-                    server_hostname=self.ssl_host
-                ),
-                timeout=10.0
-            )
-            self.connected = True
+            await self.transport.connect()
             _LOGGER.debug("SSL连接成功")
             return True
         except asyncio.TimeoutError:
-            _LOGGER.error("SSL连接服务器 [%s:%s] 超时", SSL_HOST, SSL_PORT)
+            _LOGGER.error("SSL连接服务器 [%s:%s] 超时", self.ssl_host, self.ssl_port)
             return False
         except OSError as e:
             _LOGGER.error("SSL连接发生IO错误: %s", e)
@@ -160,41 +156,31 @@ class SSLClient:
             return False
 
     async def _disconnect(self):
-        if self._listening_task and not self._listening_task.done():
-            self._listening_task.cancel()
+        current_task = asyncio.current_task()
+        for task in (self._listening_task, self._heartbeat_task):
+            if task is None or task.done() or task is current_task:
+                continue
+            task.cancel()
             try:
-                await self._listening_task
+                await task
             except asyncio.CancelledError:
                 pass
-
-        if self._heartbeat_task and not self._heartbeat_task.done():
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
+        self._listening_task = None
+        self._heartbeat_task = None
 
         if self.writer and not self.writer.is_closing():
             _LOGGER.debug("SSL正在断开已有连接...")
-            self.writer.close()
             try:
-                await asyncio.wait_for(self.writer.wait_closed(), timeout=2.0)
-            except asyncio.TimeoutError:
-                _LOGGER.debug("关闭SSL连接超时")
+                await self.transport.close()
             except Exception as e:
                 _LOGGER.debug("关闭SSL连接失败: %s", e)
 
-        self.reader = None
-        self.writer = None
+        else:
+            await self.transport.close()
         self.session_id = None
         self.session_key = None
-        self.connected = False
         self._closed = True
-        # 清空控制等待
-        for event in self._pending_control.values():
-            event.set()
-        self._pending_control.clear()
-        self._pending_results.clear()
+        self._pending_requests.cancel_all()
         _LOGGER.debug("SSL连接已断开")
 
     async def _reconnect(self):
@@ -232,6 +218,7 @@ class SSLClient:
         """连接并登录。max_attempts/hello_wait 供配置流程的轻量探针使用。"""
         if self.connected:
             return True
+        self._closed = False
         
         # 取消旧的 listen/heartbeat 任务，避免并发 listener
         if self._listening_task and not self._listening_task.done():
@@ -283,7 +270,12 @@ class SSLClient:
         return False
 
     async def _send_packet(self, data: dict, key: bytes):
+        control_key = None
         try:
+            device_id = str(data.get("deviceId") or "")
+            if data.get("cmd") == CMD_CONTROL and device_id:
+                control_key = f"control:{device_id}"
+                self._pending_requests.register(control_key, replace=True)
             if key == DEFAULT_KEY.encode("utf-8"):
                 packet_type = bytes([0x70, 0x6b])
                 self.session_id = bytes(ID_UNSET).decode("utf-8")
@@ -300,10 +292,11 @@ class SSLClient:
                 await self._reconnect()
                 return
 
-            self.writer.write(ciphertext)
-            await self.writer.drain()
+            await self.transport.write(ciphertext)
             _LOGGER.debug(f"发送数据包 cmd={data.get('cmd')}, deviceId={data.get('deviceId')}")
         except Exception as e:
+            if control_key is not None:
+                self._pending_requests.resolve(control_key, None)
             _LOGGER.error("发送数据包失败: %s", e)
             if "lost" in str(e) or "close" in str(e):
                 await self._reconnect()
@@ -322,10 +315,9 @@ class SSLClient:
             self.session_key is not None,
             self.family_id,
         )
-        password_md5 = hashlib.md5(self.password.encode()).hexdigest().upper()
         payload = HomemateJsonData.ssl_login(
             username=self.username,
-            password_md5=password_md5,
+            password_md5=self.password_hash,
             family_id=self.family_id,
         )
         if self.session_key and self.session_key != DEFAULT_KEY.encode("utf-8"):
@@ -668,35 +660,28 @@ class SSLClient:
             device_uid=device_uid,
             family_id=self.family_id,
         )
-        event = asyncio.Event()
-        self._pending_cos = event
-        self._pending_cos_result = None
+        try:
+            future = self._pending_requests.register("cos_auth")
+        except RuntimeError:
+            _LOGGER.debug("已有 COS 授权请求正在等待响应")
+            return None
         try:
             _LOGGER.debug("发送 COS 授权请求 device=%s", device_id)
             await self._send_packet(payload, self.session_key)
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-            return self._pending_cos_result
-        except asyncio.TimeoutError:
-            _LOGGER.debug("等待 COS 授权响应超时")
-            return None
-        finally:
-            self._pending_cos = None
-            self._pending_cos_result = None
+            result = await self._pending_requests.wait("cos_auth", future, timeout)
+            if result is None:
+                _LOGGER.debug("等待 COS 授权响应超时")
+            return result
+        except Exception:
+            self._pending_requests.cancel_all()
+            raise
 
-    async def _wait_temp_response(self, timeout: float) -> Optional[dict]:
+    async def _wait_temp_response(self, future, timeout: float) -> Optional[dict]:
         """等待 cmd=246/247 响应（由监听循环填充）。"""
-        event = asyncio.Event()
-        self._pending_temp = event
-        self._pending_temp_result = None
-        try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-            return self._pending_temp_result
-        except asyncio.TimeoutError:
+        result = await self._pending_requests.wait("temp_authorization", future, timeout)
+        if result is None:
             _LOGGER.debug("等待临时密码响应超时")
-            return None
-        finally:
-            self._pending_temp = None
-            self._pending_temp_result = None
+        return result
 
     async def send_temp_password(
         self,
@@ -734,8 +719,13 @@ class SSLClient:
             end_time=end_ts,
         )
         _LOGGER.debug("下发临时密码 device=%s type=%s minutes=%s", device_id, auth_type, minutes)
+        try:
+            future = self._pending_requests.register("temp_authorization")
+        except RuntimeError:
+            _LOGGER.debug("已有临时密码请求正在等待响应")
+            return None
         await self._send_packet(payload, self.session_key)
-        return await self._wait_temp_response(timeout)
+        return await self._wait_temp_response(future, timeout)
 
     async def delete_authorization(
         self,
@@ -755,8 +745,13 @@ class SSLClient:
             authorized_id=authorized_id,
         )
         _LOGGER.debug("删除授权 device=%s authorizedId=%s", device_id, authorized_id)
+        try:
+            future = self._pending_requests.register("temp_authorization")
+        except RuntimeError:
+            _LOGGER.debug("已有临时密码请求正在等待响应")
+            return None
         await self._send_packet(payload, self.session_key)
-        return await self._wait_temp_response(timeout)
+        return await self._wait_temp_response(future, timeout)
 
     async def _wait_for_control_response(self, device_id: str, timeout: float | None = None) -> dict | None:
         """发送控制后等待设备返回 cmd=42 状态响应。
@@ -764,28 +759,25 @@ class SSLClient:
         在对应的 send_control_* 方法之后调用。如果设备在超时内返回了 cmd=42，
         返回完整的数据包 dict（含 value1~4 / properties 等），否则返回 None。
         """
-        if device_id in self._pending_control:
-            _LOGGER.debug(f"设备 {device_id} 已有等待中的控制响应，跳过")
+        control_key = f"control:{device_id}"
+        future = self._pending_requests.get(control_key)
+        if future is None:
+            _LOGGER.debug("设备 %s 没有待匹配的控制请求", device_id)
             return None
-
-        event = asyncio.Event()
-        self._pending_control[device_id] = event
         effective_timeout = timeout if timeout is not None else self._control_response_timeout
 
-        try:
-            await asyncio.wait_for(event.wait(), timeout=effective_timeout)
-            result = self._pending_results.pop(device_id, None)
-            if result:
-                _LOGGER.debug(f"[控制响应] device={device_id} 在 {effective_timeout}s 内收到响应: "
-                              f"value1={result.get('value1')}, value2={result.get('value2')}, "
-                              f"value3={result.get('value3')}, value4={result.get('value4')}")
-            return result
-        except asyncio.TimeoutError:
+        result = await self._pending_requests.wait(
+            control_key,
+            future,
+            effective_timeout,
+        )
+        if result:
+            _LOGGER.debug(f"[控制响应] device={device_id} 在 {effective_timeout}s 内收到响应: "
+                          f"value1={result.get('value1')}, value2={result.get('value2')}, "
+                          f"value3={result.get('value3')}, value4={result.get('value4')}")
+        else:
             _LOGGER.debug(f"[控制响应] device={device_id} 在 {effective_timeout}s 内未收到响应")
-            return None
-        finally:
-            self._pending_control.pop(device_id, None)
-            self._pending_results.pop(device_id, None)
+        return result
 
     async def _heartbeat_loop(self):
         """心跳保活循环，每隔 heartbeat_interval 秒发送一次心跳包。"""
@@ -818,12 +810,12 @@ class SSLClient:
         _LOGGER.debug("SSL后台监听循环启动")
         while True:
             try:
-                header_data = await self.reader.readexactly(42)
+                header_data = await self.transport.readexactly(42)
                 if not header_data:
                     await asyncio.sleep(1)
                     continue
                 length = HomematePacket.parse_length(header_data)
-                ciphertext = await self.reader.readexactly(length - 42)
+                ciphertext = await self.transport.readexactly(length - 42)
                 if self.session_key is None:
                     self.session_key = DEFAULT_KEY.encode("utf-8")
                 try:
@@ -858,17 +850,11 @@ class SSLClient:
                     await self._handle_state_update(data)
                 elif cmd == CMD_COS_AUTH:
                     # Skill.GetCOSAuthorization 响应（门锁媒体 COS 凭证）
-                    if self._pending_cos is not None:
-                        self._pending_cos_result = data
-                        self._pending_cos.set()
-                    else:
+                    if not self._pending_requests.resolve("cos_auth", data):
                         _LOGGER.debug("收到未期待的 cmd=313 响应")
                 elif cmd in (CMD_TEMP_PASSWORD, CMD_DELETE_AUTHORIZATION):
                     # 临时密码下发/删除授权响应
-                    if self._pending_temp is not None:
-                        self._pending_temp_result = data
-                        self._pending_temp.set()
-                    else:
+                    if not self._pending_requests.resolve("temp_authorization", data):
                         _LOGGER.debug("收到未期待的 cmd=%s 响应", cmd)
                 elif cmd in (CMD_HEARTBEAT, CMD_HANDSHAKE):
                     continue
@@ -884,7 +870,6 @@ class SSLClient:
                 break
             except asyncio.CancelledError:
                 _LOGGER.debug("监听任务被取消，退出循环")
-                await self._disconnect()
                 return
             except Exception as e:
                 import traceback
@@ -911,7 +896,6 @@ class SSLClient:
                 await asyncio.sleep(backoff)
             except asyncio.CancelledError:
                 _LOGGER.debug("重连任务被取消")
-                await self._disconnect()
                 return
         if reconnect_count >= max_reconnect:
             _LOGGER.warning(f"SSL重连已达上限 {max_reconnect} 次，停止重连")
@@ -992,20 +976,17 @@ class SSLClient:
         # 输出所有cmd=42消息，用于诊断
         _LOGGER.debug(f"[SSL接收] cmd=42完整数据: {data}")
 
+        dev_id = data.get("deviceId", "")
+        if self._pending_requests.resolve(f"control:{dev_id}", data):
+            _LOGGER.debug(f"[控制响应匹配] device={dev_id} 收到控制响应，唤醒等待")
+
         # 控制回显（respByAcc=false 且非主动事件）才过滤；主动推送
         # （门铃/开锁事件、锁状态等）必须继续处理，否则事件永远到不了实体。
         if data.get("respByAcc") is False and not isinstance(data.get("event"), dict):
             _LOGGER.debug(f"[SSL过滤] respByAcc=false，跳过处理: deviceId={data.get('deviceId')}")
             return
         
-        dev_id = data.get("deviceId", "")
         uid = data.get("uid", "")
-        
-        # ★ 检查：是否有控制操作正在等这个设备的响应
-        if dev_id in self._pending_control:
-            _LOGGER.debug(f"[控制响应匹配] device={dev_id} 收到控制响应，唤醒等待")
-            self._pending_results[dev_id] = data
-            self._pending_control[dev_id].set()
         
         # 只提取原始数据，不做解析（解析逻辑由 coordinator 根据设备类型处理）
         raw_status = {

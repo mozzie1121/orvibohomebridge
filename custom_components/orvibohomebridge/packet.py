@@ -844,19 +844,36 @@ class HomemateJsonData:
         return sign
 
     @classmethod
-    def get_access_token_by_password(cls, username: str, password: str):
-        url = f"https://{get_api_host()}/getOauthToken?userName={username}&type=0&password={password}"
-        _LOGGER.debug("请求access_token: type=0 (password masked, userName 不入日志)")
-        return {"url": url, "data": None}
+    def get_access_token_by_password(
+        cls, username: str, password_md5: str, api_host: str | None = None
+    ):
+        """Build the legacy GET query without materializing a credential URL."""
+        url = f"https://{api_host or get_api_host()}/getOauthToken"
+        _LOGGER.debug("请求access_token: type=0 (structured query parameters)")
+        return {
+            "url": url,
+            "data": None,
+            "params": {
+                "userName": username,
+                "type": "0",
+                "password": password_md5,
+            },
+        }
 
     @classmethod
-    def get_access_token_by_session_id(cls, session_id):
-        url = f"https://{get_api_host()}/getOauthToken?type=0&sessionId={session_id}"
-        return {"url": url, "data": None}
+    def get_access_token_by_session_id(cls, session_id, api_host: str | None = None):
+        url = f"https://{api_host or get_api_host()}/getOauthToken"
+        return {
+            "url": url,
+            "data": None,
+            "params": {"type": "0", "sessionId": session_id},
+        }
 
     @classmethod
-    def get_family_statistics_users(cls, user_id, access_token):
-        url = f"https://{get_api_host()}/v2/family/statistics/users"
+    def get_family_statistics_users(
+        cls, user_id, access_token, api_host: str | None = None
+    ):
+        url = f"https://{api_host or get_api_host()}/v2/family/statistics/users"
 
         timestamp = generate_timestamp()
         random_str = generate_uuid()
@@ -882,8 +899,10 @@ class HomemateJsonData:
         return {"url": url, "data": postData_str}
 
     @classmethod
-    def get_homepage_data(cls, family_id, user_id, access_token):
-        url = f"https://{get_api_host()}/v2/family/config/queryHomepageData"
+    def get_homepage_data(
+        cls, family_id, user_id, access_token, api_host: str | None = None
+    ):
+        url = f"https://{api_host or get_api_host()}/v2/family/config/queryHomepageData"
 
         timestamp = generate_timestamp()
         random_str = generate_uuid()
@@ -912,9 +931,18 @@ class HomemateJsonData:
         return {"url": url, "data": postData_str}
 
     @classmethod
-    def get_devices_status(cls, access_token, session_id, user_id, user_name, family_id, device_flag=0):
+    def get_devices_status(
+        cls,
+        access_token,
+        session_id,
+        user_id,
+        user_name,
+        family_id,
+        device_flag=0,
+        api_host: str | None = None,
+    ):
         """获取设备状态列表，通过 /v2/cmd/app/readtable API"""
-        url = f"https://{get_api_host()}/v2/cmd/app/readtable"
+        url = f"https://{api_host or get_api_host()}/v2/cmd/app/readtable"
 
         random_str = generate_uuid()
         serial = generate_serial()

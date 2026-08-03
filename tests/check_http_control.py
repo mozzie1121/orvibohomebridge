@@ -16,7 +16,7 @@ USER = os.environ.get("ORVIBO_USERNAME", "")
 PASS = os.environ.get("ORVIBO_PASSWORD", "")
 if not USER or not PASS:
     sys.exit("请先设置环境变量 ORVIBO_USERNAME 和 ORVIBO_PASSWORD")
-DEV = "834a9801ba2d4b729126648329c3473b"
+DEV = "example-device-id"
 UID = "accf23852d1c"
 FID = "00000000000018111433753460517481"
 

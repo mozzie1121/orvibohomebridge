@@ -9,33 +9,52 @@ try:
 except ImportError:  # 旧版 HA 兼容
     StaticPathConfig = None  # type: ignore[assignment]
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
+from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_USERNAME
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN, CONF_FAMILY_ID, CONF_LOCK_USER_NAMES
+from .const import (
+    DOMAIN,
+    CONF_FAMILY_ID,
+    CONF_LOCK_USER_NAMES,
+    CONF_PASSWORD_HASH,
+    CONF_CLOUD_REGION,
+)
+from .protocol import migrate_password_credentials
+from .models import AccountCredentials
+from .cloud import cloud_for_region
 from .coordinator import OrviboMeshCoordinator
 from .selection import CONF_DEVICE_AREAS, selected_device_ids
+from .service_handlers import async_register_services
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ("switch", "light", "cover", "sensor", "binary_sensor", "climate", "fan", "camera")
 
-SERVICE_REFRESH = "refresh_devices"
-SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
-SERVICE_FETCH_VIDEO = "fetch_video"
-SERVICE_LIST_EVENTS = "list_events"
-SERVICE_CLEANUP_HISTORY = "cleanup_history"
-SERVICE_GRANT_TEMP_PASSWORD = "grant_temp_password"
-SERVICE_REVOKE_TEMP_PASSWORD = "revoke_temp_password"
-SERVICE_LIST_TEMP_PASSWORDS = "list_temp_passwords"
-
 # 本集成仅通过配置项使用，不读取 configuration.yaml。
 # 新版 HA 要求 empty_config_schema 传入 domain 参数。
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Replace legacy plaintext passwords with replayable protocol digests."""
+    if entry.version > 3:
+        return False
+    try:
+        migrated_data = migrate_password_credentials(entry.data)
+    except ValueError:
+        _LOGGER.error("配置项缺少可迁移的 ORVIBO 登录凭据")
+        return False
+    if entry.version < 3 or migrated_data != dict(entry.data):
+        hass.config_entries.async_update_entry(
+            entry,
+            data=migrated_data,
+            version=3,
+        )
+    return True
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
@@ -81,295 +100,24 @@ async def async_setup(hass: HomeAssistant, config: dict):
     except Exception:  # noqa: BLE001 - 卡片注册失败不影响核心功能
         _LOGGER.warning("门锁卡片资源注册失败（不影响其他功能）", exc_info=True)
 
-    async def handle_refresh(call: ServiceCall):
-        """处理手动刷新设备请求"""
-        entry_id = call.data.get("entry_id")
-        if not entry_id:
-            _LOGGER.error("未提供 entry_id")
-            return
-
-        coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-        if not coordinator:
-            _LOGGER.error(f"找不到 coordinator: {entry_id}")
-            return
-
-        _LOGGER.info("手动刷新设备...")
-        await coordinator.async_request_refresh()
-        _LOGGER.info("设备刷新完成")
-
-    hass.services.async_register(DOMAIN, SERVICE_REFRESH, handle_refresh)
-
-    async def handle_set_lock_user_name(call: ServiceCall):
-        """为门锁 userId 设置显示名称，用于区分"谁开的门"。"""
-        entry_id = call.data.get("entry_id")
-        device_id = call.data.get("device_id", "")
-        user_id = call.data.get("user_id", "")
-        name = call.data.get("name", "")
-        if not device_id or user_id in (None, ""):
-            _LOGGER.error("set_lock_user_name 需要 device_id 和 user_id")
-            return
-        targets = []
-        if entry_id:
-            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-            if coordinator:
-                targets.append(coordinator)
-        else:
-            targets.extend(coordinator for coordinator in hass.data.get(DOMAIN, {}).values())
-        updated = False
-        for coordinator in targets:
-            if coordinator.set_lock_user_name(str(device_id), str(user_id), str(name)):
-                updated = True
-        if updated:
-            _LOGGER.info(
-                "门锁用户名称已设置: device=%s user=%s name=%s",
-                str(device_id)[-12:],
-                user_id,
-                name,
-            )
-        else:
-            _LOGGER.warning("未找到可应用 set_lock_user_name 的配置项")
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SET_LOCK_USER_NAME,
-        handle_set_lock_user_name,
-    )
-
-    async def handle_fetch_video(call: ServiceCall):
-        """拉取门锁事件录像（.h264 → MP4），返回本地路径与媒体 ID。"""
-        entry_id = call.data.get("entry_id")
-        device_id = str(call.data.get("device_id", ""))
-        object_key = str(call.data.get("object_key", ""))
-        if not device_id or not object_key:
-            _LOGGER.error("fetch_video 需要 device_id 和 object_key（事件里的 video_url）")
-            return {"error": "需要 device_id 和 object_key"}
-        targets = []
-        if entry_id:
-            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-            if coordinator:
-                targets.append(coordinator)
-        else:
-            targets.extend(
-                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
-            )
-        for coordinator in targets:
-            result = await coordinator.async_fetch_video(
-                device_id, object_key
-            )
-            if result and "error" not in result:
-                _LOGGER.info(
-                    "录像已拉取 device=%s -> %s",
-                    str(device_id)[-12:],
-                    result.get("video_file"),
-                )
-                return result
-        return {"error": "未找到可用的配置项或拉取失败"}
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_FETCH_VIDEO,
-        handle_fetch_video,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def handle_list_events(call: ServiceCall):
-        """查询门锁事件历史（截图/录像），按时间倒序返回。"""
-        from pathlib import Path
-
-        entry_id = call.data.get("entry_id")
-        device_id = str(call.data.get("device_id", ""))
-        limit = int(call.data.get("limit", 100))
-        targets = []
-        if entry_id:
-            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-            if coordinator:
-                targets.append(coordinator)
-        else:
-            targets.extend(
-                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
-            )
-        result = []
-        for coordinator in targets:
-            result.extend(await coordinator.async_list_events(device_id, limit))
-            if len(result) >= limit:
-                result = result[:limit]
-                break
-        media_root = Path(hass.config.path("media"))
-        history_root = media_root / "orvibohomebridge"
-
-        def _scan_device_dirs() -> list[str]:
-            if not history_root.is_dir():
-                return []
-            return sorted(d.name for d in history_root.iterdir() if d.is_dir())
-
-        device_dirs = await hass.async_add_executor_job(_scan_device_dirs)
-        return {
-            "events": result,
-            "media_root": str(media_root),
-            "history_root": str(history_root),
-            "device_dirs": device_dirs,
-        }
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_EVENTS,
-        handle_list_events,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def handle_cleanup_history(call: ServiceCall):
-        """手动清理门锁历史记录（截图/录像）。"""
-        entry_id = call.data.get("entry_id")
-        keep_days = int(call.data.get("keep_days", 7))
-        device_id = str(call.data.get("device_id", ""))
-        max_entries = call.data.get("max_entries")
-        targets = []
-        if entry_id:
-            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-            if coordinator:
-                targets.append(coordinator)
-        else:
-            targets.extend(
-                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
-            )
-        total = 0
-        for coordinator in targets:
-            total += await coordinator.async_cleanup_history(
-                keep_days=keep_days,
-                device_id=device_id,
-                max_entries=int(max_entries) if max_entries else None,
-            )
-        _LOGGER.info("历史清理完成，共删除 %s 个文件", total)
-        return {"removed": total}
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEANUP_HISTORY,
-        handle_cleanup_history,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def handle_grant_temp_password(call: ServiceCall):
-        """下发临时密码（可选短信通知），返回密码/authorizedId/有效期。"""
-        entry_id = call.data.get("entry_id")
-        device_id = str(call.data.get("device_id", ""))
-        auth_type = int(call.data.get("type", 2))
-        minutes = int(call.data.get("minutes", 1440))
-        number = int(call.data.get("number", 1))
-        name = str(call.data.get("name", ""))
-        phone = str(call.data.get("phone", ""))
-        start_time = call.data.get("start_time")
-        end_time = call.data.get("end_time")
-        targets = []
-        if entry_id:
-            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-            if coordinator:
-                targets.append(coordinator)
-        else:
-            targets.extend(
-                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
-            )
-        for coordinator in targets:
-            if not device_id and coordinator.devices:
-                device_id = next(
-                    (
-                        did
-                        for did, dev in coordinator.devices.items()
-                        if classify_device(dev) == DeviceCategory.DOOR_LOCK
-                    ),
-                    "",
-                )
-            if not device_id:
-                continue
-            result = await coordinator.async_grant_temp_password(
-                device_id=device_id,
-                auth_type=auth_type,
-                minutes=minutes,
-                number=number,
-                name=name,
-                phone=phone,
-                start_time=int(start_time) if start_time else None,
-                end_time=int(end_time) if end_time else None,
-            )
-            return result or {"error": "下发失败"}
-        return {"error": "未找到可用的配置项或门锁设备"}
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GRANT_TEMP_PASSWORD,
-        handle_grant_temp_password,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def handle_revoke_temp_password(call: ServiceCall):
-        """删除指定 authorizedId 的临时密码。"""
-        entry_id = call.data.get("entry_id")
-        device_id = str(call.data.get("device_id", ""))
-        authorized_id = int(call.data.get("authorized_id", 0))
-        if not device_id or not authorized_id:
-            return {"error": "需要 device_id 和 authorized_id"}
-        targets = []
-        if entry_id:
-            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-            if coordinator:
-                targets.append(coordinator)
-        else:
-            targets.extend(
-                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
-            )
-        for coordinator in targets:
-            if device_id not in coordinator.devices:
-                continue
-            return await coordinator.async_revoke_temp_password(
-                device_id, authorized_id
-            )
-        return {"error": "未找到设备或配置项"}
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REVOKE_TEMP_PASSWORD,
-        handle_revoke_temp_password,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-
-    async def handle_list_temp_passwords(call: ServiceCall):
-        """列出当前临时密码（含过期状态）。"""
-        entry_id = call.data.get("entry_id")
-        device_id = str(call.data.get("device_id", ""))
-        targets = []
-        if entry_id:
-            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
-            if coordinator:
-                targets.append(coordinator)
-        else:
-            targets.extend(
-                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
-            )
-        result = {}
-        for coordinator in targets:
-            result.update(await coordinator.async_list_temp_passwords(device_id))
-        return result
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_TEMP_PASSWORDS,
-        handle_list_temp_passwords,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
+    await async_register_services(hass)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     username = entry.data[CONF_USERNAME]
-    password = entry.data[CONF_PASSWORD]
+    password_hash = entry.data[CONF_PASSWORD_HASH]
     family_id = entry.data.get(CONF_FAMILY_ID)
 
     coordinator = OrviboMeshCoordinator(
         hass,
-        username,
-        password,
-        family_id,
+        AccountCredentials(
+            username=username,
+            password_hash=password_hash,
+            family_id=str(family_id or ""),
+        ),
         lock_user_names=entry.options.get(CONF_LOCK_USER_NAMES),
+        cloud=cloud_for_region(entry.data.get(CONF_CLOUD_REGION)),
     )
 
     try:
@@ -381,6 +129,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     except Exception as e:
         _LOGGER.error(f"Coordinator 设置失败: {e}", exc_info=True)
         raise ConfigEntryNotReady from e
+
+    detected_region = coordinator.https_client.cloud.region.value
+    if entry.data.get(CONF_CLOUD_REGION) != detected_region:
+        updated_data = dict(entry.data)
+        updated_data[CONF_CLOUD_REGION] = detected_region
+        hass.config_entries.async_update_entry(entry, data=updated_data)
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
@@ -402,7 +156,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await _async_assign_areas(hass, entry)
         await _apply_device_areas(hass, entry)
     
-    hass.async_create_task(_apply_after_refresh())
+    area_task = hass.async_create_task(_apply_after_refresh())
+    entry.async_on_unload(area_task.cancel)
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
@@ -471,23 +226,14 @@ async def _apply_device_areas(hass: HomeAssistant, entry: ConfigEntry):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     _LOGGER.info("开始卸载 Orvibo Mesh...")
     
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if coordinator:
-        await coordinator.async_cleanup()
-        _LOGGER.info("Coordinator 清理完成")
-
-    unload_ok = True
-    for platform in PLATFORMS:
-        try:
-            result = await hass.config_entries.async_forward_entry_unload(entry, platform)
-            if not result:
-                unload_ok = False
-        except Exception as e:
-            _LOGGER.error(f"卸载平台 {platform} 失败: {e}")
-            unload_ok = False
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     _LOGGER.info(f"卸载结果: {unload_ok}")
 
     if unload_ok:
+        coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+        if coordinator:
+            await coordinator.async_cleanup()
+            _LOGGER.info("Coordinator 清理完成")
         hass_data = hass.data.get(DOMAIN, {})
         hass_data.pop(entry.entry_id, None)
         _LOGGER.info("已从 hass.data 移除")

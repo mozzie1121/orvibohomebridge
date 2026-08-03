@@ -23,7 +23,7 @@ PASSWORD = os.environ.get("ORVIBO_PASSWORD", "")
 if not USERNAME or not PASSWORD:
     sys.exit("请先设置环境变量 ORVIBO_USERNAME 和 ORVIBO_PASSWORD")
 FAMILY_ID = "00000000000018111433753460517481"  # 我的家庭
-DEVICE_ID = "834a9801ba2d4b729126648329c3473b"
+DEVICE_ID = "example-device-id"
 DEVICE_UID = "accf23852d1c"
 
 pw_md5 = hashlib.md5(PASSWORD.encode()).hexdigest().upper()

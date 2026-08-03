@@ -16,9 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import hmac
+import re
 from typing import Any, Final, Mapping, Sequence
 
 _HMAC_SECRET: Final = "nQ45RjPtOws96jmH"
+_PASSWORD_HASH_PATTERN: Final = re.compile(r"^[A-F0-9]{32}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,29 @@ class OrviboDevice:
 def password_hash(password: str) -> str:
     """返回 Orvibo 要求的大写 MD5 密码哈希。"""
     return hashlib.md5(password.encode("utf-8")).hexdigest().upper()  # noqa: S324
+
+
+def normalize_password_hash(value: object) -> str:
+    """Validate and normalize a replayable ORVIBO password digest."""
+    digest = str(value or "").strip().upper()
+    if not _PASSWORD_HASH_PATTERN.fullmatch(digest):
+        raise ValueError("password hash must be 32 hexadecimal characters")
+    return digest
+
+
+def migrate_password_credentials(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return config-entry data containing only the protocol password digest."""
+    migrated = dict(data)
+    digest = migrated.get("password_hash")
+    if digest:
+        migrated["password_hash"] = normalize_password_hash(digest)
+    else:
+        plaintext = migrated.get("password")
+        if not isinstance(plaintext, str) or not plaintext:
+            raise ValueError("config entry has no password credential")
+        migrated["password_hash"] = password_hash(plaintext)
+    migrated.pop("password", None)
+    return migrated
 
 
 def _sign_request(body: Mapping[str, Any]) -> str:

@@ -1,63 +1,39 @@
 import logging
 import asyncio
 import secrets
-import time
-import urllib.request
-from pathlib import Path
 from typing import Dict, Any, Optional
-from datetime import timedelta
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .ssl_client import SSLClient
 from .https_client import HttpsClient
-from .cos_media import CosMediaManager
-from .video_archive import VideoArchiver
-from .history import history_dir, save_snapshot
-from .temp_password import (
-    describe_record,
-    is_expired,
-    parse_authorization_item,
-    parse_grant_response,
+from .device_types import (
+    DeviceCategory,
+    classify_device,
 )
-from .device_types import DeviceCategory, classify_device, is_hidden_category
-from .packet import get_api_host
 from .redact import fingerprint, redact_packet
+from .models import AccountCredentials
+from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_candidates
+from .state_store import StateSource, StateStore
+from .parsers import get_state_parser
+from .lock_manager import LockEventManager
+from .status_dispatcher import StatusUpdateDispatcher
+from .lock_media_manager import LockMediaManager
+from .temp_password_manager import TempPasswordManager
+from .device_inventory import DeviceInventory
+from .control_executor import ControlExecutor
 from .const import (
-    SSL_HOST, SSL_PORT,
-    HTTPS_HOST, HTTPS_HOST_GLOBAL, SSL_HOST_GLOBAL,
+    SSL_PORT,
     UPDATE_INTERVAL,
-    DEVICE_TYPE_SWITCH,
-    DEVICE_TYPE_LIGHT,
-    DEVICE_TYPE_COVER,
-    DEVICE_TYPE_CLOTHES_HORSE,
     CMD_CONTROL,
     DEFAULT_KEY,
     SOFTWARE_VER, DEBUG_INFO,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _download_bytes(url: str, timeout: int = 30) -> Optional[bytes]:
-    """下载预签名 URL 返回字节（同步阻塞，调用方应放线程池）。"""
-    try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "orvibohomebridge"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except urllib.error.HTTPError as e:
-        err_body = e.read(600).decode("utf-8", "replace")
-        _LOGGER.warning(
-            "下载失败 HTTP %s: %s", e.code, err_body[:500]
-        )
-        return None
-    except Exception as e:  # noqa: BLE001
-        _LOGGER.warning("下载失败: %r", e)
-        return None
 
 
 class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
@@ -69,35 +45,34 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def __init__(
         self,
         hass: HomeAssistant,
-        username: str,
-        password: str,
-        family_id: str = None,
+        credentials: AccountCredentials,
         lock_user_names: Optional[Dict[str, str]] = None,
+        cloud: CloudEndpoint = CHINA_CLOUD,
     ):
-        self.username = username
-        self.password = password
-        self.family_id = family_id
+        self.credentials = credentials
+        self.username = credentials.username
+        self.password_hash = credentials.password_hash
+        self.family_id = credentials.family_id
         self.hass = hass
 
-        self.https_client = HttpsClient(username=username, password=password)
+        self.https_client = HttpsClient(
+            username=credentials.username,
+            password_hash=credentials.password_hash,
+            session=async_get_clientsession(hass),
+            cloud=cloud,
+        )
+        self.https_client.family_id = credentials.family_id or None
         self.ssl_client = None
-        self.cos_media: Optional[CosMediaManager] = None
-        self.video_archiver: Optional[VideoArchiver] = None
-        self._lock_cameras: Dict[str, Any] = {}  # device_id -> camera 实体
-        self._snapshot_pending: set[tuple[str, str]] = set()  # (device_id, object_key) 进行中
-        self._history_cleanup_unsub = None
-        self.HISTORY_KEEP_DAYS = 7  # 历史截图/录像保留天数
-        self._temp_passwords: Dict[str, list[dict]] = {}  # device_id -> 临时密码记录
-        self._temp_cleanup_unsub = None
-        self.TEMP_PASSWORD_MAX = 4  # 服务端限制：每设备最多 4 个临时密码
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
         self._lock_reset_tasks: Dict[tuple, asyncio.Task] = {}  # 门锁事件复位任务
-        self._last_lock_events: Dict[str, tuple] = {}  # 门锁事件去重签名
         self._lock_user_names: Dict[str, Dict[str, str]] = {}  # device_id -> {user_id: 名称}
         self._lock_user_names_shared: Dict[str, str] = dict(lock_user_names or {})  # 持久化映射（entry 级）
-        self._last_unlock: Dict[str, Dict[str, Any]] = {}  # device_id -> 最近一次开锁
+        self.lock_events = LockEventManager(
+            self.lock_user_name,
+            door_open_window=self.LOCK_DOOR_OPEN_WINDOW,
+        )
         
         # 调试信息：记录最近收到的原始状态推送（仅内存，日志/诊断均脱敏）
         self._cmd42_log: list[dict] = []
@@ -114,317 +89,107 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         self.devices: Dict[str, Any] = {}
         self.device_states: Dict[str, Any] = {}
+        self.state_store = StateStore(self.device_states)
+        self.inventory = DeviceInventory(
+            self.https_client,
+            self.devices,
+            self.device_states,
+            self.state_store,
+            self.lock_events.remove,
+        )
+        self.control = ControlExecutor(
+            self.devices,
+            self.device_states,
+            self.state_store,
+            lambda: self.ssl_client,
+            lambda: self,
+            self.get_device_state,
+            lambda: self.async_set_updated_data(self.device_states),
+        )
+        self.lock_media = LockMediaManager(
+            self.hass, self.devices, self._redaction_salt
+        )
+        self.temp_passwords = TempPasswordManager(
+            self.hass,
+            self.devices,
+            self.device_states,
+            self.https_client,
+            lambda: self.ssl_client,
+            lambda: self.async_set_updated_data(self.device_states),
+            self._redaction_salt,
+        )
+        self.status_dispatcher = StatusUpdateDispatcher(
+            self.devices,
+            self.device_states,
+            self.state_store,
+            self._last_update_time,
+            self._cmd42_log,
+            on_motion=self._apply_motion_state_parser,
+            on_emergency=self._apply_emergency_state_parser,
+            on_lock_transient=lambda state, raw, device_id: self._apply_lock_transient_event(
+                device_id, state, raw
+            ),
+            on_lock_message=self._publish_lock_message,
+            on_lock_event=self._publish_lock_event,
+            on_updated=lambda: self.hass.add_job(
+                self.async_set_updated_data, self.device_states
+            ),
+            device_label=lambda device_id: fingerprint(
+                device_id, self._redaction_salt
+            ),
+        )
 
-    def _parse_status_light_colortemp(self, dev_state: dict, raw_status: dict) -> None:
-        """解析调光调色灯状态 (deviceType 38)
-        核心控制参数: value1开关、value2亮度、value3色温
-        """
-        props = raw_status.get("properties", {})
+    def _apply_registered_state_parser(
+        self, category: DeviceCategory, dev_state: dict, raw_status: dict
+    ) -> bool:
+        """Apply a pure state parser registered for the device category."""
 
-        bri = raw_status.get("value2")
-        if bri is None:
-            bri = props.get("brightness")
-        if bri is not None:
-            bri = int(bri)
-        dev_state["brightness"] = bri
+        parser = get_state_parser(category)
+        if parser is None:
+            return False
+        parser(dev_state, raw_status).apply_to(dev_state)
+        return True
 
-        ct = raw_status.get("value3")
-        if ct is not None:
-            ct = int(ct)
-            if 150 <= ct <= 400:
-                ct = 1000000 // ct
-        else:
-            ct = props.get("colortemp")
-            if ct is not None:
-                ct = int(ct)
-        if ct is not None:
-            if ct < 2700:
-                ct = 2700
-            elif ct > 6500:
-                ct = 6500
-        dev_state["color_temp"] = ct
+    def _apply_motion_state_parser(
+        self, dev_state: dict, raw_status: dict, device_id: Optional[str]
+    ) -> None:
+        """Parse motion state, then own its coordinator-level reset lifecycle."""
 
-        value1 = raw_status.get("value1")
-        if value1 is not None:
-            value1 = int(value1)
-            sub_device_type = raw_status.get("subDeviceType", 0)
-            if isinstance(sub_device_type, str):
-                sub_device_type = int(sub_device_type)
-            if sub_device_type == -2:
-                dev_state["state"] = value1 == 0
-            else:
-                dev_state["state"] = value1 == 1
-        else:
-            onoff_obj = props.get("onoff", {})
-            if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-                dev_state["state"] = onoff_obj.get("status") == "on"
-            elif bri is not None:
-                dev_state["state"] = bri > 0
-            elif "state" not in dev_state:
-                dev_state["state"] = False
-
-        _LOGGER.debug(f"[调光调色灯] state={dev_state['state']}, brightness={bri}, color_temp={ct}")
-
-    def _parse_status_fast_move_dim_color_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析Fast Move调光调色灯状态 (statusType 2, subDeviceType 6)
-        使用 value1/value2/value3 格式：
-        - value1=0 为开, value1=1 为关
-        - value2 为亮度 (0-255)
-        - value3 为色温 (mireds)
-        """
-        value1 = raw_status.get("value1")
-        value2 = raw_status.get("value2")
+        self._apply_registered_state_parser(
+            DeviceCategory.MOTION_SENSOR, dev_state, raw_status
+        )
         value3 = raw_status.get("value3")
-
-        if value1 is not None:
-            value1 = int(value1)
-            dev_state["state"] = value1 == 0
-
-        if value2 is not None:
-            value2 = int(value2)
-            if value2 < 0:
-                value2 = 0
-            elif value2 > 255:
-                value2 = 255
-            dev_state["brightness"] = value2
-            if value2 == 0:
-                dev_state["state"] = False
-
-        if value3 is not None:
-            value3 = int(value3)
-            if 150 <= value3 <= 400:
-                color_temp_k = 1000000 // value3
-                if color_temp_k < 2700:
-                    color_temp_k = 2700
-                elif color_temp_k > 6000:
-                    color_temp_k = 6000
-                dev_state["color_temp"] = color_temp_k
-
-        _LOGGER.debug(f"[Fast Move调光调色灯] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}%, color_temp={dev_state.get('color_temp')}K, raw_value2={value2}, raw_value3={value3}")
-
-    def _parse_status_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析单色普通灯状态 (deviceType 102, 501)
-        核心控制参数: value1开关 (value1==0 为开)
-        """
-        props = raw_status.get("properties", {})
-        parsed = False
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-            parsed = True
-        elif isinstance(props.get("onoff_status"), str):
-            dev_state["state"] = props["onoff_status"] == "on"
-            parsed = True
-        if not parsed:
-            value1 = raw_status.get("value1")
-            if value1 is not None:
-                value1 = int(value1)
-                dev_state["state"] = value1 == 0
-            elif "state" not in dev_state:
-                dev_state["state"] = False
-        _LOGGER.debug(f"[单色灯] state={dev_state['state']}")
-
-    def _parse_status_cct_light_strip(self, dev_state: dict, raw_status: dict) -> None:
-        """解析色温灯带状态 (deviceType 503)
-        使用 properties.onoff.status / brightness.percent / colorTemp.value
-        """
-        props = raw_status.get("properties", {})
-
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            if "state" not in dev_state:
-                dev_state["state"] = False
-
-        bri_obj = props.get("brightness", {})
-        if isinstance(bri_obj, dict):
-            bri = bri_obj.get("percent")
-        else:
-            bri = bri_obj
-        if bri is not None:
-            bri = int(bri)
-            if bri < 0:
-                bri = 0
-            elif bri > 100:
-                bri = 100
-            dev_state["brightness"] = bri
-            if bri == 0:
-                dev_state["state"] = False
-
-        ct_obj = props.get("colorTemp", {})
-        if isinstance(ct_obj, dict):
-            ct = ct_obj.get("value")
-        else:
-            ct = ct_obj
-        if ct is not None:
-            ct = int(ct)
-            if ct < 2000:
-                ct = 2000
-            elif ct > 6500:
-                ct = 6500
-            dev_state["color_temp"] = ct
-
-        _LOGGER.debug(f"[色温灯带] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}, color_temp={dev_state.get('color_temp')}")
-
-    def _parse_status_dimmable_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析可调光灯状态 (deviceType 502)
-        使用 properties.onoff.status / properties.brightness.percent
-        """
-        props = raw_status.get("properties", {})
-
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            if "state" not in dev_state:
-                dev_state["state"] = False
-
-        bri_obj = props.get("brightness", {})
-        if isinstance(bri_obj, dict):
-            bri = bri_obj.get("percent")
-        else:
-            bri = bri_obj
-        if bri is not None:
-            bri = int(bri)
-            if bri < 0:
-                bri = 0
-            elif bri > 100:
-                bri = 100
-            dev_state["brightness"] = bri
-            if bri == 0:
-                dev_state["state"] = False
-
-        _LOGGER.debug(f"[可调光灯] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}")
-
-    def _parse_status_zigbee_dimmable_light(self, dev_state: dict, raw_status: dict) -> None:
-        """解析0-10v调光灯 (deviceType 0, subDeviceType -2)
-        使用 value1/value2 格式：
-        - value1=0 为开, value1=1 为关（subDeviceType=-2 时反转）
-        - value2 为亮度 (0-255)
-        """
-        value1 = raw_status.get("value1")
-        value2 = raw_status.get("value2")
-
-        if value1 is not None:
-            value1 = int(value1)
-            sub_device_type = raw_status.get("subDeviceType", 0)
-            if isinstance(sub_device_type, str):
-                sub_device_type = int(sub_device_type)
-            if sub_device_type == -2:
-                dev_state["state"] = value1 == 0
-            else:
-                dev_state["state"] = value1 == 1
-
-        if value2 is not None:
-            value2 = int(value2)
-            if value2 < 0:
-                value2 = 0
-            elif value2 > 255:
-                value2 = 255
-            dev_state["brightness"] = value2
-            if value2 == 0:
-                dev_state["state"] = False
-
-        _LOGGER.debug(f"[0-10v调光灯] state={dev_state.get('state')}, brightness={dev_state.get('brightness')}%, raw_value2={value2}")
-
-    def _parse_status_temp_humidity_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析温湿度传感器状态 (deviceType 300, subType=491)
-        使用 properties.temperature.value / properties.humidity.value / properties.battery.power
-        """
-        props = raw_status.get("properties", {})
-
-        temp_obj = props.get("temperature", {})
-        if isinstance(temp_obj, dict):
-            temp = temp_obj.get("value")
-        else:
-            temp = temp_obj
-        if temp is not None:
-            try:
-                dev_state["temperature"] = float(temp)
-            except (TypeError, ValueError):
-                dev_state["temperature"] = temp
-
-        hum_obj = props.get("humidity", {})
-        if isinstance(hum_obj, dict):
-            hum = hum_obj.get("value")
-        else:
-            hum = hum_obj
-        if hum is not None:
-            try:
-                dev_state["humidity"] = float(hum)
-            except (TypeError, ValueError):
-                dev_state["humidity"] = hum
-
-        bat_obj = props.get("battery", {})
-        if isinstance(bat_obj, dict):
-            bat = bat_obj.get("power") or bat_obj.get("value")
-        else:
-            bat = bat_obj
-        if bat is not None:
-            try:
-                dev_state["battery"] = int(float(bat))
-            except (TypeError, ValueError):
-                dev_state["battery"] = bat
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[温湿度传感器] temp={dev_state.get('temperature')}, humidity={dev_state.get('humidity')}, battery={dev_state.get('battery')}")
-
-    def _parse_status_door_window_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析门窗传感器状态 (deviceType 46)
-        value1=0为开门, value1=1为关门; value3=1始终为1(传感器激活标志); value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["door_state"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["door_state"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[门窗传感器] door_state={'OPEN' if dev_state.get('door_state') else 'CLOSED'}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_motion_sensor(self, dev_state: dict, raw_status: dict, device_id: str = None) -> None:
-        """解析人体传感器状态 (deviceType 26)
-        value3=1为检测到人体, value3=0为无检测; value4为电量百分比
-        人体传感器只发送触发信号, 需要软件实现延时恢复(默认30秒)
-        """
-        value3 = raw_status.get("value3")
-        value4 = raw_status.get("value4")
-        # 优先使用外部传入的规范化 device_id（matched_device_id），兜底用 raw_status.deviceId
         reset_key = device_id or raw_status.get("deviceId", "")
+        if value3 is None or not reset_key:
+            return
+        try:
+            detected = int(value3) == 1
+        except (TypeError, ValueError):
+            return
+        if detected:
+            asyncio.create_task(self._schedule_motion_reset(reset_key))
+        else:
+            self._cancel_motion_reset(reset_key)
 
-        if value3 is not None:
-            try:
-                value3 = int(value3)
-                if value3 == 1:
-                    dev_state["motion_detected"] = True
-                    if reset_key:
-                        asyncio.create_task(self._schedule_motion_reset(reset_key))
-                else:
-                    dev_state["motion_detected"] = False
-                    if reset_key:
-                        self._cancel_motion_reset(reset_key)
-            except (TypeError, ValueError):
-                dev_state["motion_detected"] = False
+    def _apply_emergency_state_parser(
+        self, dev_state: dict, raw_status: dict, device_id: Optional[str]
+    ) -> None:
+        """Parse an emergency button, then own its reset-task lifecycle."""
 
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[人体传感器] motion_detected={dev_state.get('motion_detected')}, battery={dev_state.get('battery')}%")
+        self._apply_registered_state_parser(
+            DeviceCategory.EMERGENCY_BUTTON, dev_state, raw_status
+        )
+        value1 = raw_status.get("value1")
+        if value1 is None or not device_id:
+            return
+        try:
+            triggered = int(value1) == 1
+        except (TypeError, ValueError):
+            return
+        if triggered:
+            asyncio.create_task(self._schedule_emergency_reset(device_id))
+        else:
+            self._cancel_emergency_reset(device_id)
 
     async def _schedule_motion_reset(self, device_id: str) -> None:
         """安排人体传感器状态重置"""
@@ -466,331 +231,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if task and not task.done():
             task.cancel()
 
-    def _parse_status_smoke_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析烟雾传感器状态 (deviceType 27)
-        value1=1为检测到烟雾, value1=0为正常; value3=1始终为1(传感器激活标志); value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
+    def _apply_lock_transient_event(
+        self, device_id: str, dev_state: dict, raw_status: dict
+    ) -> None:
+        """Apply transient cmd=352 flags and schedule their reset."""
 
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["smoke_detected"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["smoke_detected"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[烟雾传感器] smoke_detected={dev_state.get('smoke_detected')}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_emergency_button(self, dev_state: dict, raw_status: dict, device_id: str = None) -> None:
-        """解析紧急按钮状态 (deviceType 56)
-        value1=1为按钮被按下, value1=0为正常; value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["emergency_state"] = value1 == 1
-                if value1 == 1 and device_id:
-                    asyncio.create_task(self._schedule_emergency_reset(device_id))
-                elif value1 == 0 and device_id:
-                    self._cancel_emergency_reset(device_id)
-            except (TypeError, ValueError):
-                dev_state["emergency_state"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        _LOGGER.debug(f"[紧急按钮] state={'TRIGGERED' if dev_state.get('state') else 'NORMAL'}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_water_leak_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析水浸探测器状态 (deviceType 54)
-        value1=1为检测到水浸, value1=0为正常; value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["water_leak_detected"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["water_leak_detected"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[水浸探测器] water_leak_detected={dev_state.get('water_leak_detected')}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_gas_sensor(self, dev_state: dict, raw_status: dict) -> None:
-        """解析可燃气体探测器状态 (deviceType 25)
-        value1=1为检测到气体, value1=0为正常; value4为电量百分比
-        """
-        value1 = raw_status.get("value1")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            try:
-                value1 = int(value1)
-                dev_state["gas_detected"] = value1 == 1
-            except (TypeError, ValueError):
-                dev_state["gas_detected"] = False
-
-        if value4 is not None:
-            try:
-                dev_state["battery"] = int(value4)
-            except (TypeError, ValueError):
-                dev_state["battery"] = value4
-
-        dev_state["state"] = True
-        _LOGGER.debug(f"[可燃气体探测器] gas_detected={dev_state.get('gas_detected')}, battery={dev_state.get('battery')}%")
-
-    def _parse_status_fan_coil_ac(self, dev_state: dict, raw_status: dict) -> None:
-        """解析风机盘管空调状态 (deviceType 36)
-        value1=0为开/1为关; value2模式(2除湿/3制冷/4制热/7送风); value3风速(1低/2中/3高); 
-        value4=32位整数(高16位=目标温度×100, 低16位=当前温度×100)
-        """
-        value1 = raw_status.get("value1")
-        value2 = raw_status.get("value2")
-        value3 = raw_status.get("value3")
-        value4 = raw_status.get("value4")
-
-        if value1 is not None:
-            value1 = int(value1)
-            dev_state["state"] = value1 == 0
-            dev_state["value1"] = value1
-
-        if value2 is not None:
-            value2 = int(value2)
-            ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
-            dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
-            dev_state["ac_mode_raw"] = value2
-            dev_state["value2"] = value2
-
-        if value3 is not None:
-            value3 = int(value3)
-            fan_speed_map = {1: "low", 2: "medium", 3: "high"}
-            dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
-            dev_state["fan_speed_raw"] = value3
-            dev_state["value3"] = value3
-
-        if value4 is not None:
-            value4 = int(value4)
-            dev_state["value4"] = value4
-            try:
-                target_temp = (value4 >> 16) / 100.0
-                current_temp = (value4 & 0xFFFF) / 100.0
-                dev_state["temperature"] = target_temp
-                dev_state["target_temperature"] = target_temp
-                dev_state["current_temperature"] = current_temp
-            except (TypeError, ValueError):
-                dev_state["temperature"] = 25
-
-        _LOGGER.debug(f"[空调] state={dev_state.get('state')}, mode={dev_state.get('ac_mode')}, fan_speed={dev_state.get('fan_speed')}, temperature={dev_state.get('temperature')}")
-    
-    def _parse_status_ventilation(self, dev_state: dict, raw_status: dict) -> None:
-        """解析新风系统状态 (deviceType 516, classId 1114)
-        properties.fanControl.fanMode: off/low/high -> 停/慢/快
-        properties.temperature.value: 温度
-        也支持 value1 格式: 0=慢, 50=停, 100=快
-        """
-        props = raw_status.get("properties", {})
-        value1 = raw_status.get("value1")
-
-        if value1 is not None:
-            value1 = int(value1)
-            # value1 映射: 0=慢, 50=停, 100=快
-            if value1 == 0:
-                dev_state["fan_speed"] = "慢"
-                dev_state["state"] = True
-            elif value1 == 50:
-                dev_state["fan_speed"] = "停"
-                dev_state["state"] = False
-            elif value1 == 100:
-                dev_state["fan_speed"] = "快"
-                dev_state["state"] = True
-            dev_state["value1"] = value1
-
-        fan_control = props.get("fanControl", {}) if isinstance(props, dict) else {}
-        if isinstance(fan_control, dict):
-            fan_mode = fan_control.get("fanMode")
-            if fan_mode:
-                fan_speed_map = {"off": "停", "low": "慢", "high": "快"}
-                dev_state["fan_speed"] = fan_speed_map.get(fan_mode, fan_mode)
-                dev_state["state"] = fan_mode != "off"
-
-        temp_obj = props.get("temperature", {}) if isinstance(props, dict) else {}
-        if isinstance(temp_obj, dict):
-            temp_val = temp_obj.get("value")
-            if temp_val is not None:
-                try:
-                    dev_state["temperature"] = float(temp_val)
-                except (TypeError, ValueError):
-                    pass
-
-        _LOGGER.debug(f"[新风系统] state={dev_state.get('state')}, fan_speed={dev_state.get('fan_speed')}, temperature={dev_state.get('temperature')}")
-    
-    def _parse_status_curtain(self, dev_state: dict, raw_status: dict) -> None:
-        """解析百分比窗帘状态 (deviceType 34)
-        核心控制参数: value1 (0-100) 开度
-        """
-        props = raw_status.get("properties", {})
-        
-        # 窗帘位置 (value1 或 properties.percent)
-        position = raw_status.get("value1")
-        if position is None:
-            position = props.get("percent")
-        if position is not None:
-            try:
-                position = int(position)
-            except (TypeError, ValueError):
-                _LOGGER.debug(f"[窗帘] 位置值异常: {position}, 跳过")
-                position = None
-        dev_state["position"] = position
-        
-        # 开关状态基于位置判断：100为全开，0为全关
-        if position is not None:
-            if position == 100:
-                dev_state["state"] = True
-            elif position == 0:
-                dev_state["state"] = False
-            else:
-                # 部分打开时，保持当前状态
-                dev_state["state"] = dev_state.get("state", False)
-        else:
-            dev_state["state"] = False
-        
-        _LOGGER.debug(f"[窗帘] state={dev_state['state']}, position={position}")
-    
-    def _parse_status_switch(self, dev_state: dict, raw_status: dict) -> None:
-        """解析开关状态 (deviceType 135, 136)
-        核心控制参数: 回路通道区分
-        """
-        props = raw_status.get("properties", {})
-        
-        # 开关状态（properties.onoff 或 value1）
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            value1 = raw_status.get("value1")
-            sub_device_type = raw_status.get("subDeviceType", 0)
-            if value1 is not None:
-                value1 = int(value1)
-                sub_device_type = int(sub_device_type)
-                # subDeviceType=-2 时反转
-                if sub_device_type == -2:
-                    dev_state["state"] = value1 == 0
-                else:
-                    dev_state["state"] = value1 == 1
-            else:
-                dev_state["state"] = False
-        
-        _LOGGER.debug(f"[开关] state={dev_state['state']}")
-    
-    def _parse_status_door_lock(self, dev_state: dict, raw_status: dict) -> None:
-        """解析智能门锁状态（type=522 / 属性型门锁）。
-
-        兼容两种形态：
-        - properties.doorLock.{lockState,doorState,insideLockState}
-        - properties.{door_status,reverse_lock,handle,clild_lock}
-        电池：batteryManager（干电池）/ batteryManager1（锂电池）。
-        """
-        from .lock_status import normalize_battery_properties, normalize_door_lock_properties
-
-        lock = normalize_door_lock_properties(raw_status.get("properties"))
-        # HA BinarySensorDeviceClass.LOCK 语义: is_on=True 表示"未锁/不安全"
-        # 欧瑞博 lockState="on" 表示"已锁"，所以 is_on = not locked
-        # 云端可能只推送部分字段（如仅 insideLockState），只更新出现的字段，
-        # 避免把未知字段重置为 False 导致实体误报。
-        if lock["locked"] is not None:
-            dev_state["locked"] = lock["locked"]
-            dev_state["lock_state"] = not lock["locked"]
-        if lock["door_open"] is not None:
-            dev_state["door_state"] = lock["door_open"]
-        if lock["inside_locked"] is not None:
-            dev_state["inside_lock_state"] = lock["inside_locked"]
-        if lock["child_locked"] is not None:
-            dev_state["child_lock_state"] = lock["child_locked"]
-        if lock["leave_home_armed"] is not None:
-            dev_state["leave_home_armed"] = lock["leave_home_armed"]
-
-        battery = normalize_battery_properties(raw_status.get("properties"))
-        for key in (
-            "dry_battery_level",
-            "dry_battery_setup",
-            "lithium_battery_level",
-            "lithium_battery_setup",
-        ):
-            if key in battery:
-                dev_state[key] = battery[key]
-
-        from .lock_status import derive_lock_status
-
-        dev_state["lock_status"] = derive_lock_status(
-            dev_state.get("locked"),
-            dev_state.get("door_state"),
-            dev_state.get("inside_lock_state"),
-        )
-        dev_state["state"] = dev_state.get("lock_state", False)
-        _LOGGER.debug(
-            "[智能门锁] locked=%s door=%s dry_battery=%s%% lithium=%s%%",
-            dev_state.get("locked"),
-            dev_state.get("door_state"),
-            dev_state.get("dry_battery_level"),
-            dev_state.get("lithium_battery_level"),
-        )
-
-    def _parse_doorbell_event(self, dev_state: dict, raw_status: dict) -> None:
-        """解析门铃和开锁事件 (cmd=352)
-        门铃事件格式: {"event":{"server":"doorbell","name":"ring","value":{"url":"..."}}}
-        开锁事件格式: {"event":{"server":"doorLock","name":"unlockEvent","value":{"type":"fingerprint","userId":1}}}
-        门铃接听: {"event":{"server":"doorbell","name":"answered","value":{"uid":"..."}}}
-        门铃挂断: {"event":{"server":"doorbell","name":"bye","value":{"uid":"..."}}}
-        """
-        event = raw_status.get("event", {})
-        server = event.get("server")
-        name = event.get("name")
-        value = event.get("value", {})
-        
-        if server == "doorbell" and name == "ring":
-            dev_state["doorbell_ring"] = True
-            dev_state["doorbell_url"] = value.get("url")
-            dev_state["doorbell_ip"] = value.get("doorbell_local_Ip")
-            _LOGGER.debug(f"[门铃事件] deviceId={raw_status.get('deviceId')}, url={value.get('url')}, ip={value.get('doorbell_local_Ip')}")
-            self._schedule_lock_reset(raw_status.get("deviceId", ""), "doorbell")
-        
-        elif server == "doorbell" and name == "answered":
-            dev_state["doorbell_answered"] = True
-            _LOGGER.debug(f"[门铃接听] deviceId={raw_status.get('deviceId')}, uid={value.get('uid')}")
-        
-        elif server == "doorbell" and name == "bye":
-            dev_state["doorbell_answered"] = False
-            _LOGGER.debug(f"[门铃挂断] deviceId={raw_status.get('deviceId')}")
-        
-        elif server == "doorLock" and name == "unlockEvent":
-            dev_state["unlock_event"] = True
-            dev_state["unlock_type"] = value.get("type")
-            dev_state["unlock_user_id"] = value.get("userId")
-            dev_state["unlock_time"] = raw_status.get("time")
-            _LOGGER.debug(f"[开锁事件] deviceId={raw_status.get('deviceId')}, type={value.get('type')}, userId={value.get('userId')}")
-            self._schedule_lock_reset(raw_status.get("deviceId", ""), "unlock")
+        update = self.lock_events.transient_update(raw_status)
+        update.patch.apply_to(dev_state)
+        if update.reset_kind:
+            self._schedule_lock_reset(device_id, update.reset_kind)
 
     def _schedule_lock_reset(self, device_id: str, kind: str) -> None:
         """安排门锁事件状态复位（默认5秒后恢复为未触发），同设备同类型只保留一个任务。"""
@@ -818,80 +267,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def _publish_lock_event(self, device_id: str, raw_status: dict) -> None:
         """把归一化后的门锁状态/事件发布到 HA 事件总线（日志脱敏）。"""
         from .const import LOCK_EVENT
-        from .lock_status import (
-            normalize_door_lock_properties,
-            normalize_lock_event,
-            resolve_opened_by,
-        )
 
-        lock = normalize_door_lock_properties(raw_status.get("properties"))
-        event = normalize_lock_event(raw_status)
-        if (
-            event is None
-            and lock["locked"] is None
-            and lock["door_open"] is None
-            and lock["inside_locked"] is None
-            and lock["child_locked"] is None
-            and lock["leave_home_armed"] is None
-        ):
+        data = self.lock_events.build_event(device_id, raw_status)
+        if data is None:
             return
-        # 相同事件/相同状态去重（云端可能重复推送同一事件）
-        if event is not None:
-            signature = (
-                event.get("kind"),
-                event.get("unlock_type"),
-                event.get("unlock_user_id"),
-                event.get("time"),
-            )
-        else:
-            signature = (
-                "state",
-                lock["locked"],
-                lock["door_open"],
-                lock["inside_locked"],
-                lock["child_locked"],
-                lock["leave_home_armed"],
-            )
-        if self._last_lock_events.get(device_id) == signature:
-            return
-        self._last_lock_events[device_id] = signature
-        data: Dict[str, Any] = {
-            "device_id": device_id,
-            "uid": raw_status.get("uid", ""),
-            "locked": lock["locked"],
-            "door_open": lock["door_open"],
-            "inside_locked": lock["inside_locked"],
-            "child_locked": lock["child_locked"],
-            "leave_home_armed": lock["leave_home_armed"],
-        }
-        if event is not None:
-            data.update(event)
-        # 记录最近一次开锁，供随后的开门事件归属"谁开的门"
-        if event is not None and event.get("kind") == "unlock":
-            self._last_unlock[device_id] = {
-                "user_id": event.get("unlock_user_id"),
-                "unlock_type": event.get("unlock_type"),
-                "at": time.monotonic(),
-            }
-            name = self.lock_user_name(device_id, event.get("unlock_user_id"))
-            if name:
-                data["unlock_user_name"] = name
-        # 开门事件归属：窗口内最近一次开锁的用户
-        if lock["door_open"] is True:
-            last = self._last_unlock.get(device_id)
-            opened = (
-                resolve_opened_by(last, time.monotonic() - last["at"], self.LOCK_DOOR_OPEN_WINDOW)
-                if last is not None
-                else None
-            )
-            if opened is not None:
-                data["opened_by_user_id"] = opened["user_id"]
-                data["opened_by_type"] = opened["unlock_type"]
-                name = self.lock_user_name(device_id, opened["user_id"])
-                if name:
-                    data["opened_by_name"] = name
-        if event is not None:
-            data.update(self._attach_media_urls(device_id, raw_status, event))
+        if data.get("kind"):
+            data.update(self.lock_media.attach_urls(device_id, raw_status, data))
         self.hass.bus.async_fire(LOCK_EVENT, data)
         _LOGGER.debug(
             "[门锁事件总线] device=%s locked=%s door=%s kind=%s",
@@ -901,203 +282,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             data.get("kind"),
         )
 
-    def _attach_media_urls(
-        self,
-        device_id: str,
-        raw_status: dict,
-        event: dict,
-    ) -> Dict[str, str]:
-        """把事件里的 COS 对象键签成临时 URL（media_url/pic_media_url/doorbell_media_url）。
-
-        使用已缓存的门锁 COS 凭证同步签名（零网络等待）；无有效凭证时
-        触发后台刷新（cmd=313，36 小时有效），本轮事件不阻塞。
-        """
-        cos = self.cos_media
-        if cos is None or not event:
-            return {}
-        uid = raw_status.get("uid") or event.get("uid") or ""
-        if not uid:
-            dev = self.devices.get(device_id) or {}
-            uid = dev.get("uid", "")
-        # time 字段可能为 None（而非缺失），统一兜底为当前时间戳
-        event_ts = event.get("time") or int(time.time())
-        snapshot_kind = event.get("snapshot_kind") or event.get("kind", "event")
-        out: Dict[str, str] = {}
-        for field, target in (
-            ("video_url", "media_url"),
-            ("pic_url", "pic_media_url"),
-            ("doorbell_url", "doorbell_media_url"),
-        ):
-            key = event.get(field)
-            if not key:
-                continue
-            url = cos.try_signed_url(device_id, uid, key)
-            if url:
-                out[target] = url
-            elif cos.cached_credentials(device_id) is None:
-                self.hass.async_create_task(cos.get_credentials(device_id, uid))
-            if field == "video_url":
-                self._schedule_video_archive(
-                    device_id,
-                    uid,
-                    key,
-                    url,
-                    out,
-                    snapshot_kind,
-                    event_ts,
-                )
-        snapshot_key = event.get("pic_url") or event.get("doorbell_url")
-        if snapshot_key:
-            self.hass.async_create_task(
-                self._update_lock_snapshot(
-                    device_id,
-                    uid,
-                    snapshot_key,
-                    snapshot_kind,
-                    event_ts,
-                )
-            )
-        return out
-
     def register_lock_camera(self, device_id: str, camera: Any) -> None:
-        """camera 平台实体注册（device_id → 实体），事件截图推送用。"""
-        self._lock_cameras[device_id] = camera
-        _LOGGER.debug("门锁截图实体已注册 device=%s", fingerprint(device_id, self._redaction_salt))
+        """Compatibility facade for the camera platform."""
 
-    async def _update_lock_snapshot(
-        self,
-        device_id: str,
-        device_uid: str,
-        object_key: str,
-        kind: str,
-        ts: int | str,
-    ) -> None:
-        """获取凭证 → 签名 URL → 下载截图 → 落盘历史 → 推送 camera 实体。"""
-        dedup_key = (device_id, object_key)
-        if dedup_key in self._snapshot_pending:
-            return  # 同一事件已有一个下载任务在跑（cmd352/cmd82 可能重复触发）
-        self._snapshot_pending.add(dedup_key)
-        camera = self._lock_cameras.get(device_id)
-        if camera is None:
-            _LOGGER.debug(
-                "门锁截图实体未注册，跳过截图更新 device=%s",
-                fingerprint(device_id, self._redaction_salt),
-            )
-            self._snapshot_pending.discard(dedup_key)
-            return
-        cos = self.cos_media
-        if cos is None:
-            self._snapshot_pending.discard(dedup_key)
-            return
-        try:
-            url = await cos.signed_url(device_id, device_uid, object_key)
-            if not url:
-                _LOGGER.warning("门锁截图签名 URL 获取失败 device=%s", fingerprint(device_id, self._redaction_salt))
-                return
-            image: Optional[bytes] = None
-            # 门铃图片上传可能在事件推送后数十秒才完成：先等 8 秒再首试，
-            # 失败间隔 10/20/25 秒重试（总窗口 ~63s），给足上传时间
-            retry_delays = (8, 10, 20, 25)
-            for attempt, delay in enumerate(retry_delays):
-                if delay:
-                    await asyncio.sleep(delay)
-                image = await self.hass.async_add_executor_job(_download_bytes, url)
-                if image:
-                    break
-                _LOGGER.debug(
-                    "截图下载重试 %s/%s device=%s",
-                    attempt + 1,
-                    len(retry_delays),
-                    fingerprint(device_id, self._redaction_salt),
-                )
-        except Exception:  # noqa: BLE001 - 截图失败不应影响事件流
-            _LOGGER.exception("门锁截图更新异常 device=%s", fingerprint(device_id, self._redaction_salt))
-            return
-        finally:
-            self._snapshot_pending.discard(dedup_key)
-        if image:
-            try:
-                await self.hass.async_add_executor_job(
-                    lambda: save_snapshot(
-                        history_dir(self.hass.config.path("media"), device_id),
-                        kind,
-                        ts,
-                        image,
-                    )
-                )
-            except OSError as e:
-                _LOGGER.warning("截图落盘失败: %s", e)
-            await camera.async_set_image(image)
-            _LOGGER.info(
-                "门锁截图已更新并归档 device=%s kind=%s bytes=%s",
-                fingerprint(device_id, self._redaction_salt),
-                kind,
-                len(image),
-            )
-        else:
-            _LOGGER.warning(
-                "门锁截图下载为空 device=%s key=%s",
-                fingerprint(device_id, self._redaction_salt),
-                object_key,
-            )
-
-    def _schedule_video_archive(
-        self,
-        device_id: str,
-        device_uid: str,
-        object_key: str,
-        signed_url: Optional[str],
-        out: Dict[str, str],
-        kind: str,
-        ts: int | str,
-    ) -> None:
-        """后台下载事件录像并转 MP4；事件附带预期本地路径与媒体 ID。"""
-        archiver = self.video_archiver
-        if archiver is None:
-            return
-        _h264, mp4_path = archiver.event_paths(device_id, kind, ts)
-        if mp4_path.exists() and mp4_path.stat().st_size > 0:
-            out["video_file"] = str(mp4_path)
-            out["media_id"] = archiver.media_source_id(mp4_path)
-            return
-        # 预期目标（后台填充完成后即为可播放 MP4）
-        out["video_file"] = str(mp4_path)
-        if signed_url:
-            self.hass.async_create_task(
-                self._archive_video(device_id, kind, ts, signed_url)
-            )
-
-    async def _archive_video(
-        self,
-        device_id: str,
-        kind: str,
-        ts: int | str,
-        signed_url: str,
-    ) -> None:
-        """下载 + 转码（executor 中执行，避免阻塞事件循环）。"""
-        archiver = self.video_archiver
-        if archiver is None:
-            return
-        try:
-            result = await self.hass.async_add_executor_job(
-                archiver.archive_event, device_id, kind, ts, signed_url
-            )
-        except Exception as e:  # noqa: BLE001 - 归档失败不应影响事件流
-            _LOGGER.warning(
-                "录像归档失败 device=%s kind=%s: %s",
-                fingerprint(device_id, self._redaction_salt),
-                kind,
-                e,
-            )
-            return
-        if result and result.get("mp4_file") and Path(result["mp4_file"]).exists():
-            _LOGGER.info(
-                "录像已归档 device=%s -> %s",
-                fingerprint(device_id, self._redaction_salt),
-                result["mp4_file"],
-            )
-        else:
-            _LOGGER.debug("录像下载/转码未完成（无 ffmpeg 或下载失败）")
+        self.lock_media.register_camera(device_id, camera)
 
     async def async_fetch_video(
         self,
@@ -1105,70 +293,24 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         object_key: str,
         device_uid: str = "",
     ) -> Dict[str, Any]:
-        """主动拉取事件录像：返回 {video_file, media_id, mp4_file, h264_file}。
+        """Compatibility facade for the fetch-video service."""
 
-        供 orvibohomebridge.fetch_video 服务调用；凭证缺失时自动换取。
-        """
-        archiver = self.video_archiver
-        cos = self.cos_media
-        if archiver is None or cos is None:
-            return {"error": "录像归档未就绪"}
-        if not device_uid:
-            dev = self.devices.get(device_id) or {}
-            device_uid = dev.get("uid", "")
-        url = await cos.signed_url(device_id, device_uid, object_key)
-        if not url:
-            return {"error": "无法获取 COS 凭证或签名 URL"}
-        result = await self.hass.async_add_executor_job(
-            archiver.archive, device_id, object_key, url
+        return await self.lock_media.fetch_video(
+            device_id, object_key, device_uid
         )
-        return result or {"error": "录像下载失败"}
 
     async def async_list_events(
         self,
         device_id: str = "",
         limit: int = 100,
     ) -> list[dict[str, str]]:
-        """查询门锁事件历史（截图/录像），按时间倒序。"""
-        from .history import list_history
-
-        return await self.hass.async_add_executor_job(
-            list_history,
-            self.hass.config.path("media"),
-            device_id or None,
-            limit,
-        )
+        return await self.lock_media.list_events(device_id, limit)
 
     def start_history_cleanup(self) -> None:
-        """启动历史清理：立即清理一次 + 每周定时清理（保留 7 天）。"""
-        if self._history_cleanup_unsub is not None:
-            return
-        from homeassistant.helpers.event import async_track_time_interval
-        from .history import cleanup
-
-        media_root = self.hass.config.path("media")
-
-        async def _run(_now=None) -> None:
-            try:
-                removed = await self.hass.async_add_executor_job(
-                    cleanup, media_root, self.HISTORY_KEEP_DAYS
-                )
-                if removed:
-                    _LOGGER.info("历史清理完成，删除 %s 个过期文件", removed)
-            except Exception:  # noqa: BLE001 - 清理失败不应影响集成
-                _LOGGER.warning("历史清理异常", exc_info=True)
-
-        # 启动时清一次（处理升级前积压），随后每周执行
-        self.hass.async_create_task(_run())
-        self._history_cleanup_unsub = async_track_time_interval(
-            self.hass, _run, timedelta(days=7)
-        )
+        self.lock_media.start_cleanup()
 
     def stop_history_cleanup(self) -> None:
-        """取消历史清理定时任务（集成卸载时调用）。"""
-        if self._history_cleanup_unsub is not None:
-            self._history_cleanup_unsub()
-            self._history_cleanup_unsub = None
+        self.lock_media.stop_cleanup()
 
     async def async_cleanup_history(
         self,
@@ -1176,15 +318,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         device_id: str = "",
         max_entries: Optional[int] = None,
     ) -> int:
-        """手动清理历史记录，返回删除文件数。"""
-        from .history import cleanup
-
-        return await self.hass.async_add_executor_job(
-            cleanup,
-            self.hass.config.path("media"),
-            keep_days,
-            device_id or None,
-            max_entries,
+        return await self.lock_media.cleanup_history(
+            keep_days, device_id, max_entries
         )
 
     async def async_grant_temp_password(
@@ -1199,65 +334,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         end_time: Optional[int] = None,
         device_uid: str = "",
     ) -> Dict[str, Any]:
-        """下发临时密码（cmd=246），记录并发布事件。
-
-        返回 {error} 或归一化记录（含 password/authorized_id/有效期等）。
-        """
-        from .const import TEMP_PASSWORD_EVENT
-
-        sslc = self.ssl_client
-        if sslc is None:
-            return {"error": "SSL 客户端未就绪"}
-        # 先同步服务器端授权状态（App 删除/过期后 readtable 会反映），
-        # 避免本地内存累积导致误判上限
-        server_records = await self.async_fetch_server_temp_passwords()
-        device_active = [
-            r for r in server_records if r.get("device_id") == device_id
-        ]
-        if len(device_active) >= self.TEMP_PASSWORD_MAX:
-            return {"error": f"临时密码已达上限（{self.TEMP_PASSWORD_MAX} 个），请先删除旧密码"}
-        records = self._temp_passwords.setdefault(device_id, [])
-        if not device_uid:
-            dev = self.devices.get(device_id) or {}
-            device_uid = dev.get("uid", "")
-        name = name or f"临时用户 {time.strftime('%m%d%H%M')}"
-        resp = await sslc.send_temp_password(
-            device_id=device_id,
-            device_uid=device_uid,
-            name=name,
-            auth_type=auth_type,
-            minutes=minutes,
-            number=number,
-            phone=phone,
-            start_time=start_time,
-            end_time=end_time,
+        """下发临时密码并返回归一化结果。"""
+        return await self.temp_passwords.grant(
+            device_id,
+            auth_type,
+            minutes,
+            number,
+            name,
+            phone,
+            start_time,
+            end_time,
+            device_uid,
         )
-        if not resp:
-            return {"error": "未收到 cmd=246 响应（超时）"}
-        if resp.get("status") not in (None, 0, "0"):
-            return {"error": f"下发失败 status={resp.get('status')} msg={resp.get('msg')}"}
-        record = parse_grant_response(resp)
-        if record is None:
-            return {"error": "响应缺少密码或 authorizedId"}
-        record["device_id"] = device_id
-        records.append(record)
-        # 只保留最近 10 条历史
-        if len(records) > 10:
-            self._temp_passwords[device_id] = records[-10:]
-        info = describe_record(record)
-        self.hass.bus.async_fire(
-            TEMP_PASSWORD_EVENT,
-            {"device_id": device_id, **info},
-        )
-        # 触发实体刷新（临时密码传感器重新读取）
-        self.device_states.setdefault(device_id, {})["temp_password_ts"] = time.time()
-        self.async_set_updated_data(self.device_states)
-        _LOGGER.info(
-            "临时密码已下发 device=%s authorizedId=%s",
-            fingerprint(device_id, self._redaction_salt),
-            record["authorized_id"],
-        )
-        return info
 
     async def async_revoke_temp_password(
         self,
@@ -1266,138 +354,29 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         device_uid: str = "",
     ) -> Dict[str, Any]:
         """删除临时密码（cmd=247）。"""
-        sslc = self.ssl_client
-        if sslc is None:
-            return {"error": "SSL 客户端未就绪"}
-        if not device_uid:
-            dev = self.devices.get(device_id) or {}
-            device_uid = dev.get("uid", "")
-        resp = await sslc.delete_authorization(
-            device_id=device_id,
-            device_uid=device_uid,
-            authorized_id=authorized_id,
+        return await self.temp_passwords.revoke(
+            device_id, authorized_id, device_uid
         )
-        if not resp:
-            return {"error": "未收到 cmd=247 响应（超时）"}
-        if resp.get("status") not in (None, 0, "0"):
-            return {"error": f"删除失败 status={resp.get('status')}"}
-        records = self._temp_passwords.get(device_id, [])
-        self._temp_passwords[device_id] = [
-            r for r in records if int(r.get("authorized_id", -1)) != int(authorized_id)
-        ]
-        self.device_states.setdefault(device_id, {})["temp_password_ts"] = time.time()
-        self.async_set_updated_data(self.device_states)
-        _LOGGER.info(
-            "临时密码已删除 device=%s authorizedId=%s",
-            fingerprint(device_id, self._redaction_salt),
-            authorized_id,
-        )
-        return {"ok": True, "authorized_id": authorized_id}
 
     async def async_list_temp_passwords(self, device_id: str = "") -> Dict[str, Any]:
         """列出服务器端全部临时密码（readtable authorizedUnlock，含过期状态）。"""
-        records = await self.async_fetch_server_temp_passwords()
-        if device_id:
-            records = [r for r in records if r.get("device_id") == device_id]
-        result: Dict[str, Any] = {}
-        for r in records:
-            did = r.get("device_id") or "unknown"
-            result.setdefault(did, []).append(describe_record(r))
-        return result
+        return await self.temp_passwords.list(device_id)
 
     async def async_fetch_server_temp_passwords(self) -> list[dict]:
         """从 readtable（REST 全量同步）拉取 authorizedUnlock 表。"""
-        client = self.https_client
-        if client is None or not client.is_logged_in:
-            _LOGGER.warning(
-                "拉取临时密码列表跳过: client=%s logged_in=%s",
-                client is not None,
-                client.is_logged_in if client else None,
-            )
-            return []
-        try:
-            data = await client._readtable(device_flag=0)
-        except Exception as e:  # noqa: BLE001 - 列表失败不影响其他功能
-            _LOGGER.warning("拉取临时密码列表失败: %s", e)
-            return []
-        if not isinstance(data, dict):
-            _LOGGER.warning("拉取临时密码列表: readtable 返回非 dict: %s", type(data))
-            return []
-        auth = data.get("authorizedUnlock")
-        _LOGGER.info(
-            "拉取临时密码列表: readtable keys=%s authorizedUnlock=%s",
-            list(data.keys())[:12],
-            f"list[{len(auth)}]" if isinstance(auth, list) else type(auth).__name__,
-        )
-        records = []
-        for item in auth or []:
-            rec = parse_authorization_item(item)
-            if rec is None:
-                continue
-            rec["device_id"] = item.get("deviceId") or ""
-            records.append(rec)
-        # 同步内存记录（供传感器展示，保留下发时的 name）
-        mem = self._temp_passwords
-        self._temp_passwords = {}
-        for rec in records:
-            did = rec["device_id"]
-            self._temp_passwords.setdefault(did, [])
-            existing = next(
-                (
-                    m
-                    for m in mem.get(did, [])
-                    if int(m.get("authorized_id", -1)) == rec["authorized_id"]
-                ),
-                None,
-            )
-            merged = dict(rec)
-            if existing:
-                merged["name"] = existing.get("name") or ""
-                merged["type"] = existing.get("type") or 0
-            self._temp_passwords[did].append(merged)
-        return records
+        return await self.temp_passwords.fetch_server_records()
 
     def temp_password_state(self, device_id: str) -> Optional[dict]:
         """给传感器用：返回最近一条有效临时密码的展示信息。"""
-        records = self._temp_passwords.get(device_id, [])
-        active = [r for r in records if not is_expired(r)]
-        if not active:
-            return None
-        latest = active[-1]
-        return describe_record(latest)
+        return self.temp_passwords.state(device_id)
 
     def start_temp_password_cleanup(self) -> None:
         """启动临时密码自动回收：每 6 小时清理过期/次数用尽的密码。"""
-        if self._temp_cleanup_unsub is not None:
-            return
-        from homeassistant.helpers.event import async_track_time_interval
-
-        async def _run(_now=None) -> None:
-            for device_id, records in list(self._temp_passwords.items()):
-                for record in list(records):
-                    if not is_expired(record):
-                        continue
-                    try:
-                        await self.async_revoke_temp_password(
-                            device_id, int(record["authorized_id"])
-                        )
-                    except Exception:  # noqa: BLE001 - 回收失败下次再试
-                        _LOGGER.warning(
-                            "临时密码自动回收失败 device=%s authorizedId=%s",
-                            fingerprint(device_id, self._redaction_salt),
-                            record.get("authorized_id"),
-                        )
-
-        self.hass.async_create_task(_run())
-        self._temp_cleanup_unsub = async_track_time_interval(
-            self.hass, _run, timedelta(hours=6)
-        )
+        self.temp_passwords.start_cleanup()
 
     def stop_temp_password_cleanup(self) -> None:
         """取消临时密码回收定时任务（集成卸载时调用）。"""
-        if self._temp_cleanup_unsub is not None:
-            self._temp_cleanup_unsub()
-            self._temp_cleanup_unsub = None
+        self.temp_passwords.stop_cleanup()
 
     def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:
         """返回门锁 userId 配置的显示名称（无配置返回 None）。"""
@@ -1427,14 +406,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def _publish_lock_message(self, device_id: str, raw_status: dict) -> None:
         """发布 cmd=82 推送消息事件（门锁文本消息/告警，日志脱敏）。"""
         from .const import LOCK_EVENT
-        from .lock_status import normalize_message_event
 
-        event = normalize_message_event(raw_status)
+        event = self.lock_events.build_message(device_id, raw_status)
         if event is None:
             return
-        event["device_id"] = device_id or event.get("device_id")
-        event["snapshot_kind"] = self._message_snapshot_kind(event.get("text") or "")
-        event.update(self._attach_media_urls(device_id, raw_status, event))
+        event.update(self.lock_media.attach_urls(device_id, raw_status, event))
         self.hass.bus.async_fire(LOCK_EVENT, event)
         _LOGGER.debug(
             "[门锁消息] device=%s kind=%s is_alarm=%s text=%s",
@@ -1444,80 +420,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             event.get("text"),
         )
 
-    @staticmethod
-    def _message_snapshot_kind(text: str) -> str:
-        """按消息文本区分截图归档前缀（逗留/来访，便于卡片分组展示）。"""
-        if "逗留" in text:
-            return "loiter"
-        if "来访" in text or "访客" in text:
-            return "visit"
-        return "message"
-
-    def _parse_status_generic(self, dev_state: dict, raw_status: dict) -> None:
-        """通用状态解析（未知设备类型）"""
-        props = raw_status.get("properties", {})
-        
-        # 尝试提取常见字段
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            dev_state["state"] = raw_status.get("state", False)
-        
-        dev_state["brightness"] = raw_status.get("value2", props.get("brightness"))
-        dev_state["color_temp"] = raw_status.get("value3", props.get("colortemp"))
-        dev_state["position"] = raw_status.get("value1", props.get("percent"))
-        
-        _LOGGER.debug(f"[通用设备] state={dev_state['state']}")
-
-    def _parse_clothes_horse_state(self, dev_state: dict, raw_status: dict) -> None:
-        """解析晾衣架 cmd=99 状态推送。"""
-        dev_state["motor_state"] = raw_status.get("motor_state", "stop")
-        dev_state["position"] = raw_status.get("motor_position", 0)
-        dev_state["lighting_state"] = raw_status.get("lighting_state", "off") == "on"
-        dev_state["heat_drying_state"] = raw_status.get("heat_drying_state", "off") == "on"
-        dev_state["wind_drying_state"] = raw_status.get("wind_drying_state", "off") == "on"
-        dev_state["sterilizing_state"] = raw_status.get("sterilizing_state", "off") == "on"
-        dev_state["main_switch_state"] = raw_status.get("main_switch_state", "off") == "on"
-        # state 字段用主开关状态兜底（兼容通用实体）
-        dev_state["state"] = dev_state["main_switch_state"]
-        _LOGGER.info(
-            f"[晾衣架] motor={dev_state['motor_state']}, pos={dev_state['position']}, "
-            f"lighting={dev_state['lighting_state']}, heat={dev_state['heat_drying_state']}, "
-            f"wind={dev_state['wind_drying_state']}, steril={dev_state['sterilizing_state']}, "
-            f"main={dev_state['main_switch_state']}"
-        )
-
     async def _discover_devices(self):
         """拉取并解析设备列表：readtable → getDeviceDesc → queryHomepageData 三层回退"""
-        device_status_data = await self.https_client.fetch_device_status()
-        if not device_status_data:
-            return None, []
-
-        devices = self.https_client.parse_device_status_list(device_status_data)
-        if not devices:
-            _LOGGER.warning("readtable 未解析到设备，回退到 getDeviceDesc 构建设备列表...")
-            desc_data = await self.https_client.fetch_device_desc(last_update_time=0)
-            if desc_data:
-                desc_devices = desc_data.get("deviceDescList", desc_data.get("devices", []))
-                if isinstance(desc_devices, list) and desc_devices:
-                    devices = self.https_client.parse_device_status_list(
-                        {"device": desc_devices, "deviceStatus": {}}
-                    )
-                    _LOGGER.info(f"getDeviceDesc 回退解析到 {len(devices)} 个设备")
-
-        if not devices:
-            _LOGGER.warning("getDeviceDesc 未构建到设备，回退到 queryHomepageData...")
-            homepage_data = await self.https_client.fetch_homepage_data()
-            if isinstance(homepage_data, dict):
-                homepage_devices = homepage_data.get("deviceList", homepage_data.get("device", [])) or []
-                if isinstance(homepage_devices, list) and homepage_devices:
-                    devices = self.https_client.parse_device_status_list(
-                        {"device": homepage_devices, "deviceStatus": {}}
-                    )
-                    _LOGGER.info(f"queryHomepageData 回退解析到 {len(devices)} 个设备")
-
-        return device_status_data, devices
+        return await self.inventory.discover()
 
     async def _async_setup(self):
         try:
@@ -1525,87 +430,38 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 self.https_client.family_id = self.family_id
                 self.https_client.family_name = None
 
-            if not await self.https_client.ensure_login():
+            if not await self.https_client.async_detect_cloud(self.family_id):
                 raise ConfigEntryAuthFailed("HTTPS登录失败")
 
             _LOGGER.debug("第一步：拉取设备列表（三层回退）...")
             device_status_data, devices = await self._discover_devices()
 
-            if not devices and get_api_host() == HTTPS_HOST:
-                _LOGGER.warning(f"中国区云端未发现任何设备，尝试国际区服务器 {HTTPS_HOST_GLOBAL} ...")
-                await self.https_client.switch_host(HTTPS_HOST_GLOBAL)
+            if not devices:
+                fallback_cloud = cloud_candidates(self.https_client.cloud)[1]
+                _LOGGER.warning(
+                    "%s 云端未发现设备，尝试 %s 云端 ...",
+                    self.https_client.cloud.region.value,
+                    fallback_cloud.region.value,
+                )
+                await self.https_client.switch_cloud(
+                    fallback_cloud,
+                    family_id=self.family_id or None,
+                )
                 if await self.https_client.ensure_login():
                     device_status_data, devices = await self._discover_devices()
                     if devices:
-                        _LOGGER.warning(f"国际区服务器发现 {len(devices)} 个设备，本实例将使用国际区云端")
+                        _LOGGER.warning(
+                            "%s 云端发现 %s 个设备，本实例将使用该区域",
+                            fallback_cloud.region.value,
+                            len(devices),
+                        )
                 else:
-                    _LOGGER.error("国际区服务器登录失败")
+                    _LOGGER.error("%s 云端登录失败", fallback_cloud.region.value)
 
             if device_status_data is None and not devices:
                 raise UpdateFailed("获取设备列表失败")
 
-            for device in devices:
-                device_id = device["device_id"]
-                device_name = device.get("device_name", "")
-                device_type_raw = device.get("device_type_raw", "")
-
-                # 过滤隐藏类别设备（MIXPAD_GATEWAY/MIX_SWITCH/BACH_SWITCH/WIFI_CAMERA/SMART_REMOTE/MIXPAD_4WAY_BASE）
-                category = classify_device(device)
-                _LOGGER.info(f"设备分类: deviceId={device_id}, name={device_name}, deviceType={device_type_raw}, category={category.name}")
-                if is_hidden_category(category):
-                    _LOGGER.debug(f"[过滤] 跳过隐藏类别设备: {device_id} category={category.name}")
-                    continue
-
-                self.devices[device_id] = device
-                online_status = device.get("online", False)
-                if isinstance(online_status, str):
-                    online_status = online_status.strip().lower() in ("online", "1", "true", "yes")
-
-                self.device_states[device_id] = {
-                    "state": device.get("state", False),
-                    "online": bool(online_status),
-                    "position": device.get("position", 0),
-                    "brightness": device.get("brightness"),
-                    "color_temp": device.get("color_temp"),
-                    "uid": device.get("uid", ""),
-                    "status_id": device.get("status_id", ""),
-                    "gateway_id": device.get("gateway_id", ""),
-                    "ext_addr": device.get("ext_addr"),
-                    "properties": {}  # 新增properties容器兼容mqtt cmd=42
-                }
-
-                # 门锁电池不随 cmd=42 常推（仅变化/上线时），初始化时
-                # 从 readtable 设备属性补齐，后续推送增量更新
-                if category == DeviceCategory.DOOR_LOCK:
-                    from .lock_status import normalize_battery_properties as _norm_bat
-
-                    battery = _norm_bat(device.get("properties") or {})
-                    for bkey in (
-                        "dry_battery_level",
-                        "dry_battery_setup",
-                        "lithium_battery_level",
-                        "lithium_battery_setup",
-                    ):
-                        if bkey in battery:
-                            self.device_states[device_id][bkey] = battery[bkey]
-
-                # 晾衣架设备初始化专属字段（真实值由 cmd=100 查询后 cmd=99 推送回填）
-                if category == DeviceCategory.CLOTHES_HORSE:
-                    self.device_states[device_id].update({
-                        "motor_state": "stop",
-                        "lighting_state": False,
-                        "heat_drying_state": False,
-                        "wind_drying_state": False,
-                        "sterilizing_state": False,
-                        "main_switch_state": False,
-                    })
-
-                # 新风系统设备初始化专属字段
-                if category == DeviceCategory.VENTILATION_SYSTEM:
-                    self.device_states[device_id].update({
-                        "fan_speed": device.get("fan_speed", "停"),
-                        "temperature": device.get("temperature"),
-                    })
+            self.inventory.initialize(devices)
 
             _LOGGER.info(f"设备列表拉取完成，共 {len(self.devices)} 个设备")
 
@@ -1634,23 +490,25 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 category = classify_device(dev)
                 
                 if category == DeviceCategory.TEMP_HUMIDITY_SENSOR:
-                    self._parse_status_temp_humidity_sensor(state, {"properties": state.get("properties", {}), "value3": state.get("value3"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"properties": state.get("properties", {}), "value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.DOOR_WINDOW_SENSOR:
-                    self._parse_status_door_window_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.MOTION_SENSOR:
-                    self._parse_status_motion_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")}, device_id)
+                    self._apply_motion_state_parser(state, {"value3": state.get("value3"), "value4": state.get("value4")}, device_id)
                 elif category == DeviceCategory.SMOKE_SENSOR:
-                    self._parse_status_smoke_sensor(state, {"value3": state.get("value3"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value3": state.get("value3"), "value4": state.get("value4")})
                 elif category == DeviceCategory.EMERGENCY_BUTTON:
-                    self._parse_status_emergency_button(state, {"value1": state.get("value1"), "value4": state.get("value4")}, device_id)
+                    self._apply_emergency_state_parser(state, {"value1": state.get("value1"), "value4": state.get("value4")}, device_id)
                 elif category == DeviceCategory.WATER_LEAK_SENSOR:
-                    self._parse_status_water_leak_sensor(state, {"value1": state.get("value1"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value1": state.get("value1"), "value4": state.get("value4")})
                 elif category == DeviceCategory.GAS_SENSOR:
-                    self._parse_status_gas_sensor(state, {"value1": state.get("value1"), "value4": state.get("value4")})
+                    self._apply_registered_state_parser(category, state, {"value1": state.get("value1"), "value4": state.get("value4")})
                 elif category == DeviceCategory.DOOR_LOCK:
-                    self._parse_status_door_lock(state, {"properties": state.get("properties", {})})
+                    self._apply_registered_state_parser(
+                        category, state, {"properties": state.get("properties", {})}
+                    )
                 elif category == DeviceCategory.VENTILATION_SYSTEM:
-                    self._parse_status_ventilation(state, {"properties": state.get("properties", {}), "value1": state.get("value1")})
+                    self._apply_registered_state_parser(category, state, {"properties": state.get("properties", {}), "value1": state.get("value1")})
                 
                 _LOGGER.debug(
                     f"  设备: name={dev.get('device_name')}, device_id={device_id}, "
@@ -1670,43 +528,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             device_status_data = await self.https_client.fetch_device_status()
             if device_status_data:
                 devices = self.https_client.parse_device_status_list(device_status_data)
-                for device in devices:
-                    device_id = device["device_id"]
-
-                    # 过滤隐藏类别设备
-                    category = classify_device(device)
-                    if is_hidden_category(category):
-                        # 已存在的隐藏设备从字典中移除
-                        self.devices.pop(device_id, None)
-                        self.device_states.pop(device_id, None)
-                        continue
-
-                    self.devices[device_id] = device
-                    if device_id not in self.device_states:
-                        self.device_states[device_id] = {
-                            "state": device.get("state", False),
-                            "online": device.get("online", False),
-                            "position": device.get("position", 0),
-                            "brightness": device.get("brightness"),
-                            "color_temp": device.get("color_temp"),
-                            "properties": {}
-                        }
-                    status = device.get("status", {})
-                    if status:
-                        self.device_states[device_id].update(status)
-                    # 电池低频推送：定期刷新时从 readtable 设备属性同步
-                    if category == DeviceCategory.DOOR_LOCK:
-                        from .lock_status import normalize_battery_properties as _nb
-
-                        battery = _nb(device.get("properties") or {})
-                        for bkey in (
-                            "dry_battery_level",
-                            "dry_battery_setup",
-                            "lithium_battery_level",
-                            "lithium_battery_setup",
-                        ):
-                            if bkey in battery:
-                                self.device_states[device_id][bkey] = battery[bkey]
+                self.inventory.merge_cloud(devices)
             return self.device_states
         except Exception as e:
             raise UpdateFailed(f"更新失败: {str(e)}") from e
@@ -1723,190 +545,26 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.debug("设置session_id: %s", session_id)
             self.https_client.set_session_id(session_id)
 
-        def on_status_update(device_id: str, raw_status: dict):
-            """处理MQTT状态推送，根据设备类型调用对应的解析方法"""
-            _LOGGER.debug(
-                "收到MQTT状态更新: deviceId=%s cmd=%s",
-                fingerprint(device_id, self._redaction_salt),
-                raw_status.get("cmd"),
-            )
-
-            # 记录原始推送到内存（最多200条，仅诊断页脱敏展示，绝不写入日志）
-            self._cmd42_log.append({
-                "ts": __import__("time").time(),
-                "device_id": device_id,
-                "raw": dict(raw_status),
-            })
-            if len(self._cmd42_log) > 200:
-                self._cmd42_log = self._cmd42_log[-200:]
-            
-            # 多重匹配逻辑
-            matched_device_id = None
-            uid = raw_status.get("uid", "")
-
-            if device_id in self.device_states:
-                matched_device_id = device_id
-            elif uid and uid != device_id:
-                for stored_id, dev_info in self.device_states.items():
-                    if dev_info.get("uid") == uid:
-                        matched_device_id = stored_id
-                        break
-            else:
-                for stored_id, dev_info in self.device_states.items():
-                    if dev_info.get("uid") == device_id or dev_info.get("status_id") == device_id or dev_info.get("ext_addr") == device_id:
-                        matched_device_id = stored_id
-                        break
-                    if stored_id.startswith("w-") and stored_id[2:] == device_id:
-                        matched_device_id = stored_id
-                        break
-
-            if not matched_device_id:
-                _LOGGER.debug(f"MQTT推送设备 {device_id} 未匹配本地设备")
-                return
-
-            dev_state = self.device_states[matched_device_id]
-            dev_state["properties"] = raw_status.get("properties", {})
-            dev_state["online"] = True
-            self._last_update_time[matched_device_id] = __import__("time").time()
-
-            # 获取设备信息，根据 deviceType / category 调用对应的解析方法
-            device_info = self.devices.get(matched_device_id)
-            device_type = device_info.get("device_type_raw", 0) if device_info else 0
-            sub_type = device_info.get("sub_device_type") if device_info else None
-            category = classify_device(device_info) if device_info else DeviceCategory.UNKNOWN
-
-            _LOGGER.debug(f"[设备类型] deviceType={device_type}, category={category.name}, deviceId={matched_device_id}")
-
-            # cmd=82 推送消息（门锁文本消息/告警）：只发事件，不改设备状态属性
-            if raw_status.get("cmd") == 82:
-                self._publish_lock_message(matched_device_id, raw_status)
-                return
-
-            # 晾衣架专用协议（cmd=99 推送，带 is_clothes_horse 标志）
-            if raw_status.get("is_clothes_horse"):
-                self._parse_clothes_horse_state(dev_state, raw_status)
-            elif raw_status.get("cmd") == 352:
-                self._parse_doorbell_event(dev_state, raw_status)
-            elif device_type == 38:
-                if sub_type == 6:
-                    self._parse_status_fast_move_dim_color_light(dev_state, raw_status)
-                else:
-                    self._parse_status_light_colortemp(dev_state, raw_status)
-            elif device_type == 502:
-                self._parse_status_dimmable_light(dev_state, raw_status)
-            elif device_type == 0 and sub_type == -2:
-                self._parse_status_zigbee_dimmable_light(dev_state, raw_status)
-            elif device_type == 503:
-                self._parse_status_cct_light_strip(dev_state, raw_status)
-            elif device_type == 300 and sub_type == 491:
-                self._parse_status_temp_humidity_sensor(dev_state, raw_status)
-            elif device_type == 46:
-                self._parse_status_door_window_sensor(dev_state, raw_status)
-            elif device_type == 26:
-                self._parse_status_motion_sensor(dev_state, raw_status, matched_device_id)
-            elif device_type == 27:
-                self._parse_status_smoke_sensor(dev_state, raw_status)
-            elif device_type == 56:
-                self._parse_status_emergency_button(dev_state, raw_status, matched_device_id)
-            elif device_type == 54:
-                self._parse_status_water_leak_sensor(dev_state, raw_status)
-            elif device_type == 522:
-                self._parse_status_door_lock(dev_state, raw_status)
-            elif device_type in (102, 501):
-                self._parse_status_light(dev_state, raw_status)
-            elif device_type == 34:
-                self._parse_status_curtain(dev_state, raw_status)
-            elif device_type == 36:
-                self._parse_status_fan_coil_ac(dev_state, raw_status)
-            elif device_type == 516:
-                self._parse_status_ventilation(dev_state, raw_status)
-            elif device_type in (135, 136):
-                self._parse_status_switch(dev_state, raw_status)
-            else:
-                # 用 category 兜底路由
-                if category in (DeviceCategory.SIMPLE_ZIGBEE_LIGHT, DeviceCategory.MONO_LIGHT, DeviceCategory.LIGHT_VIRTUAL_GROUP):
-                    self._parse_status_light(dev_state, raw_status)
-                elif category == DeviceCategory.ZIGBEE_CURTAIN:
-                    self._parse_status_curtain(dev_state, raw_status)
-                elif category in (DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.CCT_LIGHT):
-                    self._parse_status_cct_light_strip(dev_state, raw_status)
-                elif category == DeviceCategory.FAN_COIL_AC:
-                    self._parse_status_fan_coil_ac(dev_state, raw_status)
-                elif category == DeviceCategory.VENTILATION_SYSTEM:
-                    self._parse_status_ventilation(dev_state, raw_status)
-                elif category == DeviceCategory.DIMMABLE_LIGHT:
-                    self._parse_status_dimmable_light(dev_state, raw_status)
-                elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-                    self._parse_status_zigbee_dimmable_light(dev_state, raw_status)
-                elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-                    self._parse_status_fast_move_dim_color_light(dev_state, raw_status)
-                elif category == DeviceCategory.TEMP_HUMIDITY_SENSOR:
-                    self._parse_status_temp_humidity_sensor(dev_state, raw_status)
-                elif category == DeviceCategory.DOOR_WINDOW_SENSOR:
-                    self._parse_status_door_window_sensor(dev_state, raw_status)
-                elif category == DeviceCategory.MOTION_SENSOR:
-                    self._parse_status_motion_sensor(dev_state, raw_status, matched_device_id)
-                elif category == DeviceCategory.SMOKE_SENSOR:
-                    self._parse_status_smoke_sensor(dev_state, raw_status)
-                elif category == DeviceCategory.EMERGENCY_BUTTON:
-                    self._parse_status_emergency_button(dev_state, raw_status, matched_device_id)
-                elif category == DeviceCategory.WATER_LEAK_SENSOR:
-                    self._parse_status_water_leak_sensor(dev_state, raw_status)
-                elif category == DeviceCategory.GAS_SENSOR:
-                    self._parse_status_gas_sensor(dev_state, raw_status)
-                else:
-                    self._parse_status_generic(dev_state, raw_status)
-
-            # 门锁状态/事件归一化后发布到 HA 事件总线（供自动化订阅）
-            if (
-                device_type == 522
-                or category == DeviceCategory.DOOR_LOCK
-                or raw_status.get("cmd") == 352
-            ):
-                self._publish_lock_event(matched_device_id, raw_status)
-
-            # 通知HA刷新实体状态
-            self.hass.add_job(self.async_set_updated_data, self.device_states)
-            _LOGGER.debug(f"[{matched_device_id}] MQTT状态同步完成: state={dev_state.get('state')}, bri={dev_state.get('brightness')}, ct={dev_state.get('color_temp')}, pos={dev_state.get('position')}")
-
-        # SSL 控制通道跟随 HTTPS API 所在区域（中国区/国际区）
-        ssl_host = SSL_HOST_GLOBAL if get_api_host() == HTTPS_HOST_GLOBAL else SSL_HOST
+        # SSL 控制通道跟随当前客户端的云端区域，不依赖模块级全局状态。
+        ssl_host = self.https_client.cloud.ssl_host
         self.ssl_client = SSLClient(
             hass=self.hass,
             ssl_host=ssl_host,
             ssl_port=SSL_PORT,
             username=self.username,
-            password=self.password,
+            password_hash=self.password_hash,
             family_id=self.https_client.family_id,
-            on_status_update=on_status_update,
+            on_status_update=self.status_dispatcher.dispatch,
             on_session_id_obtained=on_session_id_obtained,
         )
-        self.cos_media = CosMediaManager(
-            ssl_client=self.ssl_client,
-            user_id=self.https_client.user_id or "",
-            family_id=self.https_client.family_id or "",
-        )
-        self.video_archiver = VideoArchiver(
-            media_root=self.hass.config.path("media"),
+        self.lock_media.configure(
+            self.ssl_client,
+            self.https_client.user_id or "",
+            self.https_client.family_id or "",
         )
 
     async def _prewarm_cos_credentials(self) -> None:
-        """后台预热所有门锁的 COS 媒体凭证（cmd=313，36 小时有效）。"""
-        cos = self.cos_media
-        if cos is None:
-            return
-        for device_id, device in self.devices.items():
-            if classify_device(device) != DeviceCategory.DOOR_LOCK:
-                continue
-            uid = device.get("uid", "")
-            try:
-                await cos.get_credentials(device_id, uid)
-            except Exception as e:  # noqa: BLE001 - 预热失败不应阻断启动
-                _LOGGER.warning(
-                    "门锁媒体凭证预热失败 device=%s: %s",
-                    fingerprint(device_id, self._redaction_salt),
-                    e,
-                )
+        await self.lock_media.prewarm()
 
     async def _query_clothes_horse_initial_status(self) -> None:
         """SSL 登录成功后，对所有晾衣架设备下发 cmd=100 查询初始状态。"""
@@ -1924,338 +582,49 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
     async def _wait_for_control_response(self, device_id: str) -> dict | None:
         """发送控制后等待设备返回状态，3秒超时兜底。"""
-        if not self.ssl_client:
-            return None
-        return await self.ssl_client._wait_for_control_response(device_id)
+        return await self.control.wait_for_response(device_id)
+
+    def _apply_optimistic_state(
+        self,
+        device_id: str,
+        values: Dict[str, Any],
+    ) -> None:
+        """Apply a local command fallback until SSL/cloud confirms it."""
+        self.control.apply_optimistic(device_id, values)
 
     async def async_turn_on(self, device_id: str, brightness: int = None, color_temp: int = None) -> bool:
         """打开设备（基于 category 路由控制命令）。
 
         可选参数 brightness/color_temp 用于灯光一次性下发。
         """
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-
-        device_uid = device.get("uid", "")
-        category = classify_device(device)
-        _LOGGER.debug(f"打开设备: {device_id}, category={category.name}, uid={device_uid}")
-
-        result = False
-        if category == DeviceCategory.DIM_COLOR_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = brightness if brightness is not None else dev_state.get("brightness", 0) or 0
-            cur_ct = color_temp if color_temp is not None else dev_state.get("color_temp", 0) or 0
-            if cur_bri == 0:
-                cur_bri = 255
-            if cur_ct == 0:
-                cur_ct = 2700
-            _LOGGER.debug(f"[DIM_COLOR_LIGHT] 开/调节: bri={cur_bri}, ct={cur_ct}K")
-            result = await self.ssl_client.send_control_light_colortemp(device_id, device_uid, cur_ct, brightness=cur_bri)
-        elif category in (DeviceCategory.MONO_LIGHT, DeviceCategory.DIMMABLE_LIGHT):
-            # type=501/502 使用 set property 格式
-            result = await self.ssl_client.send_control_switch(device_id, device_uid, True)
-        elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = brightness if brightness is not None else dev_state.get("brightness", 0) or 0
-            if cur_bri == 0:
-                cur_bri = 255
-            _LOGGER.debug(f"[ZIGBEE_DIMMABLE_LIGHT] 开灯: bri={cur_bri}/255")
-            result = await self.ssl_client.send_control_zigbee_dimmable_light_onoff(device_id, device_uid, True, brightness=cur_bri)
-        elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = brightness if brightness is not None else dev_state.get("brightness", 0) or 0
-            cur_ct = color_temp if color_temp is not None else dev_state.get("color_temp", 0) or 0
-            if cur_bri == 0:
-                cur_bri = 255
-            if cur_ct == 0:
-                cur_ct = 2700
-            ct_mired = 1000000 // cur_ct if cur_ct > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 开灯: bri={cur_bri}/255, ct={cur_ct}K ({ct_mired} mired)")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_onoff(device_id, device_uid, True, brightness=cur_bri, colortemp_mired=ct_mired)
-        elif category == DeviceCategory.CCT_LIGHT:
-            # statusType=503 使用 set property 格式
-            result = await self.ssl_client.send_control_cct_light_onoff(device_id, device_uid, True)
-        elif category in (DeviceCategory.SIMPLE_ZIGBEE_LIGHT, DeviceCategory.LEGACY_LIGHT,
-                          DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.LIGHT_VIRTUAL_GROUP):
-            # type=1/102/503/10086 使用 order=on/off + value1
-            result = await self.ssl_client.send_control_light(device_id, device_uid, True)
-        elif category in (DeviceCategory.ZIGBEE_CURTAIN, DeviceCategory.LEGACY_CURTAIN):
-            result = await self.ssl_client.send_control_cover(device_id, device_uid, 100)
-        elif category == DeviceCategory.FAN_COIL_AC:
-            # 开机：order="on", value1=0, value2=上次模式(默认3=制冷), value3=上次风速(默认1=低), value4=上次温度(默认25°C)
-            dev_state = self.get_device_state(device_id) or {}
-            cur_v2 = dev_state.get("ac_mode_raw", 3)
-            cur_v3 = dev_state.get("fan_speed_raw", 1)
-            cur_v4 = dev_state.get("value4", 0)
-            if not cur_v4:
-                cur_v4 = 2500 << 16  # 默认25°C
-            result = await self._async_ac_control_raw(device_id, device_uid,
-                                                      value1=0, value2=cur_v2,
-                                                      value3=cur_v3, value4=cur_v4,
-                                                      order="on")
-        elif category == DeviceCategory.CLOTHES_HORSE:
-            result = await self.async_clothes_horse_control(device_id, "main_switch", "on")
-        elif category == DeviceCategory.VENTILATION_SYSTEM:
-            result = await self.async_ventilation_state_update(device_id, 0)
-        else:
-            # 兜底用 light 控制
-            result = await self.ssl_client.send_control_light(device_id, device_uid, True)
-
-        if result:
-            # ★ 等待设备响应来更新状态
-            response = await self._wait_for_control_response(device_id)
-            if response:
-                # 让 SSL 推送过来的数据通过 on_status_update 更新 coordinator
-                # _update_device_state 已经在 on_status_update 回调中被调用
-                pass
-            else:
-                # 超时，保留乐观更新兜底
-                self.device_states.setdefault(device_id, {})["state"] = True
-                if brightness is not None:
-                    self.device_states[device_id]["brightness"] = brightness
-                if color_temp is not None:
-                    self.device_states[device_id]["color_temp"] = color_temp
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.turn_on(
+            device_id, brightness, color_temp
+        )
 
     async def async_turn_off(self, device_id: str) -> bool:
         """关闭设备（基于 category 路由控制命令）。"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-
-        device_uid = device.get("uid", "")
-        category = classify_device(device)
-        _LOGGER.debug(f"关闭设备: {device_id}, category={category.name}, uid={device_uid}")
-
-        result = False
-        if category == DeviceCategory.DIM_COLOR_LIGHT:
-            _LOGGER.debug(f"[DIM_COLOR_LIGHT] 关闭: order=off")
-            result = await self.ssl_client.send_control_light(device_id, device_uid, False)
-        elif category in (DeviceCategory.MONO_LIGHT, DeviceCategory.DIMMABLE_LIGHT):
-            result = await self.ssl_client.send_control_switch(device_id, device_uid, False)
-        elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = dev_state.get("brightness", 0) or 0
-            _LOGGER.debug(f"[ZIGBEE_DIMMABLE_LIGHT] 关灯: bri={cur_bri}/255 (记忆)")
-            result = await self.ssl_client.send_control_zigbee_dimmable_light_onoff(device_id, device_uid, False, brightness=cur_bri)
-        elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = dev_state.get("brightness", 0) or 0
-            cur_ct = dev_state.get("color_temp", 0) or 0
-            ct_mired = 1000000 // cur_ct if cur_ct > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 关灯: bri={cur_bri}/255, ct={cur_ct}K ({ct_mired} mired)")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_onoff(device_id, device_uid, False, brightness=cur_bri, colortemp_mired=ct_mired)
-        elif category == DeviceCategory.CCT_LIGHT:
-            # statusType=503 使用 set property 格式
-            result = await self.ssl_client.send_control_cct_light_onoff(device_id, device_uid, False)
-        elif category in (DeviceCategory.SIMPLE_ZIGBEE_LIGHT, DeviceCategory.LEGACY_LIGHT,
-                          DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.LIGHT_VIRTUAL_GROUP):
-            result = await self.ssl_client.send_control_light(device_id, device_uid, False)
-        elif category in (DeviceCategory.ZIGBEE_CURTAIN, DeviceCategory.LEGACY_CURTAIN):
-            result = await self.ssl_client.send_control_cover(device_id, device_uid, 0)
-        elif category == DeviceCategory.FAN_COIL_AC:
-            # 关机：order="off", value1=1, 保留当前模式/风速/温度
-            dev_state = self.get_device_state(device_id) or {}
-            cur_v2 = dev_state.get("ac_mode_raw", 3)
-            cur_v3 = dev_state.get("fan_speed_raw", 1)
-            cur_v4 = dev_state.get("value4", 0)
-            if not cur_v4:
-                cur_v4 = 2500 << 16
-            result = await self._async_ac_control_raw(device_id, device_uid,
-                                                      value1=1, value2=cur_v2,
-                                                      value3=cur_v3, value4=cur_v4,
-                                                      order="off")
-        elif category == DeviceCategory.CLOTHES_HORSE:
-            result = await self.async_clothes_horse_control(device_id, "main_switch", "off")
-        elif category == DeviceCategory.VENTILATION_SYSTEM:
-            result = await self.async_ventilation_state_update(device_id, 50)
-        else:
-            result = await self.ssl_client.send_control_light(device_id, device_uid, False)
-
-        if result:
-            # ★ 等待设备响应
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                # 超时，保留乐观更新兜底
-                self.device_states.setdefault(device_id, {})["state"] = False
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.turn_off(device_id)
 
     async def async_set_cover_position(self, device_id: str, position: int) -> bool:
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        device_uid = device.get("uid", "")
-        _LOGGER.debug(f"设置窗帘位置: {device_id} position={position}")
-        result = await self.ssl_client.send_control_cover(device_id, device_uid, position)
-        if result:
-            # ★ 等待设备响应
-            response = await self._wait_for_control_response(device_id)
-            if response:
-                pos = response.get("value1")
-                if pos is not None and 0 <= pos <= 100:
-                    self.device_states.setdefault(device_id, {})["position"] = pos
-                    self.device_states[device_id]["state"] = pos > 0
-            else:
-                self.device_states.setdefault(device_id, {})["position"] = position
-                self.device_states[device_id]["state"] = position > 0
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.set_cover_position(device_id, position)
 
     async def async_stop_cover(self, device_id: str) -> bool:
         """停止窗帘电机。"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        device_uid = device.get("uid", "")
-        _LOGGER.debug(f"停止窗帘: {device_id}")
-        return await self.ssl_client.send_control_cover(device_id, device_uid, "stop")
+        return await self.control.stop_cover(device_id)
 
     async def async_set_brightness(self, device_id: str, brightness: int) -> bool:
         """设置亮度（HA LightEntity 使用 0-255 范围）。"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        uid = device.get("uid", "")
-        category = classify_device(device)
-
-        if category == DeviceCategory.DIMMABLE_LIGHT:
-            brightness_percent = round(brightness)
-            _LOGGER.debug(f"设置可调光灯亮度 {device_id} HA={brightness} → {brightness_percent}%")
-            result = await self.ssl_client.send_control_dimmable_light_brightness(device_id, uid, brightness_percent)
-            if result:
-                response = await self._wait_for_control_response(device_id)
-                if not response:
-                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_percent
-                    self.device_states[device_id]["state"] = True
-                self.async_set_updated_data(self.device_states)
-            return result
-
-        if category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-            brightness_255 = max(1, min(int(brightness), 255))
-            _LOGGER.debug(f"[ZIGBEE_DIMMABLE_LIGHT] 设置亮度 {device_id} HA_0-255={brightness} → 设备值={brightness_255}/255")
-            result = await self.ssl_client.send_control_zigbee_dimmable_light_brightness(device_id, uid, brightness_255)
-            if result:
-                response = await self._wait_for_control_response(device_id)
-                if not response:
-                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
-                    self.device_states[device_id]["state"] = True
-                self.async_set_updated_data(self.device_states)
-            return result
-
-        if category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            brightness_255 = max(1, min(int(brightness), 255))
-            color_temp_k = self.device_states.get(device_id, {}).get("color_temp", 0) or 0
-            if color_temp_k == 0:
-                color_temp_k = 2700
-            ct_mired = 1000000 // color_temp_k if color_temp_k > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 设置亮度 {device_id} HA_0-255={brightness} → 设备值={brightness_255}/255, ct={color_temp_k}K ({ct_mired} mired)")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_brightness(device_id, uid, brightness_255, colortemp_mired=ct_mired)
-            if result:
-                response = await self._wait_for_control_response(device_id)
-                if not response:
-                    self.device_states.setdefault(device_id, {})["brightness"] = brightness_255
-                    self.device_states[device_id]["state"] = True
-                self.async_set_updated_data(self.device_states)
-            return result
-
-        color_temp_k = self.device_states.get(device_id, {}).get("color_temp", 0) or 0
-        if color_temp_k == 0:
-            color_temp_k = 2700
-
-        category = classify_device(device)
-        if category == DeviceCategory.CCT_LIGHT:
-            _LOGGER.debug(f"下发色温灯亮度 {device_id} {brightness}%")
-            result = await self.ssl_client.send_control_cct_light_brightness(device_id, uid, brightness)
-        else:
-            device_type_raw = device.get("device_type_raw")
-            if device_type_raw in (503,):
-                brightness_255 = round(brightness * 255 / 100)
-                _LOGGER.debug(f"下发色温灯带亮度 {device_id} 百分比={brightness} → 0-255={brightness_255}, color_temp={color_temp_k}K")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness_255)
-            else:
-                _LOGGER.debug(f"下发亮度 {device_id} bri={brightness} color_temp={color_temp_k}K (fast color temperature)")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness)
-        if result:
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                self.device_states.setdefault(device_id, {})["brightness"] = brightness
-                self.device_states[device_id]["state"] = True
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.set_brightness(device_id, brightness)
 
     async def async_set_color_temp(self, device_id: str, color_temp_k: int) -> bool:
         """单独设置色温（Kelvin）"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        uid = device.get("uid", "")
-        brightness = self.device_states.get(device_id, {}).get("brightness", 255)
-
-        category = classify_device(device)
-        if category == DeviceCategory.CCT_LIGHT:
-            _LOGGER.debug(f"下发色温灯色温 {device_id} {color_temp_k}K")
-            result = await self.ssl_client.send_control_cct_light_colortemp(device_id, uid, color_temp_k)
-        elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            brightness_255 = self.device_states.get(device_id, {}).get("brightness", 255) or 255
-            ct_mired = 1000000 // color_temp_k if color_temp_k > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 设置色温 {device_id} {color_temp_k}K ({ct_mired} mired), bri={brightness_255}/255")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_colortemp(device_id, uid, brightness_255, colortemp_mired=ct_mired)
-        else:
-            device_type_raw = device.get("device_type_raw")
-            if device_type_raw in (503,):
-                brightness_255 = round(brightness * 255 / 100)
-                _LOGGER.debug(f"设置色温 {color_temp_k}K, brightness(百分比)={brightness} → 0-255={brightness_255}")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness_255)
-            else:
-                _LOGGER.debug(f"设置色温 {color_temp_k}K, brightness={brightness}")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness)
-        if result:
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                self.device_states.setdefault(device_id, {})["color_temp"] = color_temp_k
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.set_color_temp(device_id, color_temp_k)
 
     async def async_set_light_param(self, device_id: str, brightness: Optional[int], color_temp_k: Optional[int]) -> bool:
         """一次性下发亮度+色温（合并单条cmd15指令，避免两次请求不同步）"""
-        if not self.ssl_client:
-            _LOGGER.error("SSL未连接，无法下发灯光复合参数")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"找不到设备 {device_id}")
-            return False
-        uid = device.get("uid", "")
-        return await self.ssl_client.send_light_bri_ct(device_id, uid, brightness, color_temp_k)
+        return await self.control.set_light_param(
+            device_id, brightness, color_temp_k
+        )
 
     # ------------------------------------------------------------------
     # 空调控制（deviceType=36，cmd=15 set property）
@@ -2317,22 +686,32 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             # 超时，保留乐观更新兜底
             dev_state = self.get_device_state(device_id)
             if dev_state:
+                optimistic_fields = set()
                 if value1 is not None:
                     dev_state["state"] = value1 == 0
+                    optimistic_fields.add("state")
                 if value2 is not None:
                     ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
                     dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
                     dev_state["ac_mode_raw"] = value2
+                    optimistic_fields.update(("ac_mode", "ac_mode_raw"))
                 if value3 is not None:
                     fan_speed_map = {1: "low", 2: "medium", 3: "high"}
                     dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
                     dev_state["fan_speed_raw"] = value3
+                    optimistic_fields.update(("fan_speed", "fan_speed_raw"))
                 if value4 is not None:
                     try:
                         temp_raw = value4 >> 16
                         dev_state["temperature"] = round(temp_raw / 100.0, 1) if temp_raw else 0
                     except (TypeError, ValueError):
                         dev_state["temperature"] = value4
+                    optimistic_fields.add("temperature")
+                self.state_store.mark(
+                    device_id,
+                    optimistic_fields,
+                    StateSource.OPTIMISTIC,
+                )
                 self.async_set_updated_data(self.device_states)
         else:
             # 有响应就触发 coordinator 更新（SSL 推送会回调 on_status_update）
@@ -2409,106 +788,26 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """新风系统控制（value1 格式）。
         value1: 0=慢, 50=停, 100=快
         """
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-        device_uid = device.get("uid", "")
-
-        result = await self.ssl_client.send_control_ventilation(device_id, device_uid, value1)
-        if result:
-            response = await self._wait_for_control_response(device_id)
-            if not response:
-                dev_state = self.device_states.setdefault(device_id, {})
-                if value1 == 0:
-                    dev_state["fan_speed"] = "慢"
-                    dev_state["state"] = True
-                elif value1 == 50:
-                    dev_state["fan_speed"] = "停"
-                    dev_state["state"] = False
-                elif value1 == 100:
-                    dev_state["fan_speed"] = "快"
-                    dev_state["state"] = True
-                dev_state["value1"] = value1
-            self.async_set_updated_data(self.device_states)
-        return result
+        return await self.control.ventilation_state_update(device_id, value1)
 
     async def async_set_ventilation_preset_mode(self, device_id: str, preset_mode: str) -> bool:
         """设置新风系统预设模式（停/慢/快）"""
-        preset_map = {"停": 50, "慢": 0, "快": 100}
-        value1 = preset_map.get(preset_mode)
-        if value1 is None:
-            _LOGGER.error(f"无效的新风模式: {preset_mode}")
-            return False
-        return await self.async_ventilation_state_update(device_id, value1)
+        return await self.control.set_ventilation_preset_mode(
+            device_id, preset_mode
+        )
 
     # ------------------------------------------------------------------
     # 晾衣架控制（cmd=98）
     # ------------------------------------------------------------------
-    _CLOTHES_HORSE_FIELD_MAP = {
-        "lighting": "lightingCtrl",
-        "sterilizing": "sterilizingCtrl",
-        "wind_drying": "windDryingCtrl",
-        "heat_drying": "heatDryingCtrl",
-        "main_switch": "mainSwitchCtrl",
-        "motor": "motorCtrl",
-    }
-
     async def async_clothes_horse_control(self, device_id: str, feature: str, value: str) -> bool:
         """晾衣架控制。
 
         feature: lighting/sterilizing/wind_drying/heat_drying/main_switch/motor
         value: on/off (开关类) 或 up/down/stop (电机类)
         """
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
-            return False
-
-        device = self.devices.get(device_id)
-        if not device:
-            _LOGGER.error(f"设备不存在: {device_id}")
-            return False
-
-        device_uid = device.get("uid", "")
-        ctrl_field = self._CLOTHES_HORSE_FIELD_MAP.get(feature)
-        if not ctrl_field:
-            _LOGGER.error(f"未知晾衣架功能: {feature}")
-            return False
-
-        # 消毒开关特殊判定：只有电机在最顶部（motorPosition=0）时才允许打开
-        if feature == "sterilizing" and value == "on":
-            dev_state = self.device_states.get(device_id, {})
-            motor_position = dev_state.get("position", 0)
-            if motor_position != 0:
-                _LOGGER.warning(
-                    f"[晾衣架] 拒绝消毒开启命令: 电机未在顶部 (motorPosition={motor_position})"
-                )
-                return False
-
-        result = await self.ssl_client.send_clothes_horse_control(
-            device_id=device_id,
-            device_uid=device_uid,
-            ctrl_field=ctrl_field,
-            ctrl_value=value,
+        return await self.control.clothes_horse_control(
+            device_id, feature, value
         )
-
-        if result:
-            # 晾衣架控制返回 cmd=99，不是 cmd=42，所以不等待标准控制响应，保留乐观更新
-            dev_state = self.device_states.get(device_id)
-            if dev_state:
-                if feature == "motor":
-                    dev_state["motor_state"] = value
-                else:
-                    state_key = f"{feature}_state"
-                    dev_state[state_key] = (value == "on")
-                    if feature == "main_switch":
-                        dev_state["state"] = (value == "on")
-                self.async_set_updated_data(self.device_states)
-            _LOGGER.debug(f"[控制成功] {device_id} {ctrl_field}={value}")
-        return result
 
     def get_device(self, device_id: str) -> Optional[Dict[str, Any]]:
         return self.devices.get(device_id)
