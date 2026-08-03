@@ -1563,6 +1563,21 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     "properties": {}  # 新增properties容器兼容mqtt cmd=42
                 }
 
+                # 门锁电池不随 cmd=42 常推（仅变化/上线时），初始化时
+                # 从 readtable 设备属性补齐，后续推送增量更新
+                if category == DeviceCategory.DOOR_LOCK:
+                    from .lock_status import normalize_battery_properties as _norm_bat
+
+                    battery = _norm_bat(device.get("properties") or {})
+                    for bkey in (
+                        "dry_battery_level",
+                        "dry_battery_setup",
+                        "lithium_battery_level",
+                        "lithium_battery_setup",
+                    ):
+                        if bkey in battery:
+                            self.device_states[device_id][bkey] = battery[bkey]
+
                 # 晾衣架设备初始化专属字段（真实值由 cmd=100 查询后 cmd=99 推送回填）
                 if category == DeviceCategory.CLOTHES_HORSE:
                     self.device_states[device_id].update({
