@@ -14,7 +14,6 @@ from .device_types import (
     DeviceCategory,
     classify_device,
     get_device_profile,
-    is_hidden_category,
 )
 from .redact import fingerprint, redact_packet
 from .models import AccountCredentials
@@ -31,6 +30,7 @@ from .control_router import (
 from .status_dispatcher import StatusUpdateDispatcher
 from .lock_media_manager import LockMediaManager
 from .temp_password_manager import TempPasswordManager
+from .device_inventory import DeviceInventory
 from .const import (
     SSL_PORT,
     UPDATE_INTERVAL,
@@ -100,6 +100,13 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.devices: Dict[str, Any] = {}
         self.device_states: Dict[str, Any] = {}
         self.state_store = StateStore(self.device_states)
+        self.inventory = DeviceInventory(
+            self.https_client,
+            self.devices,
+            self.device_states,
+            self.state_store,
+            self.lock_events.remove,
+        )
         self.lock_media = LockMediaManager(
             self.hass, self.devices, self._redaction_salt
         )
@@ -416,34 +423,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
     async def _discover_devices(self):
         """拉取并解析设备列表：readtable → getDeviceDesc → queryHomepageData 三层回退"""
-        device_status_data = await self.https_client.fetch_device_status()
-        if not device_status_data:
-            return None, []
-
-        devices = self.https_client.parse_device_status_list(device_status_data)
-        if not devices:
-            _LOGGER.warning("readtable 未解析到设备，回退到 getDeviceDesc 构建设备列表...")
-            desc_data = await self.https_client.fetch_device_desc(last_update_time=0)
-            if desc_data:
-                desc_devices = desc_data.get("deviceDescList", desc_data.get("devices", []))
-                if isinstance(desc_devices, list) and desc_devices:
-                    devices = self.https_client.parse_device_status_list(
-                        {"device": desc_devices, "deviceStatus": {}}
-                    )
-                    _LOGGER.info(f"getDeviceDesc 回退解析到 {len(devices)} 个设备")
-
-        if not devices:
-            _LOGGER.warning("getDeviceDesc 未构建到设备，回退到 queryHomepageData...")
-            homepage_data = await self.https_client.fetch_homepage_data()
-            if isinstance(homepage_data, dict):
-                homepage_devices = homepage_data.get("deviceList", homepage_data.get("device", [])) or []
-                if isinstance(homepage_devices, list) and homepage_devices:
-                    devices = self.https_client.parse_device_status_list(
-                        {"device": homepage_devices, "deviceStatus": {}}
-                    )
-                    _LOGGER.info(f"queryHomepageData 回退解析到 {len(devices)} 个设备")
-
-        return device_status_data, devices
+        return await self.inventory.discover()
 
     async def _async_setup(self):
         try:
@@ -482,68 +462,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if device_status_data is None and not devices:
                 raise UpdateFailed("获取设备列表失败")
 
-            for device in devices:
-                device_id = device["device_id"]
-                device_name = device.get("device_name", "")
-                device_type_raw = device.get("device_type_raw", "")
-
-                # 过滤隐藏类别设备（MIXPAD_GATEWAY/MIX_SWITCH/BACH_SWITCH/WIFI_CAMERA/SMART_REMOTE/MIXPAD_4WAY_BASE）
-                category = classify_device(device)
-                _LOGGER.info(f"设备分类: deviceId={device_id}, name={device_name}, deviceType={device_type_raw}, category={category.name}")
-                if is_hidden_category(category):
-                    _LOGGER.debug(f"[过滤] 跳过隐藏类别设备: {device_id} category={category.name}")
-                    continue
-
-                self.devices[device_id] = device
-                online_status = device.get("online", False)
-                if isinstance(online_status, str):
-                    online_status = online_status.strip().lower() in ("online", "1", "true", "yes")
-
-                self.device_states[device_id] = {
-                    "state": device.get("state", False),
-                    "online": bool(online_status),
-                    "position": device.get("position", 0),
-                    "brightness": device.get("brightness"),
-                    "color_temp": device.get("color_temp"),
-                    "uid": device.get("uid", ""),
-                    "status_id": device.get("status_id", ""),
-                    "gateway_id": device.get("gateway_id", ""),
-                    "ext_addr": device.get("ext_addr"),
-                    "properties": {}  # 新增properties容器兼容mqtt cmd=42
-                }
-
-                # 门锁电池不随 cmd=42 常推（仅变化/上线时），初始化时
-                # 从 readtable 设备属性补齐，后续推送增量更新
-                if category == DeviceCategory.DOOR_LOCK:
-                    from .lock_status import normalize_battery_properties as _norm_bat
-
-                    battery = _norm_bat(device.get("properties") or {})
-                    for bkey in (
-                        "dry_battery_level",
-                        "dry_battery_setup",
-                        "lithium_battery_level",
-                        "lithium_battery_setup",
-                    ):
-                        if bkey in battery:
-                            self.device_states[device_id][bkey] = battery[bkey]
-
-                # 晾衣架设备初始化专属字段（真实值由 cmd=100 查询后 cmd=99 推送回填）
-                if category == DeviceCategory.CLOTHES_HORSE:
-                    self.device_states[device_id].update({
-                        "motor_state": "stop",
-                        "lighting_state": False,
-                        "heat_drying_state": False,
-                        "wind_drying_state": False,
-                        "sterilizing_state": False,
-                        "main_switch_state": False,
-                    })
-
-                # 新风系统设备初始化专属字段
-                if category == DeviceCategory.VENTILATION_SYSTEM:
-                    self.device_states[device_id].update({
-                        "fan_speed": device.get("fan_speed", "停"),
-                        "temperature": device.get("temperature"),
-                    })
+            self.inventory.initialize(devices)
 
             _LOGGER.info(f"设备列表拉取完成，共 {len(self.devices)} 个设备")
 
@@ -610,70 +529,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             device_status_data = await self.https_client.fetch_device_status()
             if device_status_data:
                 devices = self.https_client.parse_device_status_list(device_status_data)
-                for device in devices:
-                    device_id = device["device_id"]
-
-                    # 过滤隐藏类别设备
-                    category = classify_device(device)
-                    if is_hidden_category(category):
-                        # 已存在的隐藏设备从字典中移除
-                        self.devices.pop(device_id, None)
-                        self.device_states.pop(device_id, None)
-                        self.state_store.remove(device_id)
-                        self.lock_events.remove(device_id)
-                        continue
-
-                    self.devices[device_id] = device
-                    if device_id not in self.device_states:
-                        self.device_states[device_id] = {
-                            "state": device.get("state", False),
-                            "online": device.get("online", False),
-                            "position": device.get("position", 0),
-                            "brightness": device.get("brightness"),
-                            "color_temp": device.get("color_temp"),
-                            "properties": {}
-                        }
-                    cloud_state = {
-                        field: device[field]
-                        for field in (
-                            "state",
-                            "online",
-                            "position",
-                            "brightness",
-                            "color_temp",
-                            "temperature",
-                            "humidity",
-                        )
-                        if field in device and device[field] is not None
-                    }
-                    status = device.get("status", {})
-                    if isinstance(status, dict):
-                        cloud_state.update(status)
-                    if cloud_state:
-                        self.state_store.merge(
-                            device_id,
-                            cloud_state,
-                            StateSource.CLOUD,
-                        )
-                    # 电池低频推送：定期刷新时从 readtable 设备属性同步
-                    if category == DeviceCategory.DOOR_LOCK:
-                        from .lock_status import normalize_battery_properties as _nb
-
-                        battery = _nb(device.get("properties") or {})
-                        battery_updates = {}
-                        for bkey in (
-                            "dry_battery_level",
-                            "dry_battery_setup",
-                            "lithium_battery_level",
-                            "lithium_battery_setup",
-                        ):
-                            if bkey in battery:
-                                battery_updates[bkey] = battery[bkey]
-                        self.state_store.merge(
-                            device_id,
-                            battery_updates,
-                            StateSource.CLOUD,
-                        )
+                self.inventory.merge_cloud(devices)
             return self.device_states
         except Exception as e:
             raise UpdateFailed(f"更新失败: {str(e)}") from e
