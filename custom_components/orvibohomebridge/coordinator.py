@@ -35,6 +35,12 @@ from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_candidates
 from .state_store import StateSource, StateStore
 from .parsers import get_state_parser
 from .lock_manager import LockEventManager
+from .control_router import (
+    ControlRoute,
+    brightness_route,
+    color_temp_route,
+    power_route,
+)
 from .const import (
     SSL_PORT,
     UPDATE_INTERVAL,
@@ -1419,6 +1425,22 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             force=True,
         )
 
+    async def _execute_control_route(
+        self, device_id: str, device_uid: str, route: ControlRoute
+    ) -> bool:
+        """Execute an already-selected route while keeping I/O in the coordinator."""
+
+        owner = self.ssl_client if route.scope == "ssl" else self
+        if owner is None:
+            return False
+        method = getattr(owner, route.method)
+        prefix = (
+            (device_id, device_uid)
+            if route.scope in ("ssl", "coordinator_uid")
+            else (device_id,)
+        )
+        return await method(*prefix, *route.args, **route.kwargs)
+
     async def async_turn_on(self, device_id: str, brightness: int = None, color_temp: int = None) -> bool:
         """打开设备（基于 category 路由控制命令）。
 
@@ -1440,66 +1462,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         category = classify_device(device)
         _LOGGER.debug(f"打开设备: {device_id}, category={category.name}, uid={device_uid}")
 
-        result = False
-        if category == DeviceCategory.DIM_COLOR_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = brightness if brightness is not None else dev_state.get("brightness", 0) or 0
-            cur_ct = color_temp if color_temp is not None else dev_state.get("color_temp", 0) or 0
-            if cur_bri == 0:
-                cur_bri = 255
-            if cur_ct == 0:
-                cur_ct = 2700
-            _LOGGER.debug(f"[DIM_COLOR_LIGHT] 开/调节: bri={cur_bri}, ct={cur_ct}K")
-            result = await self.ssl_client.send_control_light_colortemp(device_id, device_uid, cur_ct, brightness=cur_bri)
-        elif category in (DeviceCategory.MONO_LIGHT, DeviceCategory.DIMMABLE_LIGHT):
-            # type=501/502 使用 set property 格式
-            result = await self.ssl_client.send_control_switch(device_id, device_uid, True)
-        elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = brightness if brightness is not None else dev_state.get("brightness", 0) or 0
-            if cur_bri == 0:
-                cur_bri = 255
-            _LOGGER.debug(f"[ZIGBEE_DIMMABLE_LIGHT] 开灯: bri={cur_bri}/255")
-            result = await self.ssl_client.send_control_zigbee_dimmable_light_onoff(device_id, device_uid, True, brightness=cur_bri)
-        elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = brightness if brightness is not None else dev_state.get("brightness", 0) or 0
-            cur_ct = color_temp if color_temp is not None else dev_state.get("color_temp", 0) or 0
-            if cur_bri == 0:
-                cur_bri = 255
-            if cur_ct == 0:
-                cur_ct = 2700
-            ct_mired = 1000000 // cur_ct if cur_ct > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 开灯: bri={cur_bri}/255, ct={cur_ct}K ({ct_mired} mired)")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_onoff(device_id, device_uid, True, brightness=cur_bri, colortemp_mired=ct_mired)
-        elif category == DeviceCategory.CCT_LIGHT:
-            # statusType=503 使用 set property 格式
-            result = await self.ssl_client.send_control_cct_light_onoff(device_id, device_uid, True)
-        elif category in (DeviceCategory.SIMPLE_ZIGBEE_LIGHT, DeviceCategory.LEGACY_LIGHT,
-                          DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.LIGHT_VIRTUAL_GROUP):
-            # type=1/102/503/10086 使用 order=on/off + value1
-            result = await self.ssl_client.send_control_light(device_id, device_uid, True)
-        elif category in (DeviceCategory.ZIGBEE_CURTAIN, DeviceCategory.LEGACY_CURTAIN):
-            result = await self.ssl_client.send_control_cover(device_id, device_uid, 100)
-        elif category == DeviceCategory.FAN_COIL_AC:
-            # 开机：order="on", value1=0, value2=上次模式(默认3=制冷), value3=上次风速(默认1=低), value4=上次温度(默认25°C)
-            dev_state = self.get_device_state(device_id) or {}
-            cur_v2 = dev_state.get("ac_mode_raw", 3)
-            cur_v3 = dev_state.get("fan_speed_raw", 1)
-            cur_v4 = dev_state.get("value4", 0)
-            if not cur_v4:
-                cur_v4 = 2500 << 16  # 默认25°C
-            result = await self._async_ac_control_raw(device_id, device_uid,
-                                                      value1=0, value2=cur_v2,
-                                                      value3=cur_v3, value4=cur_v4,
-                                                      order="on")
-        elif category == DeviceCategory.CLOTHES_HORSE:
-            result = await self.async_clothes_horse_control(device_id, "main_switch", "on")
-        elif category == DeviceCategory.VENTILATION_SYSTEM:
-            result = await self.async_ventilation_state_update(device_id, 0)
-        else:
-            # 兜底用 light 控制
-            result = await self.ssl_client.send_control_light(device_id, device_uid, True)
+        route = power_route(
+            category,
+            True,
+            self.get_device_state(device_id) or {},
+            brightness=brightness,
+            color_temp=color_temp,
+        )
+        result = await self._execute_control_route(device_id, device_uid, route)
 
         if result:
             # ★ 等待设备响应来更新状态
@@ -1537,50 +1507,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         category = classify_device(device)
         _LOGGER.debug(f"关闭设备: {device_id}, category={category.name}, uid={device_uid}")
 
-        result = False
-        if category == DeviceCategory.DIM_COLOR_LIGHT:
-            _LOGGER.debug(f"[DIM_COLOR_LIGHT] 关闭: order=off")
-            result = await self.ssl_client.send_control_light(device_id, device_uid, False)
-        elif category in (DeviceCategory.MONO_LIGHT, DeviceCategory.DIMMABLE_LIGHT):
-            result = await self.ssl_client.send_control_switch(device_id, device_uid, False)
-        elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = dev_state.get("brightness", 0) or 0
-            _LOGGER.debug(f"[ZIGBEE_DIMMABLE_LIGHT] 关灯: bri={cur_bri}/255 (记忆)")
-            result = await self.ssl_client.send_control_zigbee_dimmable_light_onoff(device_id, device_uid, False, brightness=cur_bri)
-        elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            dev_state = self.get_device_state(device_id) or {}
-            cur_bri = dev_state.get("brightness", 0) or 0
-            cur_ct = dev_state.get("color_temp", 0) or 0
-            ct_mired = 1000000 // cur_ct if cur_ct > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 关灯: bri={cur_bri}/255, ct={cur_ct}K ({ct_mired} mired)")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_onoff(device_id, device_uid, False, brightness=cur_bri, colortemp_mired=ct_mired)
-        elif category == DeviceCategory.CCT_LIGHT:
-            # statusType=503 使用 set property 格式
-            result = await self.ssl_client.send_control_cct_light_onoff(device_id, device_uid, False)
-        elif category in (DeviceCategory.SIMPLE_ZIGBEE_LIGHT, DeviceCategory.LEGACY_LIGHT,
-                          DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.LIGHT_VIRTUAL_GROUP):
-            result = await self.ssl_client.send_control_light(device_id, device_uid, False)
-        elif category in (DeviceCategory.ZIGBEE_CURTAIN, DeviceCategory.LEGACY_CURTAIN):
-            result = await self.ssl_client.send_control_cover(device_id, device_uid, 0)
-        elif category == DeviceCategory.FAN_COIL_AC:
-            # 关机：order="off", value1=1, 保留当前模式/风速/温度
-            dev_state = self.get_device_state(device_id) or {}
-            cur_v2 = dev_state.get("ac_mode_raw", 3)
-            cur_v3 = dev_state.get("fan_speed_raw", 1)
-            cur_v4 = dev_state.get("value4", 0)
-            if not cur_v4:
-                cur_v4 = 2500 << 16
-            result = await self._async_ac_control_raw(device_id, device_uid,
-                                                      value1=1, value2=cur_v2,
-                                                      value3=cur_v3, value4=cur_v4,
-                                                      order="off")
-        elif category == DeviceCategory.CLOTHES_HORSE:
-            result = await self.async_clothes_horse_control(device_id, "main_switch", "off")
-        elif category == DeviceCategory.VENTILATION_SYSTEM:
-            result = await self.async_ventilation_state_update(device_id, 50)
-        else:
-            result = await self.ssl_client.send_control_light(device_id, device_uid, False)
+        route = power_route(
+            category,
+            False,
+            self.get_device_state(device_id) or {},
+        )
+        result = await self._execute_control_route(device_id, device_uid, route)
 
         if result:
             # ★ 等待设备响应
@@ -1652,76 +1584,17 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         uid = device.get("uid", "")
         category = classify_device(device)
 
-        if category == DeviceCategory.DIMMABLE_LIGHT:
-            brightness_percent = round(brightness)
-            _LOGGER.debug(f"设置可调光灯亮度 {device_id} HA={brightness} → {brightness_percent}%")
-            result = await self.ssl_client.send_control_dimmable_light_brightness(device_id, uid, brightness_percent)
-            if result:
-                response = await self._wait_for_control_response(device_id)
-                if not response:
-                    self._apply_optimistic_state(
-                        device_id,
-                        {"brightness": brightness_percent, "state": True},
-                    )
-                self.async_set_updated_data(self.device_states)
-            return result
-
-        if category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-            brightness_255 = max(1, min(int(brightness), 255))
-            _LOGGER.debug(f"[ZIGBEE_DIMMABLE_LIGHT] 设置亮度 {device_id} HA_0-255={brightness} → 设备值={brightness_255}/255")
-            result = await self.ssl_client.send_control_zigbee_dimmable_light_brightness(device_id, uid, brightness_255)
-            if result:
-                response = await self._wait_for_control_response(device_id)
-                if not response:
-                    self._apply_optimistic_state(
-                        device_id,
-                        {"brightness": brightness_255, "state": True},
-                    )
-                self.async_set_updated_data(self.device_states)
-            return result
-
-        if category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            brightness_255 = max(1, min(int(brightness), 255))
-            color_temp_k = self.device_states.get(device_id, {}).get("color_temp", 0) or 0
-            if color_temp_k == 0:
-                color_temp_k = 2700
-            ct_mired = 1000000 // color_temp_k if color_temp_k > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 设置亮度 {device_id} HA_0-255={brightness} → 设备值={brightness_255}/255, ct={color_temp_k}K ({ct_mired} mired)")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_brightness(device_id, uid, brightness_255, colortemp_mired=ct_mired)
-            if result:
-                response = await self._wait_for_control_response(device_id)
-                if not response:
-                    self._apply_optimistic_state(
-                        device_id,
-                        {"brightness": brightness_255, "state": True},
-                    )
-                self.async_set_updated_data(self.device_states)
-            return result
-
-        color_temp_k = self.device_states.get(device_id, {}).get("color_temp", 0) or 0
-        if color_temp_k == 0:
-            color_temp_k = 2700
-
-        category = classify_device(device)
-        if category == DeviceCategory.CCT_LIGHT:
-            _LOGGER.debug(f"下发色温灯亮度 {device_id} {brightness}%")
-            result = await self.ssl_client.send_control_cct_light_brightness(device_id, uid, brightness)
-        else:
-            device_type_raw = device.get("device_type_raw")
-            if device_type_raw in (503,):
-                brightness_255 = round(brightness * 255 / 100)
-                _LOGGER.debug(f"下发色温灯带亮度 {device_id} 百分比={brightness} → 0-255={brightness_255}, color_temp={color_temp_k}K")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness_255)
-            else:
-                _LOGGER.debug(f"下发亮度 {device_id} bri={brightness} color_temp={color_temp_k}K (fast color temperature)")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness)
+        route = brightness_route(
+            category,
+            brightness,
+            self.device_states.get(device_id, {}),
+            device_type_raw=device.get("device_type_raw"),
+        )
+        result = await self._execute_control_route(device_id, uid, route)
         if result:
             response = await self._wait_for_control_response(device_id)
             if not response:
-                self._apply_optimistic_state(
-                    device_id,
-                    {"brightness": brightness, "state": True},
-                )
+                self._apply_optimistic_state(device_id, dict(route.optimistic))
             self.async_set_updated_data(self.device_states)
         return result
 
@@ -1738,33 +1611,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.warning("未知设备仅注册展示，拒绝下发色温控制: %s", device_id)
             return False
         uid = device.get("uid", "")
-        brightness = self.device_states.get(device_id, {}).get("brightness", 255)
-
         category = classify_device(device)
-        if category == DeviceCategory.CCT_LIGHT:
-            _LOGGER.debug(f"下发色温灯色温 {device_id} {color_temp_k}K")
-            result = await self.ssl_client.send_control_cct_light_colortemp(device_id, uid, color_temp_k)
-        elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-            brightness_255 = self.device_states.get(device_id, {}).get("brightness", 255) or 255
-            ct_mired = 1000000 // color_temp_k if color_temp_k > 0 else 370
-            _LOGGER.debug(f"[FAST_MOVE_DIM_COLOR_LIGHT] 设置色温 {device_id} {color_temp_k}K ({ct_mired} mired), bri={brightness_255}/255")
-            result = await self.ssl_client.send_control_fast_move_dim_color_light_colortemp(device_id, uid, brightness_255, colortemp_mired=ct_mired)
-        else:
-            device_type_raw = device.get("device_type_raw")
-            if device_type_raw in (503,):
-                brightness_255 = round(brightness * 255 / 100)
-                _LOGGER.debug(f"设置色温 {color_temp_k}K, brightness(百分比)={brightness} → 0-255={brightness_255}")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness_255)
-            else:
-                _LOGGER.debug(f"设置色温 {color_temp_k}K, brightness={brightness}")
-                result = await self.ssl_client.send_control_light_colortemp(device_id, uid, color_temp_k, brightness=brightness)
+        route = color_temp_route(
+            category,
+            color_temp_k,
+            self.device_states.get(device_id, {}),
+            device_type_raw=device.get("device_type_raw"),
+        )
+        result = await self._execute_control_route(device_id, uid, route)
         if result:
             response = await self._wait_for_control_response(device_id)
             if not response:
-                self._apply_optimistic_state(
-                    device_id,
-                    {"color_temp": color_temp_k},
-                )
+                self._apply_optimistic_state(device_id, dict(route.optimistic))
             self.async_set_updated_data(self.device_states)
         return result
 
