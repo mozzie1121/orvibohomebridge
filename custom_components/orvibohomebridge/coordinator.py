@@ -739,7 +739,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "lithium_battery_setup",
         ):
             if key in battery:
-                dev_state[key] = battery[key]
+                new = battery[key]
+                old = dev_state.get(key)
+                # 去抖：电池槽 isSetupBattery/level 读取抖动（实测 on/off 交替），
+                # level=0 的瞬时值不覆盖已有的有效电量
+                if (
+                    key.endswith("_level")
+                    and new == 0
+                    and isinstance(old, int)
+                    and old > 0
+                ):
+                    continue
+                dev_state[key] = new
 
         from .lock_status import derive_lock_status
 

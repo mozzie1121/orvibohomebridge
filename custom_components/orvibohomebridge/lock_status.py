@@ -132,9 +132,6 @@ def normalize_battery_properties(properties: Any) -> dict[str, Any]:
         setup = _normalize_state(manager.get("isSetupBattery"))
         if setup is not None:
             result[f"{out_prefix}_battery_setup"] = setup
-            # isSetupBattery=off 表示该电池槽未安装电池，level=0 无意义，置为未知
-            if not setup:
-                result[f"{out_prefix}_battery_level"] = None
     return result
 
 
