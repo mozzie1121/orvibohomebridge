@@ -1303,6 +1303,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """从 readtable（REST 全量同步）拉取 authorizedUnlock 表。"""
         client = self.https_client
         if client is None or not client.is_logged_in:
+            _LOGGER.warning(
+                "拉取临时密码列表跳过: client=%s logged_in=%s",
+                client is not None,
+                client.is_logged_in if client else None,
+            )
             return []
         try:
             data = await client._readtable(device_flag=0)
@@ -1310,9 +1315,16 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.warning("拉取临时密码列表失败: %s", e)
             return []
         if not isinstance(data, dict):
+            _LOGGER.warning("拉取临时密码列表: readtable 返回非 dict: %s", type(data))
             return []
+        auth = data.get("authorizedUnlock")
+        _LOGGER.info(
+            "拉取临时密码列表: readtable keys=%s authorizedUnlock=%s",
+            list(data.keys())[:12],
+            f"list[{len(auth)}]" if isinstance(auth, list) else type(auth).__name__,
+        )
         records = []
-        for item in data.get("authorizedUnlock") or []:
+        for item in auth or []:
             rec = parse_authorization_item(item)
             if rec is None:
                 continue
