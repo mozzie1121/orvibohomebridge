@@ -23,8 +23,13 @@ class OrviboDoorLockCard extends HTMLElement {
     this._tempResult = "";
     this._tempError = "";
     this._entitiesLoaded = false;
+    this._listOpen = false;
+    this._lastListAt = 0;
+    this._listLoaded = false;
     this.attachShadow({ mode: "open" });
   }
+
+  static LIST_THROTTLE_MS = 60000;
 
   static getStubConfig() {
     return {};
@@ -192,8 +197,13 @@ class OrviboDoorLockCard extends HTMLElement {
           </div>
         </div>
         <div class="section">
-          <div class="section-title">临时密码管理 <ha-button id="ov-tp-refresh" size="small">刷新</ha-button></div>
-          <div id="ov-tp-list" class="tp-list">加载中...</div>
+          <div class="section-title toggle" id="ov-tp-toggle">
+            <span>${this._listOpen ? "▾" : "▸"} 临时密码管理</span>
+            <ha-button id="ov-tp-refresh" size="small">刷新</ha-button>
+          </div>
+          <div id="ov-tp-list" class="tp-list" style="${this._listOpen ? "" : "display:none"}">
+            ${this._listOpen ? "加载中..." : ""}
+          </div>
         </div>
       </ha-card>
       <style>
@@ -211,6 +221,7 @@ class OrviboDoorLockCard extends HTMLElement {
         .snapshot img { width: 100%; border-radius: 8px; margin-bottom: 10px; max-height: 220px; object-fit: cover; }
         .section { border-top: 1px solid var(--divider-color); padding-top: 12px; margin-top: 12px; }
         .section-title { font-weight: 600; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .toggle { cursor: pointer; user-select: none; }
         .form { display: grid; gap: 8px; }
         .form label { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; }
         .form input, .form select { width: 100%; box-sizing: border-box; }
@@ -226,8 +237,19 @@ class OrviboDoorLockCard extends HTMLElement {
     `;
 
     root.querySelector("#ov-tp-grant").addEventListener("click", () => this._grant());
-    root.querySelector("#ov-tp-refresh").addEventListener("click", () => this._loadList());
-    this._loadList();
+    root.querySelector("#ov-tp-toggle").addEventListener("click", (e) => {
+      if (e.target.closest("#ov-tp-refresh")) return;
+      this._listOpen = !this._listOpen;
+      this._render();
+    });
+    root.querySelector("#ov-tp-refresh").addEventListener("click", () => {
+      this._lastListAt = 0;
+      this._listLoaded = false;
+      this._loadList();
+    });
+    if (this._listOpen) {
+      this._loadList();
+    }
   }
 
   async _grant() {
@@ -259,13 +281,24 @@ class OrviboDoorLockCard extends HTMLElement {
     } catch (e) {
       this._tempError = e.message || String(e);
     }
+    this._lastListAt = 0;
+    this._listLoaded = false;
     this._render();
-    this._loadList();
+    if (this._listOpen) {
+      this._loadList();
+    }
   }
 
   async _loadList() {
     const root = this.shadowRoot;
     if (!root.querySelector("#ov-tp-list")) return;
+    const now = Date.now();
+    if (
+      this._listLoaded &&
+      now - this._lastListAt < OrviboDoorLockCard.LIST_THROTTLE_MS
+    ) {
+      return; // 节流：60 秒内不重复拉取
+    }
     try {
       const result = await this._hass.callWS({
         type: "call_service",
@@ -284,6 +317,8 @@ class OrviboDoorLockCard extends HTMLElement {
       // 异步期间 DOM 可能被 _render 重建，必须重新查询最新节点
       const listEl = this.shadowRoot.querySelector("#ov-tp-list");
       if (!listEl) return;
+      this._listLoaded = true;
+      this._lastListAt = Date.now();
       if (!records.length) {
         listEl.innerHTML = "<div class='meta'>暂无临时密码</div>";
         return;
@@ -305,7 +340,12 @@ class OrviboDoorLockCard extends HTMLElement {
         btn.addEventListener("click", () => this._revoke(Number(btn.getAttribute("data-aid"))));
       });
     } catch (e) {
-      listEl.innerHTML = `<div class='error'>${this._escapeHtml(e.message || String(e))}</div>`;
+      const currentEl = this.shadowRoot.querySelector("#ov-tp-list");
+      if (currentEl) {
+        currentEl.innerHTML = `<div class='error'>${this._escapeHtml(
+          e.message || String(e)
+        )}</div>`;
+      }
     }
   }
 
@@ -323,6 +363,8 @@ class OrviboDoorLockCard extends HTMLElement {
     } catch (e) {
       console.error("ORVIBO card: 删除失败", e);
     }
+    this._lastListAt = 0;
+    this._listLoaded = false;
     this._loadList();
   }
 
