@@ -921,6 +921,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             uid = dev.get("uid", "")
         # time 字段可能为 None（而非缺失），统一兜底为当前时间戳
         event_ts = event.get("time") or int(time.time())
+        snapshot_kind = event.get("snapshot_kind") or event.get("kind", "event")
         out: Dict[str, str] = {}
         for field, target in (
             ("video_url", "media_url"),
@@ -942,7 +943,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     key,
                     url,
                     out,
-                    event.get("kind", "event"),
+                    snapshot_kind,
                     event_ts,
                 )
         snapshot_key = event.get("pic_url") or event.get("doorbell_url")
@@ -952,7 +953,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     device_id,
                     uid,
                     snapshot_key,
-                    event.get("kind", "event"),
+                    snapshot_kind,
                     event_ts,
                 )
             )
@@ -1432,6 +1433,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if event is None:
             return
         event["device_id"] = device_id or event.get("device_id")
+        event["snapshot_kind"] = self._message_snapshot_kind(event.get("text") or "")
         event.update(self._attach_media_urls(device_id, raw_status, event))
         self.hass.bus.async_fire(LOCK_EVENT, event)
         _LOGGER.debug(
@@ -1441,6 +1443,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             event.get("is_alarm"),
             event.get("text"),
         )
+
+    @staticmethod
+    def _message_snapshot_kind(text: str) -> str:
+        """按消息文本区分截图归档前缀（逗留/来访，便于卡片分组展示）。"""
+        if "逗留" in text:
+            return "loiter"
+        if "来访" in text or "访客" in text:
+            return "visit"
+        return "message"
 
     def _parse_status_generic(self, dev_state: dict, raw_status: dict) -> None:
         """通用状态解析（未知设备类型）"""

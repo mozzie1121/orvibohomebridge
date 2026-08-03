@@ -12,6 +12,7 @@
  */
 
 const ORVIBO_PREFIX = "orvibohomebridge_";
+const CARD_VERSION = "0.4.2";
 
 class OrviboDoorLockCard extends HTMLElement {
   constructor() {
@@ -24,8 +25,15 @@ class OrviboDoorLockCard extends HTMLElement {
     this._tempError = "";
     this._entitiesLoaded = false;
     this._listOpen = false;
+    this._grantOpen = false;
     this._lastListAt = 0;
     this._listLoaded = false;
+    this._events = [];
+    this._eventsLoaded = false;
+    this._eventsLoading = false;
+    this._eventsLastCam = "";
+    this._lastReloadAt = 0;
+    this._lightboxUrl = null;
     this.attachShadow({ mode: "open" });
   }
 
@@ -45,6 +53,14 @@ class OrviboDoorLockCard extends HTMLElement {
     if (!this._entitiesLoaded) {
       this._loadEntities();
     } else {
+      if (
+        (!this._entities.door || !this._entities.lock_state) &&
+        Date.now() - this._lastReloadAt > 60000
+      ) {
+        this._lastReloadAt = Date.now();
+        this._entitiesLoaded = false;
+        this._loadEntities();
+      }
       this._render();
     }
   }
@@ -80,20 +96,37 @@ class OrviboDoorLockCard extends HTMLElement {
         if (!dev) continue;
         const uid = ent.unique_id;
         let kind = "unknown";
-        if (uid.includes("door_lock_state")) kind = "lock_state";
+        // door_lock_doorbell 含 door_lock_door 子串，必须优先匹配
+        if (uid.includes("door_lock_doorbell")) kind = "doorbell";
+        else if (uid.includes("door_lock_state")) kind = "lock_state";
         else if (uid.includes("door_lock_door")) kind = "door";
         else if (uid.includes("dry_battery")) kind = "dry_battery";
         else if (uid.includes("lithium_battery")) kind = "lithium_battery";
         else if (uid.includes("door_lock_unlock")) kind = "unlock";
         else if (uid.includes("temp_password")) kind = "temp_password";
         else if (uid.includes("camera")) kind = "camera";
-        else if (uid.includes("doorbell")) kind = "doorbell";
         byDevice[dev.deviceId] = byDevice[dev.deviceId] || { name: dev.name, entities: {} };
         byDevice[dev.deviceId].entities[kind] = ent.entity_id;
       }
       const requested = this._config.device_id;
       const candidates = Object.keys(byDevice);
-      const deviceId = requested && byDevice[requested] ? requested : candidates[0];
+      let deviceId = requested && byDevice[requested] ? requested : "";
+      if (!deviceId) {
+        // 多设备匹配时选择实体最全的门锁（锁状态+门磁+截图都在的优先）
+        let bestScore = -1;
+        for (const id of candidates) {
+          const ents = byDevice[id].entities;
+          const score =
+            (ents.lock_state ? 2 : 0) +
+            (ents.door ? 2 : 0) +
+            (ents.camera ? 1 : 0) +
+            Object.keys(ents).length;
+          if (score > bestScore) {
+            bestScore = score;
+            deviceId = id;
+          }
+        }
+      }
       if (deviceId && byDevice[deviceId]) {
         this._deviceId = deviceId;
         this._deviceName = byDevice[deviceId].name;
@@ -152,14 +185,15 @@ class OrviboDoorLockCard extends HTMLElement {
         : "-";
     const cameraEntity = e.camera;
     const cameraState = cameraEntity ? this._hass.states[cameraEntity] : null;
-    const cameraToken =
-      cameraState && cameraState.attributes
-        ? cameraState.attributes.access_token
-        : "";
-    const cameraUrl =
-      cameraEntity && cameraToken
-        ? `/api/camera_proxy/${cameraEntity}?token=${encodeURIComponent(cameraToken)}`
-        : "";
+    const camKey = cameraState
+      ? `${cameraState.state}|${cameraState.last_updated}`
+      : "";
+    if (!this._eventsLoaded) {
+      this._loadEvents();
+    } else if (camKey && camKey !== this._eventsLastCam) {
+      this._loadEvents();
+    }
+    this._eventsLastCam = camKey;
 
     root.innerHTML = `
       <ha-card>
@@ -176,10 +210,31 @@ class OrviboDoorLockCard extends HTMLElement {
           <div class="stat"><span class="stat-label">锂电池</span><span class="stat-value">${this._escapeHtml(lithiumLabel)}</span></div>
           <div class="stat"><span class="stat-label">最近临时密码</span><span class="stat-value">${this._escapeHtml(tempPwd || "无")}</span></div>
         </div>
-        ${cameraUrl ? `<div class="snapshot"><img src="${cameraUrl}" alt="门锁截图" /></div>` : ""}
+        ${
+          this._events.length
+            ? `<div class="events">${this._events
+                .slice(0, 8)
+                .map(
+                  (ev, idx) => `
+            <div class="ev-item" data-idx="${idx}">
+              <img src="${ev.url}" alt="${this._eventLabel(ev.kind)}" loading="lazy" />
+              <div class="ev-label">${this._eventLabel(ev.kind)}</div>
+              <div class="ev-time">${this._fmtTs(ev.time)}</div>
+            </div>`
+                )
+                .join("")}</div>`
+            : ""
+        }
+        ${
+          this._lightboxUrl
+            ? `<div class="lightbox" id="ov-lightbox"><img src="${this._lightboxUrl}" alt="事件大图" /></div>`
+            : ""
+        }
         <div class="section">
-          <div class="section-title">下发临时密码</div>
-          <div class="form">
+          <div class="section-title toggle" id="ov-grant-toggle">
+            <span>${this._grantOpen ? "▾" : "▸"} 生成临时密码</span>
+          </div>
+          <div id="ov-grant-form" class="form" style="${this._grantOpen ? "" : "display:none"}">
             <label>类型
               <select id="ov-tp-type">
                 <option value="2">临时（时长+次数）</option>
@@ -227,7 +282,14 @@ class OrviboDoorLockCard extends HTMLElement {
         .stat { background: var(--card-background-color, #f5f5f5); border-radius: 8px; padding: 8px 12px; flex: 1; min-width: 90px; }
         .stat-label { display: block; color: var(--secondary-text-color); font-size: 11px; }
         .stat-value { font-weight: 600; }
-        .snapshot img { width: 100%; border-radius: 8px; margin-bottom: 10px; max-height: 220px; object-fit: cover; }
+        .events { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 10px; padding-bottom: 4px; }
+        .ev-item { flex: 0 0 auto; width: 76px; cursor: pointer; text-align: center; }
+        .ev-item img { width: 76px; height: 76px; object-fit: cover; border-radius: 6px; display: block; }
+        .ev-label { font-size: 11px; color: var(--secondary-text-color); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ev-time { font-size: 10px; color: var(--secondary-text-color); opacity: 0.8; }
+        .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.82); display: flex; align-items: center; justify-content: center; z-index: 9999; cursor: zoom-out; }
+        .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
+        .ver { margin-top: 8px; font-size: 10px; color: var(--secondary-text-color); opacity: 0.6; text-align: right; }
         .section { border-top: 1px solid var(--divider-color); padding-top: 12px; margin-top: 12px; }
         .section-title { font-weight: 600; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
         .toggle { cursor: pointer; user-select: none; }
@@ -243,9 +305,14 @@ class OrviboDoorLockCard extends HTMLElement {
         .tp-item .meta { color: var(--secondary-text-color); font-size: 12px; }
         .tp-item.expired { opacity: 0.5; }
       </style>
+      <div class="ver">orvibo-door-lock-card v${CARD_VERSION}</div>
     `;
 
     root.querySelector("#ov-tp-grant").addEventListener("click", () => this._grant());
+    root.querySelector("#ov-grant-toggle").addEventListener("click", () => {
+      this._grantOpen = !this._grantOpen;
+      this._render();
+    });
     root.querySelector("#ov-tp-toggle").addEventListener("click", (e) => {
       if (e.target.closest("#ov-tp-refresh")) return;
       this._listOpen = !this._listOpen;
@@ -256,6 +323,23 @@ class OrviboDoorLockCard extends HTMLElement {
       this._listLoaded = false;
       this._loadList();
     });
+    root.querySelectorAll(".ev-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        const idx = Number(el.getAttribute("data-idx"));
+        const ev = this._events[idx];
+        if (ev) {
+          this._lightboxUrl = ev.url;
+          this._render();
+        }
+      });
+    });
+    const lightboxEl = root.querySelector("#ov-lightbox");
+    if (lightboxEl) {
+      lightboxEl.addEventListener("click", () => {
+        this._lightboxUrl = null;
+        this._render();
+      });
+    }
     if (this._listOpen) {
       this._loadList();
     }
@@ -383,6 +467,57 @@ class OrviboDoorLockCard extends HTMLElement {
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  _eventLabel(kind) {
+    const labels = {
+      ring: "有人来访",
+      visit: "有人来访",
+      loiter: "逗留",
+      picklock: "异常开门",
+      message: "消息",
+    };
+    return labels[kind] || kind || "事件";
+  }
+
+  async _loadEvents() {
+    if (!this._hass || !this._deviceId || this._eventsLoading) return;
+    this._eventsLoading = true;
+    try {
+      const result = await this._hass.callWS({
+        type: "call_service",
+        domain: "orvibohomebridge",
+        service: "list_events",
+        service_data: { device_id: this._deviceId, limit: 12 },
+        return_response: true,
+      });
+      const res = result && result.response;
+      const events = (res && res.events) || [];
+      const images = [];
+      for (const ev of events) {
+        if (ev.type !== "image") continue;
+        let url = "";
+        try {
+          const resolved = await this._hass.callWS({
+            type: "media_source/resolve_media",
+            media_id: ev.media_id,
+          });
+          url = resolved && resolved.url;
+        } catch (e) {
+          console.warn("ORVIBO card: 解析事件图片失败", ev.media_id, e);
+        }
+        if (url) {
+          images.push({ kind: ev.kind, time: ev.time, url });
+        }
+      }
+      this._events = images;
+      this._eventsLoaded = true;
+    } catch (e) {
+      console.error("ORVIBO card: 加载事件历史失败", e);
+      this._eventsLoaded = true;
+    }
+    this._eventsLoading = false;
+    this._render();
   }
 }
 
