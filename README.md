@@ -454,7 +454,9 @@ orvibohomebridge/
 
 ## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎提交 Issue 和 Pull Request！新增设备支持前请阅读
+[贡献指南：新增设备支持](CONTRIBUTING.md)，其中说明了架构接入点、真机证据、
+脱敏要求和测试清单。
 
 ## 📄 许可证
 
