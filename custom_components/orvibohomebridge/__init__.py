@@ -1,5 +1,13 @@
 import logging
 import asyncio
+try:
+    from homeassistant.components.frontend import add_extra_js_url
+except ImportError:  # 旧版 HA 兼容
+    add_extra_js_url = None  # type: ignore[assignment]
+try:
+    from homeassistant.components.http import StaticPathConfig
+except ImportError:  # 旧版 HA 兼容
+    StaticPathConfig = None  # type: ignore[assignment]
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
@@ -44,23 +52,25 @@ async def async_setup(hass: HomeAssistant, config: dict):
         )
         if www_dir.is_dir():
             try:
-                from homeassistant.components.http import StaticPathConfig
-
-                await hass.http.async_register_static_paths(
-                    [StaticPathConfig(
-                        url_path="/orvibohomebridge/www",
-                        path=str(www_dir),
-                        cache_headers=True,
-                    )]
-                )
+                if StaticPathConfig is not None:
+                    await hass.http.async_register_static_paths(
+                        [StaticPathConfig(
+                            url_path="/orvibohomebridge/www",
+                            path=str(www_dir),
+                            cache_headers=True,
+                        )]
+                    )
+                else:
+                    hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
             except (AttributeError, TypeError):
                 hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
             js_url = "/orvibohomebridge/www/orvibo-door-lock-card.js"
             try:
-                from homeassistant.components.frontend import add_extra_js_url
-
-                add_extra_js_url(hass, js_url)
-            except (AttributeError, TypeError, ImportError):
+                if add_extra_js_url is not None:
+                    add_extra_js_url(hass, js_url)
+                else:
+                    hass.components.frontend.add_extra_js_url(hass, js_url)
+            except (AttributeError, TypeError):
                 # 旧版 HA：hass.components 方式
                 hass.components.frontend.add_extra_js_url(hass, js_url)
             _LOGGER.info("门锁卡片资源已注册")
