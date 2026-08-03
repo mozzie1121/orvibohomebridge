@@ -149,6 +149,31 @@ class ParseAuthorizationItemTests(unittest.TestCase):
         }
         self.assertIsNone(temp_password.parse_authorization_item(item))
 
+    def test_skips_invalid_status(self) -> None:
+        # App 实测：authorizeStatus=3 为已删除/失效（delFlag 恒为 0）
+        item = {
+            "authorizedUnlockId": "x",
+            "authorizedId": 101,
+            "password": "911851",
+            "delFlag": 0,
+            "authorizeStatus": 3,
+        }
+        self.assertIsNone(temp_password.parse_authorization_item(item))
+
+    def test_keeps_valid_status(self) -> None:
+        item = {
+            "authorizedUnlockId": "x",
+            "authorizedId": 101,
+            "password": "496146",
+            "delFlag": 0,
+            "authorizeStatus": 0,
+            "number": 1,
+            "unlockNum": 0,
+        }
+        rec = temp_password.parse_authorization_item(item)
+        assert rec is not None
+        self.assertEqual(rec["password"], "496146")
+
     def test_skips_missing_fields(self) -> None:
         self.assertIsNone(temp_password.parse_authorization_item({}))
         self.assertIsNone(

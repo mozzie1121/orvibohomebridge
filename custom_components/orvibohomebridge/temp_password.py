@@ -56,6 +56,10 @@ def parse_authorization_item(item: Mapping[str, Any]) -> Optional[dict[str, Any]
         return None
     if item.get("delFlag"):  # 已删除的授权跳过
         return None
+    # App 实测：authorizeStatus=0 为有效，3 为已删除/失效（delFlag 恒为 0）
+    status = item.get("authorizeStatus")
+    if status not in (None, 0, "0"):
+        return None
     password = item.get("password") or ""
     authorized_id = item.get("authorizedId")
     if not password or authorized_id is None:

@@ -372,6 +372,31 @@ async def main() -> int:
                 j = await r.json()
             data = j.get("data", {}) or {}
             print("[readtable] data keys:", list(data.keys()))
+            auth_list = data.get("authorizedUnlock") or []
+            if isinstance(auth_list, list):
+                print(f"[readtable] authorizedUnlock 共 {len(auth_list)} 条，前 3 条:")
+                for item in auth_list[:3]:
+                    if isinstance(item, dict):
+                        print(
+                            "  ",
+                            json.dumps(
+                                {
+                                    k: item.get(k)
+                                    for k in (
+                                        "authorizedId",
+                                        "delFlag",
+                                        "authorizeStatus",
+                                        "pwdUseType",
+                                        "number",
+                                        "unlockNum",
+                                        "startTime",
+                                        "password",
+                                        "createTime",
+                                    )
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
             for k, v in data.items():
                 if isinstance(v, list):
                     sample = list(v[0].keys())[:15] if v else "-"
