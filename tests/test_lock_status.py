@@ -108,6 +108,7 @@ class BatteryTests(unittest.TestCase):
         self.assertIs(result["lithium_battery_setup"], True)
 
     def test_uninstalled_battery_reports_unknown_level(self) -> None:
+        # isSetupBattery=off 表示电池被取出（实测：扣电池触发推送），level 置未知
         result = lock_status.normalize_battery_properties(
             {"batteryManager": {"level": 0, "isSetupBattery": "off"}}
         )

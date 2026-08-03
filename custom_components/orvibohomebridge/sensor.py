@@ -62,6 +62,7 @@ async def async_setup_entry(
             entities.append(OrviboDoorLockLithiumBatterySensor(coordinator, device))
             entities.append(OrviboDoorLockStateSensor(coordinator, device))
             entities.append(OrviboDoorLockUnlockSensor(coordinator, device))
+            entities.append(OrviboTempPasswordSensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -406,3 +407,35 @@ class OrviboDoorLockUnlockSensor(OrviboSensorBase):
         if state.get("unlock_time") is not None:
             attributes["unlock_time"] = state.get("unlock_time")
         return attributes
+
+
+class OrviboTempPasswordSensor(OrviboSensorBase):
+    """智能门锁 - 临时密码（显示最近一次下发的密码，属性含详情）。"""
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"orvibohomebridge_temp_password_{self._device_id}"
+        self._attr_name = "临时密码"
+        self._attr_icon = "mdi:form-textbox-password"
+
+    @property
+    def native_value(self) -> str:
+        info = self.coordinator.temp_password_state(self._device_id)
+        return info["password"] if info else "无"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        info = self.coordinator.temp_password_state(self._device_id)
+        if not info:
+            return {}
+        return {
+            "authorized_id": info.get("authorized_id"),
+            "name": info.get("name"),
+            "phone": info.get("phone"),
+            "type": info.get("type"),
+            "number": info.get("number"),
+            "unlock_num": info.get("unlock_num"),
+            "start_time": info.get("start_time"),
+            "end_time": info.get("end_time"),
+            "expired": info.get("expired"),
+        }

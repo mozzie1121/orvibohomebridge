@@ -3,11 +3,11 @@
   "name": "ORVIBO HomeBridge",
   "codeowners": ["@mozzie1121"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http", "frontend"],
   "documentation": "https://github.com/mozzie1121/orvibohomebridge",
   "homekit": {},
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/mozzie1121/orvibohomebridge/issues",
   "requirements": ["aiohttp", "cryptography"],
-  "version": "0.3.8"
+  "version": "0.4.1"
 }

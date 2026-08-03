@@ -1,5 +1,13 @@
 import logging
 import asyncio
+try:
+    from homeassistant.components.frontend import add_extra_js_url
+except ImportError:  # 旧版 HA 兼容
+    add_extra_js_url = None  # type: ignore[assignment]
+try:
+    from homeassistant.components.http import StaticPathConfig
+except ImportError:  # 旧版 HA 兼容
+    StaticPathConfig = None  # type: ignore[assignment]
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
@@ -21,6 +29,9 @@ SERVICE_SET_LOCK_USER_NAME = "set_lock_user_name"
 SERVICE_FETCH_VIDEO = "fetch_video"
 SERVICE_LIST_EVENTS = "list_events"
 SERVICE_CLEANUP_HISTORY = "cleanup_history"
+SERVICE_GRANT_TEMP_PASSWORD = "grant_temp_password"
+SERVICE_REVOKE_TEMP_PASSWORD = "revoke_temp_password"
+SERVICE_LIST_TEMP_PASSWORDS = "list_temp_passwords"
 
 # 本集成仅通过配置项使用，不读取 configuration.yaml。
 # 新版 HA 要求 empty_config_schema 传入 domain 参数。
@@ -29,6 +40,47 @@ CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 async def async_setup(hass: HomeAssistant, config: dict):
     """设置服务"""
+    # 注册内嵌门锁卡片资源（纯原生 JS，无需第三方插件）
+    try:
+        from pathlib import Path
+
+        www_dir = Path(__file__).parent / "www"
+        _LOGGER.info(
+            "门锁卡片资源注册检查: www_dir=%s exists=%s",
+            www_dir,
+            www_dir.is_dir(),
+        )
+        if www_dir.is_dir():
+            try:
+                if StaticPathConfig is not None:
+                    await hass.http.async_register_static_paths(
+                        [StaticPathConfig(
+                            url_path="/orvibohomebridge/www",
+                            path=str(www_dir),
+                            cache_headers=True,
+                        )]
+                    )
+                else:
+                    hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
+            except (AttributeError, TypeError):
+                hass.http.register_static_path("/orvibohomebridge/www", str(www_dir))
+            try:
+                _js_ver = str(int((www_dir / "orvibo-door-lock-card.js").stat().st_mtime))
+            except OSError:
+                _js_ver = "0"
+            js_url = f"/orvibohomebridge/www/orvibo-door-lock-card.js?v={_js_ver}"
+            try:
+                if add_extra_js_url is not None:
+                    add_extra_js_url(hass, js_url)
+                else:
+                    hass.components.frontend.add_extra_js_url(hass, js_url)
+            except (AttributeError, TypeError):
+                # 旧版 HA：hass.components 方式
+                hass.components.frontend.add_extra_js_url(hass, js_url)
+            _LOGGER.info("门锁卡片资源已注册")
+    except Exception:  # noqa: BLE001 - 卡片注册失败不影响核心功能
+        _LOGGER.warning("门锁卡片资源注册失败（不影响其他功能）", exc_info=True)
+
     async def handle_refresh(call: ServiceCall):
         """处理手动刷新设备请求"""
         entry_id = call.data.get("entry_id")
@@ -196,6 +248,114 @@ async def async_setup(hass: HomeAssistant, config: dict):
         handle_cleanup_history,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+    async def handle_grant_temp_password(call: ServiceCall):
+        """下发临时密码（可选短信通知），返回密码/authorizedId/有效期。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        auth_type = int(call.data.get("type", 2))
+        minutes = int(call.data.get("minutes", 1440))
+        number = int(call.data.get("number", 1))
+        name = str(call.data.get("name", ""))
+        phone = str(call.data.get("phone", ""))
+        start_time = call.data.get("start_time")
+        end_time = call.data.get("end_time")
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        for coordinator in targets:
+            if not device_id and coordinator.devices:
+                device_id = next(
+                    (
+                        did
+                        for did, dev in coordinator.devices.items()
+                        if classify_device(dev) == DeviceCategory.DOOR_LOCK
+                    ),
+                    "",
+                )
+            if not device_id:
+                continue
+            result = await coordinator.async_grant_temp_password(
+                device_id=device_id,
+                auth_type=auth_type,
+                minutes=minutes,
+                number=number,
+                name=name,
+                phone=phone,
+                start_time=int(start_time) if start_time else None,
+                end_time=int(end_time) if end_time else None,
+            )
+            return result or {"error": "下发失败"}
+        return {"error": "未找到可用的配置项或门锁设备"}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GRANT_TEMP_PASSWORD,
+        handle_grant_temp_password,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def handle_revoke_temp_password(call: ServiceCall):
+        """删除指定 authorizedId 的临时密码。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        authorized_id = int(call.data.get("authorized_id", 0))
+        if not device_id or not authorized_id:
+            return {"error": "需要 device_id 和 authorized_id"}
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        for coordinator in targets:
+            if device_id not in coordinator.devices:
+                continue
+            return await coordinator.async_revoke_temp_password(
+                device_id, authorized_id
+            )
+        return {"error": "未找到设备或配置项"}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REVOKE_TEMP_PASSWORD,
+        handle_revoke_temp_password,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def handle_list_temp_passwords(call: ServiceCall):
+        """列出当前临时密码（含过期状态）。"""
+        entry_id = call.data.get("entry_id")
+        device_id = str(call.data.get("device_id", ""))
+        targets = []
+        if entry_id:
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if coordinator:
+                targets.append(coordinator)
+        else:
+            targets.extend(
+                coordinator for coordinator in hass.data.get(DOMAIN, {}).values()
+            )
+        result = {}
+        for coordinator in targets:
+            result.update(await coordinator.async_list_temp_passwords(device_id))
+        return result
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_TEMP_PASSWORDS,
+        handle_list_temp_passwords,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
@@ -229,6 +389,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # 历史记录自动清理：保留 7 天，每周执行；卸载时取消定时任务
     coordinator.start_history_cleanup()
     entry.async_on_unload(coordinator.stop_history_cleanup)
+    coordinator.start_temp_password_cleanup()
+    entry.async_on_unload(coordinator.stop_temp_password_cleanup)
 
     # 使用 async_forward_entry_setups 一次性加载所有平台
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

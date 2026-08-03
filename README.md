@@ -243,6 +243,85 @@ data:
   max_entries: 500   # 可选：每个设备最多保留 500 条，按时间裁剪
 ```
 
+## 🔑 临时密码
+
+支持下发临时密码到门锁（实测通过：type=1 限时 / type=2 临时，最多 4 个有效密码，
+可选短信通知、自动回收过期密码）。
+
+### 下发临时密码（自动化/手动）
+
+```yaml
+action: orvibohomebridge.grant_temp_password
+data:
+  device_id: w-77c139c4d27f4fa6a20e1f459849aa47   # 可选，留空自动选第一把门锁
+  type: 2              # 1=限时 2=临时（默认）
+  minutes: 1440        # 有效期（分钟），type=1 可用 start_time/end_time 指定绝对时间
+  number: 1            # 可用次数（0=不限）
+  name: 快递员          # 可选
+  phone: "13800138000" # 可选，同步短信通知该手机号
+response_variable: temp
+```
+
+返回：`password`（6 位临时密码）、`authorized_id`、`start_time`/`end_time`、`number` 等。
+同时触发事件 `orvibohomebridge_temp_password_event`（自动化可直接在通知里用密码）。
+
+### 管理
+
+```yaml
+# 删除（authorized_id 来自下发响应或查询）
+action: orvibohomebridge.revoke_temp_password
+data:
+  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+  authorized_id: 101
+
+# 查询当前有效密码（含过期状态）
+action: orvibohomebridge.list_temp_passwords
+data:
+  device_id: w-77c139c4d27f4fa6a20e1f459849aa47
+```
+
+**自动回收**：每 6 小时检查一次，已过期（结束时间到）或次数用尽的临时密码自动删除。
+门锁设备下还有"临时密码"传感器，显示最近一次下发的密码及详情属性。
+
+`list_temp_passwords` 通过 REST `readtable` 的 `authorizedUnlock` 表拉取**服务器端完整列表**
+（实测字段含 `authorizedId/password/number/unlockNum/startTime/phone` 等），
+卡片"临时密码管理"列表即显示服务器端全部授权（含删除/过期状态）。
+
+**自动化示例**（按门铃自动生成并通知）：
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: orvibohomebridge_lock_event
+    event_data:
+      kind: ring
+actions:
+  - action: orvibohomebridge.grant_temp_password
+    data:
+      minutes: 30
+      number: 1
+      name: 门铃访客
+    response_variable: temp
+  - action: notify.mobile_app_phone
+    data:
+      title: 访客临时密码
+      message: "访客临时密码：{{ temp.password }}，30 分钟内有效"
+```
+
+## 🃏 门锁卡片（内嵌，无第三方插件）
+
+集成自带一张**门锁卡片**（纯原生 JS，不依赖任何第三方卡片插件）。卡片整合：
+锁状态/门磁/干电池/锂电池总览、事件缩略图流（有人来访/逗留/异常开门，点击看大图）、
+临时密码下发（含短信通知）与临时密码管理（查看/删除/过期状态，默认折叠）。
+
+**使用方法**：重启 HA 后，编辑任意仪表盘 → 添加卡片 → 搜索 **ORVIBO 门锁**，
+卡片会自动识别门锁设备（也可手动配置 `device_id`）：
+
+```yaml
+type: custom:orvibo-door-lock-card
+device_id: w-77c139c4d27f4fa6a20e1f459849aa47   # 可选，留空自动选第一把门锁
+```
+
 自动化示例（按用户过滤）：
 
 ```yaml
@@ -268,6 +347,10 @@ actions:
 ### 智能晾衣机控制页面
 
 ![智能晾衣机控制页面](screenshots/clothes_horse.png)
+
+### 智能门锁卡片
+
+![智能门锁卡片](screenshots/lock.png)
 
 ## 🏗️ 工作原理
 

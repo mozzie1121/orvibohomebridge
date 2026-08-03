@@ -24,7 +24,7 @@ from .const import (
     SYS_VERSION, HARDWARE_VERSION, LANGUAGE, PHONE_NAME, DEBUG_INFO,
     CMD_HELLO, CMD_LOGIN, CMD_CONTROL, CMD_HEARTBEAT,
     CMD_CLOTHES_HORSE_CONTROL, CMD_CLOTHES_HORSE_QUERY,
-    CMD_COS_AUTH,
+    CMD_COS_AUTH, CMD_TEMP_PASSWORD, CMD_DELETE_AUTHORIZATION,
 )
 
 # 当前 HTTPS API 主机（模块级，可在运行时切换：中国区/国际区）
@@ -771,6 +771,64 @@ class HomemateJsonData:
             "debugInfo": DEBUG_INFO,
         }
         return payload
+
+    @classmethod
+    def ssl_temp_password(
+        cls,
+        device_id: str,
+        device_uid: str,
+        name: str,
+        auth_type: int,
+        minutes: int,
+        number: int,
+        phone: str,
+        start_time: int,
+        end_time: int,
+    ):
+        """构建临时密码下发请求（cmd=246，对照 App 抓包实测）。"""
+        serial = generate_serial()
+        uniSerial = generate_serial(use_time=True)
+        return {
+            "deviceId": device_id,
+            "uid": device_uid,
+            "userName": name,
+            "type": auth_type,
+            "effectTime": minutes,
+            "startTime": start_time,
+            "endTime": end_time,
+            "number": number,
+            "phone": phone,
+            "cmd": CMD_TEMP_PASSWORD,
+            "serial": serial,
+            "clientType": 1,
+            "uniSerial": uniSerial,
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
+
+    @classmethod
+    def ssl_delete_authorization(
+        cls,
+        device_id: str,
+        device_uid: str,
+        authorized_id: int,
+    ):
+        """构建删除授权请求（cmd=247，authorizedId 来自下发响应）。"""
+        serial = generate_serial()
+        uniSerial = generate_serial(use_time=True)
+        return {
+            "uid": device_uid,
+            "deviceId": device_id,
+            "userId": authorized_id,
+            "cmd": CMD_DELETE_AUTHORIZATION,
+            "serial": serial,
+            "clientType": 1,
+            "uniSerial": uniSerial,
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
 
     @classmethod
     def create_sign(cls, params, key=SIGN_KEY):

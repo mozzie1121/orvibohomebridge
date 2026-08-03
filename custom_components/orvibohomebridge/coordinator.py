@@ -16,6 +16,12 @@ from .https_client import HttpsClient
 from .cos_media import CosMediaManager
 from .video_archive import VideoArchiver
 from .history import history_dir, save_snapshot
+from .temp_password import (
+    describe_record,
+    is_expired,
+    parse_authorization_item,
+    parse_grant_response,
+)
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .packet import get_api_host
 from .redact import fingerprint, redact_packet
@@ -81,6 +87,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._snapshot_pending: set[tuple[str, str]] = set()  # (device_id, object_key) 进行中
         self._history_cleanup_unsub = None
         self.HISTORY_KEEP_DAYS = 7  # 历史截图/录像保留天数
+        self._temp_passwords: Dict[str, list[dict]] = {}  # device_id -> 临时密码记录
+        self._temp_cleanup_unsub = None
+        self.TEMP_PASSWORD_MAX = 4  # 服务端限制：每设备最多 4 个临时密码
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
@@ -912,6 +921,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             uid = dev.get("uid", "")
         # time 字段可能为 None（而非缺失），统一兜底为当前时间戳
         event_ts = event.get("time") or int(time.time())
+        snapshot_kind = event.get("snapshot_kind") or event.get("kind", "event")
         out: Dict[str, str] = {}
         for field, target in (
             ("video_url", "media_url"),
@@ -933,7 +943,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     key,
                     url,
                     out,
-                    event.get("kind", "event"),
+                    snapshot_kind,
                     event_ts,
                 )
         snapshot_key = event.get("pic_url") or event.get("doorbell_url")
@@ -943,7 +953,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     device_id,
                     uid,
                     snapshot_key,
-                    event.get("kind", "event"),
+                    snapshot_kind,
                     event_ts,
                 )
             )
@@ -1177,6 +1187,218 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             max_entries,
         )
 
+    async def async_grant_temp_password(
+        self,
+        device_id: str,
+        auth_type: int = 2,
+        minutes: int = 1440,
+        number: int = 1,
+        name: str = "",
+        phone: str = "",
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        device_uid: str = "",
+    ) -> Dict[str, Any]:
+        """下发临时密码（cmd=246），记录并发布事件。
+
+        返回 {error} 或归一化记录（含 password/authorized_id/有效期等）。
+        """
+        from .const import TEMP_PASSWORD_EVENT
+
+        sslc = self.ssl_client
+        if sslc is None:
+            return {"error": "SSL 客户端未就绪"}
+        # 先同步服务器端授权状态（App 删除/过期后 readtable 会反映），
+        # 避免本地内存累积导致误判上限
+        server_records = await self.async_fetch_server_temp_passwords()
+        device_active = [
+            r for r in server_records if r.get("device_id") == device_id
+        ]
+        if len(device_active) >= self.TEMP_PASSWORD_MAX:
+            return {"error": f"临时密码已达上限（{self.TEMP_PASSWORD_MAX} 个），请先删除旧密码"}
+        records = self._temp_passwords.setdefault(device_id, [])
+        if not device_uid:
+            dev = self.devices.get(device_id) or {}
+            device_uid = dev.get("uid", "")
+        name = name or f"临时用户 {time.strftime('%m%d%H%M')}"
+        resp = await sslc.send_temp_password(
+            device_id=device_id,
+            device_uid=device_uid,
+            name=name,
+            auth_type=auth_type,
+            minutes=minutes,
+            number=number,
+            phone=phone,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        if not resp:
+            return {"error": "未收到 cmd=246 响应（超时）"}
+        if resp.get("status") not in (None, 0, "0"):
+            return {"error": f"下发失败 status={resp.get('status')} msg={resp.get('msg')}"}
+        record = parse_grant_response(resp)
+        if record is None:
+            return {"error": "响应缺少密码或 authorizedId"}
+        record["device_id"] = device_id
+        records.append(record)
+        # 只保留最近 10 条历史
+        if len(records) > 10:
+            self._temp_passwords[device_id] = records[-10:]
+        info = describe_record(record)
+        self.hass.bus.async_fire(
+            TEMP_PASSWORD_EVENT,
+            {"device_id": device_id, **info},
+        )
+        # 触发实体刷新（临时密码传感器重新读取）
+        self.device_states.setdefault(device_id, {})["temp_password_ts"] = time.time()
+        self.async_set_updated_data(self.device_states)
+        _LOGGER.info(
+            "临时密码已下发 device=%s authorizedId=%s",
+            fingerprint(device_id, self._redaction_salt),
+            record["authorized_id"],
+        )
+        return info
+
+    async def async_revoke_temp_password(
+        self,
+        device_id: str,
+        authorized_id: int,
+        device_uid: str = "",
+    ) -> Dict[str, Any]:
+        """删除临时密码（cmd=247）。"""
+        sslc = self.ssl_client
+        if sslc is None:
+            return {"error": "SSL 客户端未就绪"}
+        if not device_uid:
+            dev = self.devices.get(device_id) or {}
+            device_uid = dev.get("uid", "")
+        resp = await sslc.delete_authorization(
+            device_id=device_id,
+            device_uid=device_uid,
+            authorized_id=authorized_id,
+        )
+        if not resp:
+            return {"error": "未收到 cmd=247 响应（超时）"}
+        if resp.get("status") not in (None, 0, "0"):
+            return {"error": f"删除失败 status={resp.get('status')}"}
+        records = self._temp_passwords.get(device_id, [])
+        self._temp_passwords[device_id] = [
+            r for r in records if int(r.get("authorized_id", -1)) != int(authorized_id)
+        ]
+        self.device_states.setdefault(device_id, {})["temp_password_ts"] = time.time()
+        self.async_set_updated_data(self.device_states)
+        _LOGGER.info(
+            "临时密码已删除 device=%s authorizedId=%s",
+            fingerprint(device_id, self._redaction_salt),
+            authorized_id,
+        )
+        return {"ok": True, "authorized_id": authorized_id}
+
+    async def async_list_temp_passwords(self, device_id: str = "") -> Dict[str, Any]:
+        """列出服务器端全部临时密码（readtable authorizedUnlock，含过期状态）。"""
+        records = await self.async_fetch_server_temp_passwords()
+        if device_id:
+            records = [r for r in records if r.get("device_id") == device_id]
+        result: Dict[str, Any] = {}
+        for r in records:
+            did = r.get("device_id") or "unknown"
+            result.setdefault(did, []).append(describe_record(r))
+        return result
+
+    async def async_fetch_server_temp_passwords(self) -> list[dict]:
+        """从 readtable（REST 全量同步）拉取 authorizedUnlock 表。"""
+        client = self.https_client
+        if client is None or not client.is_logged_in:
+            _LOGGER.warning(
+                "拉取临时密码列表跳过: client=%s logged_in=%s",
+                client is not None,
+                client.is_logged_in if client else None,
+            )
+            return []
+        try:
+            data = await client._readtable(device_flag=0)
+        except Exception as e:  # noqa: BLE001 - 列表失败不影响其他功能
+            _LOGGER.warning("拉取临时密码列表失败: %s", e)
+            return []
+        if not isinstance(data, dict):
+            _LOGGER.warning("拉取临时密码列表: readtable 返回非 dict: %s", type(data))
+            return []
+        auth = data.get("authorizedUnlock")
+        _LOGGER.info(
+            "拉取临时密码列表: readtable keys=%s authorizedUnlock=%s",
+            list(data.keys())[:12],
+            f"list[{len(auth)}]" if isinstance(auth, list) else type(auth).__name__,
+        )
+        records = []
+        for item in auth or []:
+            rec = parse_authorization_item(item)
+            if rec is None:
+                continue
+            rec["device_id"] = item.get("deviceId") or ""
+            records.append(rec)
+        # 同步内存记录（供传感器展示，保留下发时的 name）
+        mem = self._temp_passwords
+        self._temp_passwords = {}
+        for rec in records:
+            did = rec["device_id"]
+            self._temp_passwords.setdefault(did, [])
+            existing = next(
+                (
+                    m
+                    for m in mem.get(did, [])
+                    if int(m.get("authorized_id", -1)) == rec["authorized_id"]
+                ),
+                None,
+            )
+            merged = dict(rec)
+            if existing:
+                merged["name"] = existing.get("name") or ""
+                merged["type"] = existing.get("type") or 0
+            self._temp_passwords[did].append(merged)
+        return records
+
+    def temp_password_state(self, device_id: str) -> Optional[dict]:
+        """给传感器用：返回最近一条有效临时密码的展示信息。"""
+        records = self._temp_passwords.get(device_id, [])
+        active = [r for r in records if not is_expired(r)]
+        if not active:
+            return None
+        latest = active[-1]
+        return describe_record(latest)
+
+    def start_temp_password_cleanup(self) -> None:
+        """启动临时密码自动回收：每 6 小时清理过期/次数用尽的密码。"""
+        if self._temp_cleanup_unsub is not None:
+            return
+        from homeassistant.helpers.event import async_track_time_interval
+
+        async def _run(_now=None) -> None:
+            for device_id, records in list(self._temp_passwords.items()):
+                for record in list(records):
+                    if not is_expired(record):
+                        continue
+                    try:
+                        await self.async_revoke_temp_password(
+                            device_id, int(record["authorized_id"])
+                        )
+                    except Exception:  # noqa: BLE001 - 回收失败下次再试
+                        _LOGGER.warning(
+                            "临时密码自动回收失败 device=%s authorizedId=%s",
+                            fingerprint(device_id, self._redaction_salt),
+                            record.get("authorized_id"),
+                        )
+
+        self.hass.async_create_task(_run())
+        self._temp_cleanup_unsub = async_track_time_interval(
+            self.hass, _run, timedelta(hours=6)
+        )
+
+    def stop_temp_password_cleanup(self) -> None:
+        """取消临时密码回收定时任务（集成卸载时调用）。"""
+        if self._temp_cleanup_unsub is not None:
+            self._temp_cleanup_unsub()
+            self._temp_cleanup_unsub = None
+
     def lock_user_name(self, device_id: str, user_id: object) -> Optional[str]:
         """返回门锁 userId 配置的显示名称（无配置返回 None）。"""
         if not isinstance(user_id, (str, int)):
@@ -1211,6 +1433,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if event is None:
             return
         event["device_id"] = device_id or event.get("device_id")
+        event["snapshot_kind"] = self._message_snapshot_kind(event.get("text") or "")
         event.update(self._attach_media_urls(device_id, raw_status, event))
         self.hass.bus.async_fire(LOCK_EVENT, event)
         _LOGGER.debug(
@@ -1220,6 +1443,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             event.get("is_alarm"),
             event.get("text"),
         )
+
+    @staticmethod
+    def _message_snapshot_kind(text: str) -> str:
+        """按消息文本区分截图归档前缀（逗留/来访，便于卡片分组展示）。"""
+        if "逗留" in text:
+            return "loiter"
+        if "来访" in text or "访客" in text:
+            return "visit"
+        return "message"
 
     def _parse_status_generic(self, dev_state: dict, raw_status: dict) -> None:
         """通用状态解析（未知设备类型）"""
@@ -1342,6 +1574,21 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     "properties": {}  # 新增properties容器兼容mqtt cmd=42
                 }
 
+                # 门锁电池不随 cmd=42 常推（仅变化/上线时），初始化时
+                # 从 readtable 设备属性补齐，后续推送增量更新
+                if category == DeviceCategory.DOOR_LOCK:
+                    from .lock_status import normalize_battery_properties as _norm_bat
+
+                    battery = _norm_bat(device.get("properties") or {})
+                    for bkey in (
+                        "dry_battery_level",
+                        "dry_battery_setup",
+                        "lithium_battery_level",
+                        "lithium_battery_setup",
+                    ):
+                        if bkey in battery:
+                            self.device_states[device_id][bkey] = battery[bkey]
+
                 # 晾衣架设备初始化专属字段（真实值由 cmd=100 查询后 cmd=99 推送回填）
                 if category == DeviceCategory.CLOTHES_HORSE:
                     self.device_states[device_id].update({
@@ -1447,6 +1694,19 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     status = device.get("status", {})
                     if status:
                         self.device_states[device_id].update(status)
+                    # 电池低频推送：定期刷新时从 readtable 设备属性同步
+                    if category == DeviceCategory.DOOR_LOCK:
+                        from .lock_status import normalize_battery_properties as _nb
+
+                        battery = _nb(device.get("properties") or {})
+                        for bkey in (
+                            "dry_battery_level",
+                            "dry_battery_setup",
+                            "lithium_battery_level",
+                            "lithium_battery_setup",
+                        ):
+                            if bkey in battery:
+                                self.device_states[device_id][bkey] = battery[bkey]
             return self.device_states
         except Exception as e:
             raise UpdateFailed(f"更新失败: {str(e)}") from e
