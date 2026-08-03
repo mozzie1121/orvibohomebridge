@@ -41,6 +41,7 @@ from .control_router import (
     color_temp_route,
     power_route,
 )
+from .status_dispatcher import StatusUpdateDispatcher
 from .const import (
     SSL_PORT,
     UPDATE_INTERVAL,
@@ -138,6 +139,26 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.devices: Dict[str, Any] = {}
         self.device_states: Dict[str, Any] = {}
         self.state_store = StateStore(self.device_states)
+        self.status_dispatcher = StatusUpdateDispatcher(
+            self.devices,
+            self.device_states,
+            self.state_store,
+            self._last_update_time,
+            self._cmd42_log,
+            on_motion=self._apply_motion_state_parser,
+            on_emergency=self._apply_emergency_state_parser,
+            on_lock_transient=lambda state, raw, device_id: self._apply_lock_transient_event(
+                device_id, state, raw
+            ),
+            on_lock_message=self._publish_lock_message,
+            on_lock_event=self._publish_lock_event,
+            on_updated=lambda: self.hass.add_job(
+                self.async_set_updated_data, self.device_states
+            ),
+            device_label=lambda device_id: fingerprint(
+                device_id, self._redaction_salt
+            ),
+        )
 
     def _apply_registered_state_parser(
         self, category: DeviceCategory, dev_state: dict, raw_status: dict
@@ -844,23 +865,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             event.get("text"),
         )
 
-    def _parse_status_generic(self, dev_state: dict, raw_status: dict) -> None:
-        """通用状态解析（未知设备类型）"""
-        props = raw_status.get("properties", {})
-        
-        # 尝试提取常见字段
-        onoff_obj = props.get("onoff", {})
-        if onoff_obj and isinstance(onoff_obj, dict) and onoff_obj.get("status"):
-            dev_state["state"] = onoff_obj.get("status") == "on"
-        else:
-            dev_state["state"] = raw_status.get("state", False)
-        
-        dev_state["brightness"] = raw_status.get("value2", props.get("brightness"))
-        dev_state["color_temp"] = raw_status.get("value3", props.get("colortemp"))
-        dev_state["position"] = raw_status.get("value1", props.get("percent"))
-        
-        _LOGGER.debug(f"[通用设备] state={dev_state['state']}")
-
     async def _discover_devices(self):
         """拉取并解析设备列表：readtable → getDeviceDesc → queryHomepageData 三层回退"""
         device_status_data = await self.https_client.fetch_device_status()
@@ -1137,222 +1141,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             _LOGGER.debug("设置session_id: %s", session_id)
             self.https_client.set_session_id(session_id)
 
-        def on_status_update(device_id: str, raw_status: dict):
-            """处理MQTT状态推送，根据设备类型调用对应的解析方法"""
-            _LOGGER.debug(
-                "收到MQTT状态更新: deviceId=%s cmd=%s",
-                fingerprint(device_id, self._redaction_salt),
-                raw_status.get("cmd"),
-            )
-
-            # 记录原始推送到内存（最多200条，仅诊断页脱敏展示，绝不写入日志）
-            self._cmd42_log.append({
-                "ts": __import__("time").time(),
-                "device_id": device_id,
-                "raw": dict(raw_status),
-            })
-            if len(self._cmd42_log) > 200:
-                self._cmd42_log = self._cmd42_log[-200:]
-            
-            # 多重匹配逻辑
-            matched_device_id = None
-            uid = raw_status.get("uid", "")
-
-            if device_id in self.device_states:
-                matched_device_id = device_id
-            elif uid and uid != device_id:
-                for stored_id, dev_info in self.device_states.items():
-                    if dev_info.get("uid") == uid:
-                        matched_device_id = stored_id
-                        break
-            else:
-                for stored_id, dev_info in self.device_states.items():
-                    if dev_info.get("uid") == device_id or dev_info.get("status_id") == device_id or dev_info.get("ext_addr") == device_id:
-                        matched_device_id = stored_id
-                        break
-                    if stored_id.startswith("w-") and stored_id[2:] == device_id:
-                        matched_device_id = stored_id
-                        break
-
-            if not matched_device_id:
-                _LOGGER.debug(f"MQTT推送设备 {device_id} 未匹配本地设备")
-                return
-
-            dev_state = self.device_states[matched_device_id]
-            state_before = dict(dev_state)
-            dev_state["properties"] = raw_status.get("properties", {})
-            dev_state["online"] = True
-            self._last_update_time[matched_device_id] = __import__("time").time()
-
-            # 获取设备信息，根据 deviceType / category 调用对应的解析方法
-            device_info = self.devices.get(matched_device_id)
-            device_type = device_info.get("device_type_raw", 0) if device_info else 0
-            sub_type = device_info.get("sub_device_type") if device_info else None
-            category = classify_device(device_info) if device_info else DeviceCategory.UNKNOWN
-
-            _LOGGER.debug(f"[设备类型] deviceType={device_type}, category={category.name}, deviceId={matched_device_id}")
-
-            # cmd=82 推送消息（门锁文本消息/告警）：只发事件，不改设备状态属性
-            if raw_status.get("cmd") == 82:
-                self._publish_lock_message(matched_device_id, raw_status)
-                self.state_store.mark(
-                    matched_device_id,
-                    ("online", "properties"),
-                    StateSource.SSL,
-                )
-                return
-
-            # 晾衣架专用协议（cmd=99 推送，带 is_clothes_horse 标志）
-            if raw_status.get("is_clothes_horse"):
-                self._apply_registered_state_parser(
-                    DeviceCategory.CLOTHES_HORSE, dev_state, raw_status
-                )
-            elif raw_status.get("cmd") == 352:
-                self._apply_lock_transient_event(
-                    matched_device_id, dev_state, raw_status
-                )
-            elif device_type == 38:
-                if sub_type == 6:
-                    self._apply_registered_state_parser(
-                        DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT,
-                        dev_state,
-                        raw_status,
-                    )
-                else:
-                    self._apply_registered_state_parser(
-                        DeviceCategory.DIM_COLOR_LIGHT, dev_state, raw_status
-                    )
-            elif device_type == 502:
-                self._apply_registered_state_parser(
-                    DeviceCategory.DIMMABLE_LIGHT, dev_state, raw_status
-                )
-            elif device_type == 0 and sub_type == -2:
-                self._apply_registered_state_parser(
-                    DeviceCategory.ZIGBEE_DIMMABLE_LIGHT, dev_state, raw_status
-                )
-            elif device_type == 503:
-                self._apply_registered_state_parser(
-                    DeviceCategory.CCT_LIGHT, dev_state, raw_status
-                )
-            elif device_type == 300 and sub_type == 491:
-                self._apply_registered_state_parser(
-                    DeviceCategory.TEMP_HUMIDITY_SENSOR, dev_state, raw_status
-                )
-            elif device_type == 46:
-                self._apply_registered_state_parser(
-                    DeviceCategory.DOOR_WINDOW_SENSOR, dev_state, raw_status
-                )
-            elif device_type == 26:
-                self._apply_motion_state_parser(
-                    dev_state, raw_status, matched_device_id
-                )
-            elif device_type == 27:
-                self._apply_registered_state_parser(
-                    DeviceCategory.SMOKE_SENSOR, dev_state, raw_status
-                )
-            elif device_type == 56:
-                self._apply_emergency_state_parser(
-                    dev_state, raw_status, matched_device_id
-                )
-            elif device_type == 54:
-                self._apply_registered_state_parser(
-                    DeviceCategory.WATER_LEAK_SENSOR, dev_state, raw_status
-                )
-            elif device_type == 522:
-                self._apply_registered_state_parser(
-                    DeviceCategory.DOOR_LOCK, dev_state, raw_status
-                )
-            elif device_type in (102, 501):
-                self._apply_registered_state_parser(
-                    DeviceCategory.LEGACY_LIGHT
-                    if device_type == 102
-                    else DeviceCategory.MONO_LIGHT,
-                    dev_state,
-                    raw_status,
-                )
-            elif device_type == 34:
-                self._apply_registered_state_parser(
-                    DeviceCategory.ZIGBEE_CURTAIN, dev_state, raw_status
-                )
-            elif device_type == 36:
-                self._apply_registered_state_parser(
-                    DeviceCategory.FAN_COIL_AC, dev_state, raw_status
-                )
-            elif device_type == 516:
-                self._apply_registered_state_parser(
-                    DeviceCategory.VENTILATION_SYSTEM, dev_state, raw_status
-                )
-            elif device_type in (135, 136):
-                self._apply_registered_state_parser(
-                    DeviceCategory.MIX_SWITCH, dev_state, raw_status
-                )
-            else:
-                # 用 category 兜底路由
-                if category in (DeviceCategory.SIMPLE_ZIGBEE_LIGHT, DeviceCategory.MONO_LIGHT, DeviceCategory.LIGHT_VIRTUAL_GROUP):
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.ZIGBEE_CURTAIN:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category in (DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.CCT_LIGHT):
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.FAN_COIL_AC:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.VENTILATION_SYSTEM:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.DIMMABLE_LIGHT:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.ZIGBEE_DIMMABLE_LIGHT:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.TEMP_HUMIDITY_SENSOR:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.DOOR_WINDOW_SENSOR:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.MOTION_SENSOR:
-                    self._apply_motion_state_parser(
-                        dev_state, raw_status, matched_device_id
-                    )
-                elif category == DeviceCategory.SMOKE_SENSOR:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.EMERGENCY_BUTTON:
-                    self._apply_emergency_state_parser(
-                        dev_state, raw_status, matched_device_id
-                    )
-                elif category == DeviceCategory.WATER_LEAK_SENSOR:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.GAS_SENSOR:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                elif category == DeviceCategory.DOOR_LOCK:
-                    self._apply_registered_state_parser(category, dev_state, raw_status)
-                else:
-                    self._parse_status_generic(dev_state, raw_status)
-
-            changed_fields = {
-                field
-                for field in set(state_before) | set(dev_state)
-                if state_before.get(field) != dev_state.get(field)
-            }
-            # 即使值未变化，SSL 回包也确认了当前快照；短保护窗口内
-            # 不应被可能稍旧的 readtable 结果回滚。
-            confirmed_fields = changed_fields | set(dev_state)
-            self.state_store.mark(
-                matched_device_id,
-                confirmed_fields,
-                StateSource.SSL,
-            )
-
-            # 门锁状态/事件归一化后发布到 HA 事件总线（供自动化订阅）
-            if (
-                device_type == 522
-                or category == DeviceCategory.DOOR_LOCK
-                or raw_status.get("cmd") == 352
-            ):
-                self._publish_lock_event(matched_device_id, raw_status)
-
-            # 通知HA刷新实体状态
-            self.hass.add_job(self.async_set_updated_data, self.device_states)
-            _LOGGER.debug(f"[{matched_device_id}] MQTT状态同步完成: state={dev_state.get('state')}, bri={dev_state.get('brightness')}, ct={dev_state.get('color_temp')}, pos={dev_state.get('position')}")
-
         # SSL 控制通道跟随当前客户端的云端区域，不依赖模块级全局状态。
         ssl_host = self.https_client.cloud.ssl_host
         self.ssl_client = SSLClient(
@@ -1362,7 +1150,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             username=self.username,
             password_hash=self.password_hash,
             family_id=self.https_client.family_id,
-            on_status_update=on_status_update,
+            on_status_update=self.status_dispatcher.dispatch,
             on_session_id_obtained=on_session_id_obtained,
         )
         self.cos_media = CosMediaManager(
