@@ -138,10 +138,18 @@ class OrviboDoorLockCard extends HTMLElement {
     const lockState = this._state(e.lock_state) || "-";
     const door = this._state(e.door);
     const dryBattery = this._state(e.dry_battery);
+    const lithiumBattery = this._state(e.lithium_battery);
     const tempPwd = this._state(e.temp_password);
     const lockStateLabel = { locked: "已上锁", unlocked: "未上锁", inside_locked: "门内已反锁", abnormal: "异常" }[lockState] || lockState;
     const doorLabel = door === "on" ? "开" : door === "off" ? "关" : (door || "-");
-    const batteryLabel = dryBattery != null ? `${dryBattery}%` : "-";
+    const batteryLabel =
+      dryBattery != null && dryBattery !== "unknown"
+        ? `${dryBattery}%`
+        : "-";
+    const lithiumLabel =
+      lithiumBattery != null && lithiumBattery !== "unknown"
+        ? `${lithiumBattery}%`
+        : "-";
     const cameraEntity = e.camera;
     const cameraState = cameraEntity ? this._hass.states[cameraEntity] : null;
     const cameraToken =
@@ -164,7 +172,8 @@ class OrviboDoorLockCard extends HTMLElement {
         </div>
         <div class="stats">
           <div class="stat"><span class="stat-label">门磁</span><span class="stat-value">${this._escapeHtml(doorLabel)}</span></div>
-          <div class="stat"><span class="stat-label">电池</span><span class="stat-value">${this._escapeHtml(batteryLabel)}</span></div>
+          <div class="stat"><span class="stat-label">干电池</span><span class="stat-value">${this._escapeHtml(batteryLabel)}</span></div>
+          <div class="stat"><span class="stat-label">锂电池</span><span class="stat-value">${this._escapeHtml(lithiumLabel)}</span></div>
           <div class="stat"><span class="stat-label">最近临时密码</span><span class="stat-value">${this._escapeHtml(tempPwd || "无")}</span></div>
         </div>
         ${cameraUrl ? `<div class="snapshot"><img src="${cameraUrl}" alt="门锁截图" /></div>` : ""}
