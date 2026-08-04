@@ -56,8 +56,16 @@
             "init": {
                 "title": "ORVIBO options",
                 "menu_options": {
+                    "reauth": "Sign in again",
                     "devices": "Select devices",
                     "lock_users": "Lock user mapping"
+                }
+            },
+            "reauth": {
+                "title": "Sign in again",
+                "description": "Enter the new password for {username}. Your family, devices, entities, and area assignments will be preserved.",
+                "data": {
+                    "password": "New password"
                 }
             },
             "lock_users": {
@@ -83,9 +91,14 @@
             }
         },
         "error": {
+            "auth_failed": "Login failed, check the new password",
+            "empty_username_or_password": "Password is required",
             "no_devices_selected": "Select at least one device",
             "cannot_connect": "Cannot connect to ORVIBO cloud",
             "no_devices": "No devices found in this family"
+        },
+        "abort": {
+            "reauth_successful": "Signed in successfully; existing device and entity settings were preserved"
         }
     },
     "entity": {

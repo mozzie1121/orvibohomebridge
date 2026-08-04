@@ -402,6 +402,49 @@ class SSLClient:
         await self._send_packet(payload, self.session_key)
         return True
 
+    async def _send_property_control(self, payload: dict) -> bool:
+        await self.connect_and_login()
+        if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
+            _LOGGER.debug("会话密钥无效，无法下发")
+            return False
+        await self._send_packet(payload, self.session_key)
+        return True
+
+    async def send_control_floor_heating_power(self, device_id: str, device_uid: str, state: bool):
+        return await self._send_property_control(
+            HomemateJsonData.ssl_control_floor_heating_power(
+                self.username, device_id, device_uid, state
+            )
+        )
+
+    async def send_control_floor_heating_temperature(self, device_id: str, device_uid: str, temperature: int):
+        return await self._send_property_control(
+            HomemateJsonData.ssl_control_floor_heating_temperature(
+                self.username, device_id, device_uid, temperature
+            )
+        )
+
+    async def send_control_dream_curtain_action(self, device_id: str, device_uid: str, action: str):
+        return await self._send_property_control(
+            HomemateJsonData.ssl_control_dream_curtain_action(
+                self.username, device_id, device_uid, action
+            )
+        )
+
+    async def send_control_dream_curtain_percent(self, device_id: str, device_uid: str, percent: int):
+        return await self._send_property_control(
+            HomemateJsonData.ssl_control_dream_curtain_percent(
+                self.username, device_id, device_uid, percent
+            )
+        )
+
+    async def send_control_dream_curtain_angle(self, device_id: str, device_uid: str, angle: int):
+        return await self._send_property_control(
+            HomemateJsonData.ssl_control_dream_curtain_angle(
+                self.username, device_id, device_uid, angle
+            )
+        )
+
     async def send_control_dimmable_light_brightness(self, device_id: str, device_uid: str, brightness_percent: int):
         """可调光灯亮度控制（set property 格式，type=502）。"""
         await self.connect_and_login()
@@ -573,7 +616,7 @@ class SSLClient:
         await self._send_packet(payload, self.session_key)
         return True
 
-    async def send_control_cover(self, device_id: str, device_uid: str, position: int):
+    async def send_control_cover(self, device_id: str, device_uid: str, position: int, stop_value2: int = 0):
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
             _LOGGER.debug("会话密钥无效，无法下发")
@@ -582,10 +625,63 @@ class SSLClient:
             username=self.username,
             device_id=device_id,
             device_uid=device_uid,
-            position=position
+            position=position,
+            stop_value2=stop_value2,
         )
         await self._send_packet(payload, self.session_key)
         return True
+
+    async def _send_legacy_floor_heating(
+        self,
+        device_id: str,
+        device_uid: str,
+        *,
+        order: str,
+        value1: int,
+        value2: int,
+    ) -> bool:
+        await self.connect_and_login()
+        if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
+            _LOGGER.debug("会话密钥无效，无法下发旧协议地暖控制")
+            return False
+        payload = HomemateJsonData.ssl_control_legacy_floor_heating(
+            username=self.username,
+            device_id=device_id,
+            device_uid=device_uid,
+            order=order,
+            value1=value1,
+            value2=value2,
+        )
+        await self._send_packet(payload, self.session_key)
+        return True
+
+    async def send_control_legacy_floor_heating_power(
+        self,
+        device_id: str,
+        device_uid: str,
+        is_on: bool,
+        *,
+        packed_state: int = 0,
+    ) -> bool:
+        return await self._send_legacy_floor_heating(
+            device_id,
+            device_uid,
+            order="on" if is_on else "off",
+            value1=0 if is_on else 1,
+            value2=0 if is_on else max(0, int(packed_state)),
+        )
+
+    async def send_control_legacy_floor_heating_temperature(
+        self, device_id: str, device_uid: str, temperature: int
+    ) -> bool:
+        target = max(10, min(35, int(round(temperature))))
+        return await self._send_legacy_floor_heating(
+            device_id,
+            device_uid,
+            order="temperature setting",
+            value1=8,
+            value2=target - 10,
+        )
 
     async def send_control_ventilation(self, device_id: str, device_uid: str, value1: int):
         """发送新风系统控制命令(cmd=15 set property)。

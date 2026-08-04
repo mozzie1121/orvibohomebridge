@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import time
 import unittest
+from unittest import mock
 
 MODULE_PATH = (
     Path(__file__).parents[1]
@@ -57,7 +58,8 @@ class ParseResponseTests(unittest.TestCase):
         self.assertEqual(creds.secret_id, SAMPLE_SECURITY["accessKeyId"])
         self.assertEqual(creds.session_token, SAMPLE_SECURITY["securityToken"])
         self.assertAlmostEqual(creds.expires_at, 1785700000 + 129600, delta=2)
-        self.assertTrue(creds.valid)
+        with mock.patch.object(cos_media.time, "time", return_value=1785700000):
+            self.assertTrue(creds.valid)
 
     def test_parse_wrong_namespace(self) -> None:
         inner = {"status": 0, "namespace": "Skill.Other", "security": SAMPLE_SECURITY}
@@ -161,7 +163,8 @@ class CredentialCacheTests(unittest.TestCase):
 
         import asyncio
 
-        asyncio.run(run())
+        with mock.patch.object(cos_media.time, "time", return_value=1785700000):
+            asyncio.run(run())
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0], ("u_1", "w-lock", "lock-uid"))
 
@@ -206,8 +209,9 @@ class CredentialCacheTests(unittest.TestCase):
 
         import asyncio
 
-        asyncio.run(run())
-        url = manager.try_signed_url("w-lock", "lock-uid", "/a/b.jpg")
+        with mock.patch.object(cos_media.time, "time", return_value=1785700000):
+            asyncio.run(run())
+            url = manager.try_signed_url("w-lock", "lock-uid", "/a/b.jpg")
         assert url is not None
         self.assertIn("q-signature=", url)
 

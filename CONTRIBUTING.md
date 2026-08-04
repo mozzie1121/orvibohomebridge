@@ -149,6 +149,62 @@ python tests/orvibo_probe.py <用户名> <密码> lock <家庭索引> <时长秒
 
 重要：探针的自动脱敏只覆盖凭据类字段，为了保留本地调试关联，它仍会输出设备 ID、家庭 ID、UID 等标识。生成的 JSONL **不能直接提交**，必须再次人工脱敏。
 
+### 批量家庭支持度审计
+
+如果测试账号可以访问大量家庭，可使用 `tools/bulk_readtable_audit.py` 自动切换家庭、拉取 readtable，并按项目当前的解析器和设备 taxonomy 汇总支持情况：
+
+```powershell
+$env:ORVIBO_USERNAME = "你的账号"
+$env:ORVIBO_PASSWORD = "你的密码"
+python tools/bulk_readtable_audit.py --cloud auto
+```
+
+首次建议先处理少量家庭，确认账号区域和输出符合预期：
+
+```text
+python tools/bulk_readtable_audit.py --cloud auto --max-families 3
+```
+
+脚本顺序处理所有家庭，失败时自动重试，并在每个家庭完成后写入检查点。中断后使用相同的 `--output-dir` 再次执行即可续跑。默认生成：
+
+没有设备表或设备数量为零的家庭会标记为 `empty` 并直接跳过，不计为失败，也不会中断后续家庭。
+
+- `audit-output/report.json`：全部协议特征和支持状态汇总。
+- `audit-output/unsupported.csv`：列出仅登记、仅识别、平台映射不一致和解析遗漏的协议特征，便于排序和筛选。
+- `audit-output/unsupported-enriched.csv`：本地存在 `tools/device_catalog.json` 时生成，额外包含产品名称、内部型号和目录歧义标记。
+- `audit-output/state.json`：本地断点状态，不应提交。
+
+脚本复用集成的 `HttpsClient`，运行环境需要安装 manifest 中声明的 `aiohttp`。Home Assistant 环境已具备该依赖；独立 Python 环境缺少依赖时可执行 `python -m pip install aiohttp`。
+
+如果审计已经完成，后来才取得 `device_catalog.json`，可以在不登录、不重新访问云端的情况下补全现有报告：
+
+```text
+python tools/bulk_readtable_audit.py --enrich-existing --output-dir audit-output
+```
+
+目录关联使用 `report.descriptor.model → deviceDescList.model → deviceDescId → deviceLanguageList.dataId`。增强报告不会导出 `deviceDescId`，只保留产品名、内部型号、候选数量和是否存在歧义。下载得到的 `tools/device_catalog.json` 以及所有 `audit-output*` 目录均已加入 `.gitignore`，不得随 PR 提交。
+
+官方目录也是集成精确识别设备型号的唯一来源。更新官方目录后，应重新生成可提交的运行时目录：
+
+```text
+python tools/generate_known_device_catalog.py tools/device_catalog.json custom_components/orvibohomebridge/known_device_catalog.json
+```
+
+生成文件只包含 `model`、中文产品名和内部型号。家庭审计报告用于确认设备覆盖及协议行为，不能用来覆盖官方型号名称；目录中存在某个型号也只代表“已识别”，不代表集成已经支持其状态解析或控制。
+
+支持状态含义：
+
+- `empty`：家庭内没有设备，已正常跳过。
+- `supported_verified`：代码支持且维护者已完成真机验证。
+- `supported_unverified`：已有分类和代码路径，但尚未声明真机验证。
+- `hidden`：项目已识别，但它是网关、父设备或有意不创建 HA 实体的设备。
+- `recognized_only`：taxonomy 能识别类别，但没有显式 HA 平台映射。
+- `platform_mismatch`：显式平台映射与当前 readtable 归一化结果不一致。
+- `registration_only`：只能登记为未知/其他设备，尚无完整实体或控制支持。
+- `parser_gap`：readtable 中存在，但当前解析链路没有生成标准设备。
+
+审计文件不会保存原始 readtable、家庭名、房间名、设备名或原始 ID；家庭和设备仅用本次审计的加盐指纹关联。设备型号和协议字段会保留，因为它们是判断支持缺口所必需的信息。即便如此，`audit-output/` 也仅应用于本地分析，提交 Issue/PR 时只摘取人工复核后的最小样本。
+
 推荐使用稳定且明显的占位符，并在同一份样本中保持映射一致：
 
 ```json

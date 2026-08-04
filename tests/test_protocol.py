@@ -329,6 +329,28 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(dicts[0]["device_name"], "Light")
         self.assertEqual(dicts[0]["room_name"], "Kitchen")
 
+    def test_preserves_device_aliases_and_floor_heating_properties(self) -> None:
+        [device] = protocol.parse_readtable_to_device_dicts({
+            "data": {
+                "device": [{
+                    "deviceId": "floor-panel",
+                    "deviceType": 300,
+                    "subDeviceType": 481,
+                    "statusId": "floor-status",
+                    "appDeviceId": "floor-app",
+                    "extAddr": "floor-ext",
+                    "endpoint": 1,
+                    "properties": {"thermostat": {"targetTemp": 21}},
+                }],
+                "deviceStatus": [],
+            }
+        })
+        self.assertEqual(device["device_type"], "climate")
+        self.assertEqual(device["status_id"], "floor-status")
+        self.assertEqual(device["app_device_id"], "floor-app")
+        self.assertEqual(device["ext_addr"], "floor-ext")
+        self.assertEqual(device["properties"]["thermostat"]["targetTemp"], 21)
+
     def test_OrviboDevice_frozen(self) -> None:
         dev = protocol.OrviboDevice(
             uid="x", name="", model="", device_type="",

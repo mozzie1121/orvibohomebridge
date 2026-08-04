@@ -131,7 +131,7 @@ class ControlTests(unittest.TestCase):
     def test_cct_light_colortemp(self) -> None:
         cmd = control.cct_light_colortemp_command(4000)
         self.assertEqual(cmd.properties,
-                         {"colorTemp": {"value": control.kelvin_to_mired(4000)}})
+                         {"colorTemp": {"value": 4000}})
 
     # ---- 可调光灯（type=502） ----
 

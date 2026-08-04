@@ -407,6 +407,70 @@ class HomemateJsonData:
         return payload
 
     @classmethod
+    def ssl_control_property(cls, username: str, device_id: str, device_uid: str, properties: dict):
+        """Build the common cmd=15 ``set property`` envelope."""
+        return {
+            "uid": device_uid,
+            "userName": username,
+            "deviceId": device_id,
+            "groupId": "",
+            "order": "set property",
+            "value1": 0,
+            "value2": 0,
+            "value3": 0,
+            "value4": 0,
+            "delayTime": 0,
+            "qualityOfService": 1,
+            "defaultResponse": 1,
+            "propertyResponse": 0,
+            "properties": properties,
+            "cmd": CMD_CONTROL,
+            "serial": generate_serial(),
+            "clientType": 1,
+            "uniSerial": generate_serial(use_time=True),
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
+
+    @classmethod
+    def ssl_control_floor_heating_power(cls, username: str, device_id: str, device_uid: str, state: bool):
+        return cls.ssl_control_property(
+            username, device_id, device_uid,
+            {"onoff": {"status": "on" if state else "off"}},
+        )
+
+    @classmethod
+    def ssl_control_floor_heating_temperature(cls, username: str, device_id: str, device_uid: str, temperature: int):
+        target = max(8, min(35, int(round(temperature))))
+        return cls.ssl_control_property(
+            username, device_id, device_uid,
+            {"thermostat": {"targetTemp": target}},
+        )
+
+    @classmethod
+    def ssl_control_dream_curtain_action(cls, username: str, device_id: str, device_uid: str, action: str):
+        if action not in {"open", "close", "pause"}:
+            raise ValueError("invalid dream curtain action")
+        return cls.ssl_control_property(
+            username, device_id, device_uid, {"curtain": {"action": action}}
+        )
+
+    @classmethod
+    def ssl_control_dream_curtain_percent(cls, username: str, device_id: str, device_uid: str, percent: int):
+        position = max(0, min(100, int(percent)))
+        return cls.ssl_control_property(
+            username, device_id, device_uid, {"curtain": {"percent": position}}
+        )
+
+    @classmethod
+    def ssl_control_dream_curtain_angle(cls, username: str, device_id: str, device_uid: str, angle: int):
+        value = max(0, min(180, int(angle)))
+        return cls.ssl_control_property(
+            username, device_id, device_uid, {"curtain": {"angle": value}}
+        )
+
+    @classmethod
     def ssl_control_cct_light_brightness(cls, username: str, device_id: str, device_uid: str, brightness_percent: int):
         """色温灯亮度控制（set property 格式，适用于 statusType=503）"""
         serial = generate_serial()
@@ -497,14 +561,11 @@ class HomemateJsonData:
         return payload
 
     @classmethod
-    def ssl_control_cover(cls, username: str, device_id: str, device_uid: str, position: int):
+    def ssl_control_cover(cls, username: str, device_id: str, device_uid: str, position: int, stop_value2: int = 0):
         """控制窗帘（position: 0-100，或使用字符串 'stop' 停止）"""
         serial = generate_serial()
         uniSerial = generate_serial(use_time=True)
-        if position == 0:
-            order = "close"
-            value1 = 0
-        elif isinstance(position, str) and position == "stop":
+        if isinstance(position, str) and position == "stop":
             order = "stop"
             value1 = 0
         else:
@@ -517,7 +578,7 @@ class HomemateJsonData:
             "groupId": "",
             "order": order,
             "value1": value1,  # 位置百分比 0-100
-            "value2": 0,
+            "value2": stop_value2 if order == "stop" else 0,
             "value3": 0,
             "value4": 0,
             "delayTime": 0,
@@ -533,6 +594,41 @@ class HomemateJsonData:
             "debugInfo": DEBUG_INFO,
         }
         return payload
+
+    @classmethod
+    def ssl_control_legacy_floor_heating(
+        cls,
+        username: str,
+        device_id: str,
+        device_uid: str,
+        *,
+        order: str,
+        value1: int,
+        value2: int,
+    ):
+        """Control verified type=112 ``orb_floorheat`` devices."""
+        return {
+            "uid": device_uid,
+            "userName": username,
+            "deviceId": device_id,
+            "groupId": "",
+            "order": order,
+            "value1": int(value1),
+            "value2": int(value2),
+            "value3": 0,
+            "value4": 0,
+            "delayTime": 0,
+            "qualityOfService": 1,
+            "defaultResponse": 1,
+            "propertyResponse": 0,
+            "cmd": CMD_CONTROL,
+            "serial": generate_serial(),
+            "clientType": 1,
+            "uniSerial": generate_serial(use_time=True),
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
 
     @classmethod
     def ssl_control_ventilation(cls, username: str, device_id: str, device_uid: str, value1: int):

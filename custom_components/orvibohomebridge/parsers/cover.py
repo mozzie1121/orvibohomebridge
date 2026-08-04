@@ -29,3 +29,23 @@ def parse_curtain(
     else:
         state = current_state.get("state", False)
     return StatePatch({"position": position, "state": state})
+
+
+def parse_dream_curtain(
+    current_state: Mapping[str, Any], raw_status: Mapping[str, Any]
+) -> StatePatch:
+    """Parse independently reported dream-curtain position and blade angle."""
+    props = raw_status.get("properties", {})
+    curtain = props.get("curtain", {}) if isinstance(props, Mapping) else {}
+    if not isinstance(curtain, Mapping):
+        return StatePatch({})
+
+    updates: dict[str, Any] = {}
+    if "percent" in curtain:
+        position = max(0, min(100, int(curtain["percent"])))
+        updates.update({"position": position, "state": position > 0})
+    if "angle" in curtain:
+        updates["angle"] = max(0, min(180, int(curtain["angle"])))
+    if "action" in curtain:
+        updates["cover_action"] = str(curtain["action"])
+    return StatePatch(updates)

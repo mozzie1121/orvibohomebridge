@@ -7,7 +7,7 @@ from typing import Optional
 from ..device_types import DeviceCategory
 from .appliance import parse_clothes_horse, parse_fan_coil_ac, parse_ventilation
 from .base import StateParser, StatePatch
-from .cover import parse_curtain
+from .cover import parse_curtain, parse_dream_curtain
 from .light import (
     parse_cct_light,
     parse_dim_color_light,
@@ -27,6 +27,7 @@ from .sensor import (
     parse_temp_humidity_sensor,
     parse_water_leak_sensor,
 )
+from .thermostat import parse_floor_heating, parse_legacy_floor_heating
 
 
 STATE_PARSERS: dict[DeviceCategory, StateParser] = {
@@ -41,6 +42,10 @@ STATE_PARSERS: dict[DeviceCategory, StateParser] = {
     DeviceCategory.CCT_LIGHT_STRIP: parse_cct_light,
     DeviceCategory.CCT_LIGHT: parse_cct_light,
     DeviceCategory.ZIGBEE_CURTAIN: parse_curtain,
+    DeviceCategory.ZIGBEE_ROLLING_SHUTTER: parse_curtain,
+    DeviceCategory.DREAM_CURTAIN: parse_dream_curtain,
+    DeviceCategory.FLOOR_HEATING: parse_floor_heating,
+    DeviceCategory.LEGACY_FLOOR_HEATING: parse_legacy_floor_heating,
     DeviceCategory.MIX_SWITCH: parse_switch,
     DeviceCategory.TEMP_HUMIDITY_SENSOR: parse_temp_humidity_sensor,
     DeviceCategory.DOOR_WINDOW_SENSOR: parse_door_window_sensor,

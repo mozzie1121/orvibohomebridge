@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
+from .known_device_models import identify_known_device
+
 
 class DeviceCategory(Enum):
     UNKNOWN = "unknown"
@@ -44,6 +46,9 @@ class DeviceCategory(Enum):
     DOOR_WINDOW_SENSOR = "door_window_sensor"          # deviceTypeId=46，门窗传感器
     FAST_MOVE_DIM_COLOR_LIGHT = "fast_move_dim_color_light"  # statusType=2, subDeviceType=6，fast move to level调光调色灯
     VENTILATION_SYSTEM = "ventilation_system"                # deviceType=516, classId=1114，新风系统
+    FLOOR_HEATING = "floor_heating"                          # deviceType=300, subType=481
+    LEGACY_FLOOR_HEATING = "legacy_floor_heating"            # deviceType=112, orb_floorheat
+    DREAM_CURTAIN = "dream_curtain"                          # deviceType=506, subType=408
     OTHER = "other"
 
 
@@ -251,6 +256,24 @@ _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
         description="deviceType=516, classId=1114，新风系统（停/慢/快三档）",
         capabilities=("onoff", "fan_speed", "preset_mode"),
     ),
+    DeviceCategory.FLOOR_HEATING: CategoryInfo(
+        category=DeviceCategory.FLOOR_HEATING,
+        label="地暖控制器",
+        description="deviceType=300, subType=481, MixPadFloorHeat",
+        capabilities=("onoff", "target_temperature", "temperature", "humidity"),
+    ),
+    DeviceCategory.LEGACY_FLOOR_HEATING: CategoryInfo(
+        category=DeviceCategory.LEGACY_FLOOR_HEATING,
+        label="地暖控制面板",
+        description="deviceType=112, subType=-2, ui.model=orb_floorheat",
+        capabilities=("onoff", "target_temperature", "temperature"),
+    ),
+    DeviceCategory.DREAM_CURTAIN: CategoryInfo(
+        category=DeviceCategory.DREAM_CURTAIN,
+        label="梦幻帘",
+        description="deviceType=506, subType=408, 开合位置与叶片角度",
+        capabilities=("position", "stop", "angle"),
+    ),
     DeviceCategory.OTHER: CategoryInfo(
         category=DeviceCategory.OTHER,
         label="其他设备",
@@ -287,12 +310,10 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     503: DeviceCategory.CCT_LIGHT,
     518: DeviceCategory.BACH_SWITCH,
     522: DeviceCategory.DOOR_LOCK,
-    107: DeviceCategory.DOOR_LOCK,  # Smart Lock T1 (WiFi直连)
     45: DeviceCategory.MIXPAD_GATEWAY,  # Zigbee Mini Hub (Hub100)，隐藏
     14: DeviceCategory.WIFI_CAMERA,
     10086: DeviceCategory.LIGHT_VIRTUAL_GROUP,
     38: DeviceCategory.DIM_COLOR_LIGHT,
-    102: DeviceCategory.LEGACY_LIGHT,
     52: DeviceCategory.CLOTHES_HORSE,
     43: DeviceCategory.SIMPLE_ZIGBEE_LIGHT,   # COCO智能插线板 (order=on/off格式，同light控制)
     26: DeviceCategory.MOTION_SENSOR,
@@ -303,8 +324,6 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     150: DeviceCategory.SMART_REMOTE,
     511: DeviceCategory.MIXPAD_4WAY_BASE,
     502: DeviceCategory.DIMMABLE_LIGHT,
-    300: DeviceCategory.TEMP_HUMIDITY_SENSOR,
-    0: DeviceCategory.ZIGBEE_DIMMABLE_LIGHT,
     46: DeviceCategory.DOOR_WINDOW_SENSOR,
     516: DeviceCategory.VENTILATION_SYSTEM,
     22: DeviceCategory.TEMP_HUMIDITY_SENSOR,
@@ -364,6 +383,10 @@ HARDWARE_VERIFIED_CATEGORIES = frozenset({
     DeviceCategory.DOOR_WINDOW_SENSOR,
     DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT,
     DeviceCategory.VENTILATION_SYSTEM,
+    DeviceCategory.ZIGBEE_ROLLING_SHUTTER,
+    DeviceCategory.FLOOR_HEATING,
+    DeviceCategory.LEGACY_FLOOR_HEATING,
+    DeviceCategory.DREAM_CURTAIN,
 })
 
 
@@ -375,14 +398,35 @@ def is_hidden_category(category: DeviceCategory) -> bool:
 def get_device_profile(device: Dict[str, Any]) -> DeviceProfile:
     """Resolve a device without granting control to unknown categories."""
     category = classify_device(device)
+    known_model = identify_known_device(device)
+    if category in {DeviceCategory.UNKNOWN, DeviceCategory.OTHER} and known_model:
+        category = DeviceCategory.OTHER
+        info = CategoryInfo(
+            category=category,
+            label=known_model.display_name,
+            description=(
+                "家庭批量审计中已识别型号；尚未验证控制协议"
+                + (
+                    f"（内部型号：{', '.join(known_model.internal_models)}）"
+                    if known_model.internal_models
+                    else ""
+                )
+            ),
+            capabilities=(),
+        )
+    else:
+        info = get_category_info(category)
+    hardware_verified = category in HARDWARE_VERIFIED_CATEGORIES
     return DeviceProfile(
         category=category,
-        info=get_category_info(category),
-        hardware_verified=category in HARDWARE_VERIFIED_CATEGORIES,
-        registration_only=category in {
-            DeviceCategory.UNKNOWN,
-            DeviceCategory.OTHER,
-        },
+        info=info,
+        hardware_verified=hardware_verified,
+        # A catalogue/category match is identification evidence, not control
+        # evidence.  Only hardware-verified profiles may leave registration-only.
+        registration_only=(
+            not hardware_verified
+            or category == DeviceCategory.LIGHT_VIRTUAL_GROUP
+        ),
     )
 
 
@@ -408,27 +452,69 @@ def classify_device(device: Dict[str, Any]) -> DeviceCategory:
     if not isinstance(device, dict):
         return DeviceCategory.UNKNOWN
 
-    device_type_raw = _safe_int(device.get("device_type_raw") or device.get("deviceType"))
-    sub_type = _safe_int(device.get("sub_device_type") or device.get("subDeviceType"))
+    raw_type_value = device.get("device_type_raw")
+    if raw_type_value is None:
+        raw_type_value = device.get("deviceType")
+    raw_sub_value = device.get("sub_device_type")
+    if raw_sub_value is None:
+        raw_sub_value = device.get("subDeviceType")
+    device_type_raw = _safe_int(raw_type_value)
+    sub_type = _safe_int(raw_sub_value)
+
+    # 真机 Profile 必须先于裸 deviceType 映射。
+    if device_type_raw == 0:
+        return DeviceCategory.ZIGBEE_DIMMABLE_LIGHT
+    if device_type_raw == 102:
+        return DeviceCategory.LEGACY_LIGHT
+    if device_type_raw == 112:
+        ui = device.get("ui")
+        ui_model = device.get("ui_model")
+        if not ui_model and isinstance(ui, dict):
+            ui_model = ui.get("model")
+        if sub_type == -2 and (
+            ui_model == "orb_floorheat"
+            or device.get("model") == "2ac836760da10748856a7e4eafb91efa"
+        ):
+            return DeviceCategory.LEGACY_FLOOR_HEATING
+        return DeviceCategory.UNKNOWN
+    if device_type_raw == 300:
+        if sub_type == 481:
+            return DeviceCategory.FLOOR_HEATING
+        if sub_type == 491:
+            return DeviceCategory.TEMP_HUMIDITY_SENSOR
+        return DeviceCategory.UNKNOWN
+    if device_type_raw == 503:
+        if sub_type == 436:
+            return DeviceCategory.CCT_LIGHT_STRIP
+        if sub_type == 461:
+            return DeviceCategory.CCT_LIGHT
+        return DeviceCategory.UNKNOWN
+    if device_type_raw == 522:
+        return (
+            DeviceCategory.DOOR_LOCK
+            if sub_type == 463
+            else DeviceCategory.UNKNOWN
+        )
+    if device_type_raw == 501:
+        return (
+            DeviceCategory.MONO_LIGHT
+            if sub_type in (426, 429)
+            else DeviceCategory.UNKNOWN
+        )
+    if device_type_raw == 502:
+        return (
+            DeviceCategory.DIMMABLE_LIGHT
+            if sub_type == 431
+            else DeviceCategory.UNKNOWN
+        )
+    if device_type_raw == 506 and sub_type == 408:
+        return DeviceCategory.DREAM_CURTAIN
 
     if device_type_raw is not None and device_type_raw in _DEVICE_TYPE_MAP:
         # deviceType=38 且 subDeviceType=6 时，使用 fast move 协议
         if device_type_raw == 38 and sub_type == 6:
             return DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT
         return _DEVICE_TYPE_MAP[device_type_raw]
-
-    # 特殊判断：device_type_raw=0 或 device_type_raw=None 但 sub_device_type=-2 且有亮度数据
-    if sub_type == -2:
-        status_type = _safe_int(device.get("status_type") or device.get("statusType"))
-        if status_type == 0:
-            return DeviceCategory.ZIGBEE_DIMMABLE_LIGHT
-        status = device.get("status", {})
-        if isinstance(status, dict) and "value2" in status:
-            return DeviceCategory.ZIGBEE_DIMMABLE_LIGHT
-        # 如果名称包含"调光"也识别为调光灯
-        device_name = device.get("device_name", "") or device.get("deviceName", "")
-        if "调光" in device_name:
-            return DeviceCategory.ZIGBEE_DIMMABLE_LIGHT
 
     # 特殊判断：statusType=2, subDeviceType=6 为fast move调光调色灯
     status_type = _safe_int(device.get("status_type") or device.get("statusType"))
@@ -439,12 +525,17 @@ def classify_device(device: Dict[str, Any]) -> DeviceCategory:
     if isinstance(ui_model, str) and ui_model in _UI_MODEL_MAP:
         return _UI_MODEL_MAP[ui_model]
 
-    class_id = _safe_int(device.get("class_id") or device.get("classId"))
+    raw_class_id = device.get("class_id")
+    if raw_class_id is None:
+        raw_class_id = device.get("classId")
+    class_id = _safe_int(raw_class_id)
     if class_id is not None and class_id in _CLASS_ID_MAP:
         return _CLASS_ID_MAP[class_id]
 
-    sub_type = _safe_int(device.get("sub_device_type") or device.get("subDeviceType"))
-    if sub_type is not None and sub_type in _CLASS_ID_MAP:
-        return _CLASS_ID_MAP[sub_type]
-
-    return DeviceCategory.UNKNOWN
+    # subDeviceType 不是 classId。跨 deviceType 用它兜底会把地暖、网关、
+    # 人体传感器等大量 subType=-2 记录误识别成调光灯。
+    return (
+        DeviceCategory.OTHER
+        if identify_known_device(device) is not None
+        else DeviceCategory.UNKNOWN
+    )

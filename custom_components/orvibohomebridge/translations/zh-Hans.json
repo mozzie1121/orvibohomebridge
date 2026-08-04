@@ -56,8 +56,16 @@
             "init": {
                 "title": "Orvibo 配置",
                 "menu_options": {
+                    "reauth": "重新登录",
                     "devices": "选择设备",
                     "lock_users": "锁用户映射"
+                }
+            },
+            "reauth": {
+                "title": "重新登录",
+                "description": "为 {username} 输入新密码。成功后会保留当前家庭、设备、实体和区域设置。",
+                "data": {
+                    "password": "新密码"
                 }
             },
             "lock_users": {
@@ -83,9 +91,14 @@
             }
         },
         "error": {
+            "auth_failed": "登录失败，请检查新密码",
+            "empty_username_or_password": "密码不能为空",
             "no_devices_selected": "请至少勾选一台设备",
             "cannot_connect": "无法连接欧瑞博云",
             "no_devices": "该家庭中没有发现设备"
+        },
+        "abort": {
+            "reauth_successful": "重新登录成功，现有设备和实体设置已保留"
         }
     },
     "entity": {

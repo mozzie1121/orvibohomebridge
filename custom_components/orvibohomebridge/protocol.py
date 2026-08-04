@@ -52,6 +52,13 @@ class OrviboDevice:
     ui_model: str = ""           # ui.model
     room_name: str = ""          # 直接从设备条目读取的 roomName（备选）
     ext_addr: str = ""           # extAddr（Zigbee 扩展地址）
+    status_id: str = ""
+    app_device_id: str = ""
+    gateway_id: str = ""
+    class_name: str = ""
+    device_flag: int | None = None
+    endpoint: int = 0
+    properties: Mapping[str, Any] = field(default_factory=dict)
 
 
 def password_hash(password: str) -> str:
@@ -331,6 +338,18 @@ def parse_readtable_devices(
             value4=values[3],
             class_id=class_id,
             ui_model=ui_model,
+            ext_addr=_first_text(item, ("extAddr", "extAddress")),
+            status_id=_first_text(item, ("statusId", "statusID")),
+            app_device_id=_first_text(item, ("appDeviceId", "appDeviceID")),
+            gateway_id=_first_text(item, ("gatewayId", "gatewayID")),
+            class_name=_first_text(item, ("className",)),
+            device_flag=_safe_int(item.get("deviceFlag")),
+            endpoint=_safe_int(item.get("endpoint")) or 0,
+            properties=(
+                dict(item.get("properties", {}))
+                if isinstance(item.get("properties"), Mapping)
+                else {}
+            ),
         )
 
     return tuple(sorted(devices.values(), key=lambda d: d.uid))
@@ -430,6 +449,29 @@ def extract_devices(payloads: Any) -> tuple[OrviboDevice, ...]:
                         None,
                     )
                 ),
+                cloud_uid=_first_text(value, ("uid",)),
+                value1=_safe_int(value.get("value1")),
+                value2=_safe_int(value.get("value2")),
+                value3=_safe_int(value.get("value3")),
+                value4=_safe_int(value.get("value4")),
+                class_id=_safe_int(value.get("classId")),
+                ui_model=(
+                    str(value.get("ui", {}).get("model", ""))
+                    if isinstance(value.get("ui"), Mapping)
+                    else ""
+                ),
+                ext_addr=_first_text(value, ("extAddr", "extAddress")),
+                status_id=_first_text(value, ("statusId", "statusID")),
+                app_device_id=_first_text(value, ("appDeviceId", "appDeviceID")),
+                gateway_id=_first_text(value, ("gatewayId", "gatewayID")),
+                class_name=_first_text(value, ("className",)),
+                device_flag=_safe_int(value.get("deviceFlag")),
+                endpoint=_safe_int(value.get("endpoint")) or 0,
+                properties=(
+                    dict(value.get("properties", {}))
+                    if isinstance(value.get("properties"), Mapping)
+                    else {}
+                ),
             )
             previous = devices.get(uid)
             if previous is None:
@@ -448,6 +490,21 @@ def extract_devices(payloads: Any) -> tuple[OrviboDevice, ...]:
                         if candidate.online is not None
                         else previous.online
                     ),
+                    cloud_uid=candidate.cloud_uid or previous.cloud_uid,
+                    value1=candidate.value1 if candidate.value1 is not None else previous.value1,
+                    value2=candidate.value2 if candidate.value2 is not None else previous.value2,
+                    value3=candidate.value3 if candidate.value3 is not None else previous.value3,
+                    value4=candidate.value4 if candidate.value4 is not None else previous.value4,
+                    class_id=candidate.class_id or previous.class_id,
+                    ui_model=candidate.ui_model or previous.ui_model,
+                    ext_addr=candidate.ext_addr or previous.ext_addr,
+                    status_id=candidate.status_id or previous.status_id,
+                    app_device_id=candidate.app_device_id or previous.app_device_id,
+                    gateway_id=candidate.gateway_id or previous.gateway_id,
+                    class_name=candidate.class_name or previous.class_name,
+                    device_flag=candidate.device_flag if candidate.device_flag is not None else previous.device_flag,
+                    endpoint=candidate.endpoint or previous.endpoint,
+                    properties=candidate.properties or previous.properties,
                 )
 
         for child in value.values():
@@ -474,9 +531,10 @@ def device_to_dict(device: OrviboDevice) -> dict[str, Any]:
         "sub_device_type": _safe_int(device.sub_device_type),
         "class_id": device.class_id,
         "uid": device.cloud_uid,
-        "status_id": "",
-        "gateway_id": "",
-        "ext_addr": "",
+        "status_id": device.status_id,
+        "app_device_id": device.app_device_id,
+        "gateway_id": device.gateway_id,
+        "ext_addr": device.ext_addr,
         "model": device.model,
         "ui_model": device.ui_model,
         "room_id": "",
@@ -488,9 +546,15 @@ def device_to_dict(device: OrviboDevice) -> dict[str, Any]:
         "color_temp": device.value3,
         "fan_speed": "停",
         "temperature": None,
-        "properties": {},
-        "endpoint": 0,
+        "properties": dict(device.properties),
+        "endpoint": device.endpoint,
+        "class_name": device.class_name,
+        "device_flag": device.device_flag,
         "status": {},
+        "value1": device.value1,
+        "value2": device.value2,
+        "value3": device.value3,
+        "value4": device.value4,
     }
 
 
@@ -503,11 +567,11 @@ def _infer_ha_device_type(device: OrviboDevice) -> str:
     _DEVICE_TYPE_MAP_INLINE = {
         1: "light", 34: "cover", 35: "cover", 36: "climate", 38: "light",
         43: "switch",  # COCO智能插线板
-        46: "sensor", 52: "clothes_horse", 102: "light",
+        46: "sensor", 52: "clothes_horse",
         25: "sensor", 26: "sensor", 27: "sensor", 56: "sensor",
-        54: "sensor", 300: "sensor", 501: "light", 502: "light",
-        503: "light", 516: "fan", 522: "sensor", 10086: "light",
-        0: "light",
+        54: "sensor", 501: "light", 502: "light",
+        503: "light", 516: "fan", 522: "sensor",
+        506: "cover",
         22: "sensor", 23: "sensor",
         81: "climate",
     }
@@ -516,11 +580,40 @@ def _infer_ha_device_type(device: OrviboDevice) -> str:
     }
 
     dt = _safe_int(device.device_type)
+    sub = _safe_int(device.sub_device_type)
+    if dt == 0:
+        return "light"
+    if dt == 102:
+        return "light"
+    if dt == 112:
+        return (
+            "climate"
+            if sub == -2 and (
+                device.ui_model == "orb_floorheat"
+                or device.model == "2ac836760da10748856a7e4eafb91efa"
+            )
+            else "unknown"
+        )
+    if dt == 10086:
+        # 虚拟灯组尚未完成控制协议真机验证，只保留登记信息。
+        return "unknown"
+    if dt == 300:
+        return "climate" if sub == 481 else "sensor" if sub == 491 else "unknown"
+    if dt == 506:
+        return "cover" if sub == 408 else "unknown"
+    if dt == 501:
+        return "light" if sub in (426, 429) else "unknown"
+    if dt == 502:
+        return "light" if sub == 431 else "unknown"
+    if dt == 503:
+        return "light" if sub in (436, 461) else "unknown"
+    if dt == 522:
+        return "sensor" if sub == 463 else "unknown"
     if dt and dt in _DEVICE_TYPE_MAP_INLINE:
         return _DEVICE_TYPE_MAP_INLINE[dt]
     if device.class_id and device.class_id in _CLASS_ID_MAP_INLINE:
         return _CLASS_ID_MAP_INLINE[device.class_id]
-    return "light"  # 兜底
+    return "unknown"
 
 
 def _infer_initial_state(device: OrviboDevice) -> bool:
@@ -533,6 +626,8 @@ def _infer_initial_state(device: OrviboDevice) -> bool:
         return int(v1) == 0  # active-low
     if dt in (135, 136, 137, 143, 518):
         return int(v1) == 1  # active-high
+    if dt == 112:
+        return bool(int(v1) & 0x08)
     if dt in (34, 52):
         return int(v1) > 0  # 窗帘位置 >0 为开
     return False

@@ -22,8 +22,9 @@ def _load_modules():
     sensor = importlib.import_module(f"{package_name}.parsers.sensor")
     appliance = importlib.import_module(f"{package_name}.parsers.appliance")
     lock = importlib.import_module(f"{package_name}.parsers.lock")
+    thermostat = importlib.import_module(f"{package_name}.parsers.thermostat")
     device_types = importlib.import_module(f"{package_name}.device_types")
-    return parsers, light, cover, sensor, appliance, lock, device_types
+    return parsers, light, cover, sensor, appliance, lock, thermostat, device_types
 
 
 class StateParserTests(unittest.TestCase):
@@ -36,8 +37,54 @@ class StateParserTests(unittest.TestCase):
             cls.sensor,
             cls.appliance,
             cls.lock,
+            cls.thermostat,
             cls.device_types,
         ) = _load_modules()
+
+    def test_dream_curtain_keeps_position_and_angle_independent(self) -> None:
+        state = {"position": 39, "angle": 90}
+        self.cover.parse_dream_curtain(
+            state, {"properties": {"curtain": {"angle": 170}}}
+        ).apply_to(state)
+        self.assertEqual(state, {"position": 39, "angle": 170})
+
+    def test_floor_heating_property_contract(self) -> None:
+        patch = self.thermostat.parse_floor_heating(
+            {},
+            {"properties": {
+                "onoff": {"status": "on"},
+                "thermostat": {
+                    "targetTemp": 21,
+                    "localTemp": 20,
+                    "localHumidity": 55,
+                    "minHeatingTemp": 8,
+                    "maxHeatingTemp": 35,
+                },
+            }},
+        )
+        self.assertEqual(patch.values["target_temperature"], 21)
+        self.assertEqual(patch.values["current_temperature"], 20)
+        self.assertTrue(patch.values["state"])
+
+    def test_legacy_floor_heating_packed_state_contract(self) -> None:
+        patch = self.thermostat.parse_legacy_floor_heating(
+            {},
+            {
+                "value1": 4095,
+                "value2": 6932,
+                "subDeviceType": -2,
+            },
+        )
+        self.assertTrue(patch.values["state"])
+        self.assertEqual(patch.values["current_temperature"], 27)
+        self.assertEqual(patch.values["target_temperature"], 30)
+        self.assertEqual(patch.values["raw_value2"], 6932)
+
+        off = self.thermostat.parse_legacy_floor_heating(
+            {}, {"value1": 4087, "value2": 6927}
+        )
+        self.assertFalse(off.values["state"])
+        self.assertEqual(off.values["target_temperature"], 25)
 
     def test_parser_returns_patch_without_mutating_inputs(self) -> None:
         current = {"state": False, "name": "lamp"}
@@ -268,6 +315,10 @@ class StateParserTests(unittest.TestCase):
             categories.VENTILATION_SYSTEM,
             categories.CLOTHES_HORSE,
             categories.DOOR_LOCK,
+            categories.FLOOR_HEATING,
+            categories.LEGACY_FLOOR_HEATING,
+            categories.DREAM_CURTAIN,
+            categories.ZIGBEE_ROLLING_SHUTTER,
         }
 
         self.assertTrue(all(self.parsers.get_state_parser(item) for item in expected))

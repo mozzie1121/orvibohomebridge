@@ -3,6 +3,13 @@
 # Standalone project (contains privacy-sensitive data)
 standalone/
 
+# Local bulk readtable audits and downloaded device catalog
+audit-output*/
+tools/device_catalog.json
+
+# Local Frida hooks/captures (reverse-engineering artifacts; never commit)
+hook/
+
 # Log files
 *.log
 
