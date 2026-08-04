@@ -51,12 +51,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         credentials: AccountCredentials,
         lock_user_names: Optional[Dict[str, str]] = None,
         cloud: CloudEndpoint = CHINA_CLOUD,
+        transport_mode: TransportMode = TransportMode.AUTO,
     ):
         self.credentials = credentials
         self.username = credentials.username
         self.password_hash = credentials.password_hash
         self.family_id = credentials.family_id
         self.hass = hass
+        self._transport_mode = transport_mode
 
         self.https_client = HttpsClient(
             username=credentials.username,
@@ -114,7 +116,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             lambda: self.async_set_updated_data(self.device_states),
             lambda: self.lan_adapter,
             self._lan_gateway_connected,
-            TransportMode.AUTO,
+            transport_mode,
         )
         self.lock_media = LockMediaManager(
             self.hass, self.devices, self._redaction_salt

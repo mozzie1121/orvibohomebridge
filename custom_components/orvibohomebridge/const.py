@@ -108,3 +108,4 @@ CONF_PASSWORD_HASH = "password_hash"
 CONF_CLOUD_REGION = "cloud_region"
 CONF_FAMILY_ID = "family_id"
 CONF_LOCK_USER_NAMES = "lock_user_names"  # {user_id: 名称}，持久化于 entry.options
+CONF_TRANSPORT_MODE = "transport_mode"  # auto / cloud_only（LAN 优先 / 仅云）

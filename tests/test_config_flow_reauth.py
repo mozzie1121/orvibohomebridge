@@ -93,6 +93,14 @@ def _load_config_flow():
             CONF_CLOUD_REGION="cloud_region",
             CONF_FAMILY_ID="family_id",
             CONF_LOCK_USER_NAMES="lock_user_names",
+            CONF_TRANSPORT_MODE="transport_mode",
+        ),
+        f"{package_name}.capabilities": _module(
+            f"{package_name}.capabilities",
+            TransportMode=SimpleNamespace(
+                AUTO=SimpleNamespace(value="auto"),
+                CLOUD_ONLY=SimpleNamespace(value="cloud_only"),
+            ),
         ),
         f"{package_name}.device_types": _module(
             f"{package_name}.device_types",
