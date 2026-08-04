@@ -11,6 +11,7 @@ from .control_router import (
     color_temp_route,
     power_route,
 )
+from .capabilities import ControlChannel, TransportMode, capability_for
 from .device_types import DeviceCategory, classify_device, get_device_profile
 from .state_store import StateSource, StateStore
 
@@ -39,6 +40,9 @@ class ControlExecutor:
         route_target: Callable[[], Any],
         get_state: Callable[[str], Optional[dict[str, Any]]],
         on_updated: Callable[[], None],
+        lan_adapter: Callable[[], Any] = lambda: None,
+        gateway_connected: Callable[[str], bool] = lambda _uid: False,
+        transport_mode: TransportMode = TransportMode.AUTO,
     ) -> None:
         self.devices = devices
         self.states = states
@@ -47,6 +51,10 @@ class ControlExecutor:
         self._route_target = route_target
         self._get_state = get_state
         self._on_updated = on_updated
+        self._lan_adapter = lan_adapter
+        self._gateway_connected = gateway_connected
+        self._transport_mode = transport_mode
+        self._last_scope = "ssl"
 
     async def wait_for_response(self, device_id: str) -> dict | None:
         client = self._ssl_client()
@@ -67,16 +75,51 @@ class ControlExecutor:
     async def execute_route(
         self, device_id: str, device_uid: str, route: ControlRoute
     ) -> bool:
-        owner = self._ssl_client() if route.scope == "ssl" else self._route_target()
+        if route.scope == "ssl":
+            owner, _scope = self._transport(device_id)
+            if owner is None:
+                return False
+            method = getattr(owner, route.method)
+            return bool(
+                await method(device_id, device_uid, *route.args, **route.kwargs)
+            )
+        owner = self._route_target()
         if owner is None:
             return False
+        self._last_scope = route.scope
         method = getattr(owner, route.method)
         prefix = (
             (device_id, device_uid)
-            if route.scope in ("ssl", "coordinator_uid")
+            if route.scope == "coordinator_uid"
             else (device_id,)
         )
-        return await method(*prefix, *route.args, **route.kwargs)
+        return bool(await method(*prefix, *route.args, **route.kwargs))
+
+    def _transport(self, device_id: str) -> tuple[Any, str]:
+        """按能力表 + 网关可达性选择控制通道（LAN 优先 / 云兜底）。"""
+        device = self.devices.get(device_id) or {}
+        device_uid = device.get("uid", "")
+        if self._transport_mode != TransportMode.CLOUD_ONLY:
+            lan = self._lan_adapter()
+            if lan is not None and self._gateway_connected(device_uid):
+                try:
+                    capability = capability_for(device)
+                except Exception:  # noqa: BLE001
+                    capability = None
+                if (
+                    capability is not None
+                    and ControlChannel.LAN in capability.channels
+                ):
+                    self._last_scope = "lan"
+                    return lan, "lan"
+        self._last_scope = "ssl"
+        return self._ssl_client(), "ssl"
+
+    async def _wait_if_ssl(self, device_id: str) -> dict | None:
+        """LAN 控制已同步拿到网关回执，不再等 SSL 回显。"""
+        if self._last_scope == "lan":
+            return None
+        return await self.wait_for_response(device_id)
 
     async def turn_on(
         self,
@@ -99,7 +142,7 @@ class ControlExecutor:
             device_id, device.get("uid", ""), route
         )
         if result:
-            response = await self.wait_for_response(device_id)
+            response = await self._wait_if_ssl(device_id)
             if not response:
                 optimistic = {"state": True}
                 if brightness is not None:
@@ -123,7 +166,7 @@ class ControlExecutor:
             device_id, device.get("uid", ""), route
         )
         if result:
-            if not await self.wait_for_response(device_id):
+            if not await self._wait_if_ssl(device_id):
                 self.apply_optimistic(device_id, {"state": False})
             self._on_updated()
         return result
@@ -132,7 +175,7 @@ class ControlExecutor:
         device = self._controllable_device(device_id, "窗帘")
         if device is None:
             return False
-        client = self._ssl_client()
+        client, _scope = self._transport(device_id)
         category = classify_device(device)
         if category == DeviceCategory.DREAM_CURTAIN:
             current = self.states.get(device_id, {})
@@ -145,7 +188,7 @@ class ControlExecutor:
                 )
                 if not centered:
                     return False
-                response = await self.wait_for_response(device_id)
+                response = await self._wait_if_ssl(device_id)
                 reported_angle = (
                     response.get("properties", {}).get("curtain", {}).get("angle")
                     if isinstance(response, dict)
@@ -162,7 +205,7 @@ class ControlExecutor:
                 device_id, device.get("uid", ""), position
             )
         if result:
-            response = await self.wait_for_response(device_id)
+            response = await self._wait_if_ssl(device_id)
             if response:
                 actual = response.get("value1")
                 if isinstance(actual, (int, float)) and 0 <= actual <= 100:
@@ -181,12 +224,13 @@ class ControlExecutor:
         if device is None:
             return False
         category = classify_device(device)
+        client, _scope = self._transport(device_id)
         if category == DeviceCategory.DREAM_CURTAIN:
-            return await self._ssl_client().send_control_dream_curtain_action(
+            return await client.send_control_dream_curtain_action(
                 device_id, device.get("uid", ""), "pause"
             )
         stop_value2 = 255 if category == DeviceCategory.ZIGBEE_ROLLING_SHUTTER else 0
-        return await self._ssl_client().send_control_cover(
+        return await client.send_control_cover(
             device_id, device.get("uid", ""), "stop", stop_value2=stop_value2
         )
 
@@ -197,7 +241,8 @@ class ControlExecutor:
         if self.states.get(device_id, {}).get("position") != 0:
             _LOGGER.warning("梦幻帘仅在完全关闭时允许调节角度: %s", device_id)
             return False
-        result = await self._ssl_client().send_control_dream_curtain_angle(
+        client, _scope = self._transport(device_id)
+        result = await client.send_control_dream_curtain_angle(
             device_id, device.get("uid", ""), angle
         )
         if result:
@@ -209,7 +254,8 @@ class ControlExecutor:
         device = self._controllable_device(device_id, "梦幻帘动作")
         if device is None or classify_device(device) != DeviceCategory.DREAM_CURTAIN:
             return False
-        result = await self._ssl_client().send_control_dream_curtain_action(
+        client, _scope = self._transport(device_id)
+        result = await client.send_control_dream_curtain_action(
             device_id, device.get("uid", ""), action
         )
         if result:
@@ -229,12 +275,13 @@ class ControlExecutor:
         low = int(self.states.get(device_id, {}).get("min_temperature") or low_default)
         high = int(self.states.get(device_id, {}).get("max_temperature") or 35)
         target = max(low, min(high, int(round(temperature))))
+        client, _scope = self._transport(device_id)
         if category == DeviceCategory.LEGACY_FLOOR_HEATING:
-            result = await self._ssl_client().send_control_legacy_floor_heating_temperature(
+            result = await client.send_control_legacy_floor_heating_temperature(
                 device_id, device.get("uid", ""), target
             )
         else:
-            result = await self._ssl_client().send_control_floor_heating_temperature(
+            result = await client.send_control_floor_heating_temperature(
                 device_id, device.get("uid", ""), target
             )
         if result:
@@ -272,9 +319,9 @@ class ControlExecutor:
         brightness: int | None,
         color_temp_k: int | None,
     ) -> bool:
-        client = self._ssl_client()
+        client, _scope = self._transport(device_id)
         if client is None:
-            _LOGGER.error("SSL未连接，无法下发灯光复合参数")
+            _LOGGER.error("控制通道未连接，无法下发灯光复合参数")
             return False
         device = self.devices.get(device_id)
         if device is None:
@@ -291,11 +338,12 @@ class ControlExecutor:
         device = self._connected_device(device_id)
         if device is None:
             return False
-        result = await self._ssl_client().send_control_ventilation(
+        client, _scope = self._transport(device_id)
+        result = await client.send_control_ventilation(
             device_id, device.get("uid", ""), value1
         )
         if result:
-            if not await self.wait_for_response(device_id):
+            if not await self._wait_if_ssl(device_id):
                 state = self.states.setdefault(device_id, {})
                 if value1 == 0:
                     state.update({"fan_speed": "慢", "state": True})
@@ -339,7 +387,10 @@ class ControlExecutor:
             _LOGGER.warning("[晾衣架] 拒绝消毒开启命令: 电机未在顶部")
             return False
 
-        result = await self._ssl_client().send_clothes_horse_control(
+        client = self._ssl_client()
+        if client is None:
+            return False
+        result = await client.send_clothes_horse_control(
             device_id=device_id,
             device_uid=device.get("uid", ""),
             ctrl_field=control_field,
@@ -377,14 +428,14 @@ class ControlExecutor:
             device_id, device.get("uid", ""), route
         )
         if result:
-            if not await self.wait_for_response(device_id):
+            if not await self._wait_if_ssl(device_id):
                 self.apply_optimistic(device_id, route.optimistic)
             self._on_updated()
         return result
 
     def _connected_device(self, device_id: str) -> dict[str, Any] | None:
-        if self._ssl_client() is None:
-            _LOGGER.error("SSL客户端未初始化")
+        if self._ssl_client() is None and self._lan_adapter() is None:
+            _LOGGER.error("控制通道未初始化")
             return None
         device = self.devices.get(device_id)
         if device is None:

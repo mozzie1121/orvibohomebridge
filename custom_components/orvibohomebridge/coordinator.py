@@ -9,7 +9,8 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .ssl_client import SSLClient
-from .lan import GatewayManager
+from .lan import GatewayManager, LanControlAdapter
+from .capabilities import TransportMode
 from .https_client import HttpsClient
 from .device_types import (
     DeviceCategory,
@@ -66,6 +67,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.https_client.family_id = credentials.family_id or None
         self.ssl_client = None
         self.gateway_manager: Optional[GatewayManager] = None
+        self.lan_adapter: Optional[LanControlAdapter] = None
         self._lan_discover_task: Optional[asyncio.Task] = None
         self._lan_closed = False
         
@@ -110,6 +112,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             lambda: self,
             self.get_device_state,
             lambda: self.async_set_updated_data(self.device_states),
+            lambda: self.lan_adapter,
+            self._lan_gateway_connected,
+            TransportMode.AUTO,
         )
         self.lock_media = LockMediaManager(
             self.hass, self.devices, self._redaction_salt
@@ -589,6 +594,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             push_callback=self._on_lan_status_update,
             password_is_hash=True,
         )
+        self.lan_adapter = LanControlAdapter(self.username, self.gateway_manager)
         await self._connect_all_lan_gateways()
         self._lan_discover_task = self.hass.async_create_background_task(
             self._lan_discover_loop(),
@@ -613,6 +619,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                     else type(result).__name__
                 )
                 _LOGGER.debug("LAN 网关 %s 未就绪: %s", uid, reason)
+
+    def _lan_gateway_connected(self, device_uid: str) -> bool:
+        if self.gateway_manager is None:
+            return False
+        return self.gateway_manager.is_connected(device_uid)
 
     async def _lan_discover_loop(self) -> None:
         """周期刷新网关端点并保持连接（与 lan-control 的 5 分钟节奏一致）。"""

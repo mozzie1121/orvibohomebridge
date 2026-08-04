@@ -37,6 +37,13 @@ class ControlChannel(str, Enum):
     SSL = "ssl"  # 云端长连接
 
 
+class TransportMode(str, Enum):
+    """融合后的传输模式（默认自动：LAN 优先 + 云兜底）。"""
+
+    AUTO = "auto"
+    CLOUD_ONLY = "cloud_only"
+
+
 @dataclass(frozen=True, slots=True)
 class DeviceCapability:
     """一类设备的融合能力声明。"""
