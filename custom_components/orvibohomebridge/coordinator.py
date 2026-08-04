@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .ssl_client import SSLClient
+from .lan import GatewayManager
 from .https_client import HttpsClient
 from .device_types import (
     DeviceCategory,
@@ -63,6 +64,9 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         )
         self.https_client.family_id = credentials.family_id or None
         self.ssl_client = None
+        self.gateway_manager: Optional[GatewayManager] = None
+        self._lan_discover_task: Optional[asyncio.Task] = None
+        self._lan_closed = False
         
         self._motion_reset_tasks: Dict[str, asyncio.Task] = {}  # 人体传感器重置任务
         self._emergency_reset_tasks: Dict[str, asyncio.Task] = {}  # 紧急按钮重置任务
@@ -484,6 +488,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         "SSL 连接/登录未就绪（非认证拒绝），将在后台重试"
                     )
 
+            # LAN 网关通道（阶段 1：仅状态接收；失败不影响云端）
+            try:
+                await self._init_lan_gateways()
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.warning("LAN 网关初始化失败（继续使用云端）: %s", e)
+
             _LOGGER.info(f"初始化完成，共 {len(self.devices)} 个设备")
             for device_id, dev in self.devices.items():
                 state = self.device_states.get(device_id, {})
@@ -529,6 +539,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if device_status_data:
                 devices = self.https_client.parse_device_status_list(device_status_data)
                 self.inventory.merge_cloud(devices)
+            if self.gateway_manager is not None:
+                await self.gateway_manager.async_update_cloud_gateways(
+                    self.https_client.gateway_ips
+                )
             return self.device_states
         except Exception as e:
             raise UpdateFailed(f"更新失败: {str(e)}") from e
@@ -561,6 +575,141 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self.ssl_client,
             self.https_client.user_id or "",
             self.https_client.family_id or "",
+        )
+
+    async def _init_lan_gateways(self) -> None:
+        """发现并连接局域网 MixPad 网关，接入 LAN 实时状态推送。"""
+        if self.gateway_manager is not None:
+            return
+        self.gateway_manager = GatewayManager(
+            self.username,
+            self.password_hash,
+            self.https_client.gateway_ips,
+            push_callback=self._on_lan_status_update,
+            password_is_hash=True,
+        )
+        await self._connect_all_lan_gateways()
+        self._lan_discover_task = self.hass.async_create_background_task(
+            self._lan_discover_loop(),
+            name=f"{DOMAIN}_lan_gateway_discovery",
+        )
+
+    async def _connect_all_lan_gateways(self) -> None:
+        if self.gateway_manager is None:
+            return
+        hosts = dict(self.gateway_manager.gateway_hosts)
+        if not hosts:
+            return
+        results = await asyncio.gather(
+            *(self.gateway_manager.ensure(uid) for uid in hosts),
+            return_exceptions=True,
+        )
+        for uid, result in zip(hosts, results):
+            if isinstance(result, BaseException):
+                reason = (
+                    result.reason
+                    if isinstance(result, Exception) and hasattr(result, "reason")
+                    else type(result).__name__
+                )
+                _LOGGER.debug("LAN 网关 %s 未就绪: %s", uid, reason)
+
+    async def _lan_discover_loop(self) -> None:
+        """周期刷新网关端点并保持连接（与 lan-control 的 5 分钟节奏一致）。"""
+        while not self._lan_closed:
+            await asyncio.sleep(300)
+            if self._lan_closed or self.gateway_manager is None:
+                return
+            try:
+                await self.gateway_manager.discover()
+                await self._connect_all_lan_gateways()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.debug("LAN 网关发现失败: %s", e)
+
+    @staticmethod
+    def _lan_payload_device_id(payload: dict) -> Optional[str]:
+        """兼容 deviceId / deviceID / device_id 三种推送字段。"""
+        for field in ("deviceId", "deviceID", "device_id"):
+            value = payload.get(field)
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                continue
+            device_id = str(value).strip()
+            if device_id:
+                return device_id
+        return None
+
+    @staticmethod
+    def _lan_payload_gateway_uid(payload: dict) -> Optional[str]:
+        for field in ("gatewayUid", "gatewayUID", "uid"):
+            value = payload.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _lan_valid_state_payload(payload: dict) -> bool:
+        """拒绝畸形状态值，避免污染实体状态。"""
+        properties = payload.get("properties")
+        if properties is not None and not isinstance(properties, dict):
+            return False
+        derived = {
+            "battery",
+            "door_state",
+            "motion_detected",
+            "smoke_detected",
+            "gas_detected",
+            "water_leak_detected",
+            "emergency_state",
+            "temperature",
+            "humidity",
+        }
+        if derived.intersection(payload):
+            return False
+        for field in ("value1", "value2", "value3", "value4"):
+            if field not in payload:
+                continue
+            value = payload[field]
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                return False
+            try:
+                int(str(value).strip())
+            except (TypeError, ValueError):
+                return False
+        return True
+
+    def _on_lan_status_update(self, gateway_uid: str, payload: dict) -> None:
+        """网关推送 → 校验 → 与云端同一条解析链（StateSource.LAN 优先）。"""
+        device_id = self._lan_payload_device_id(payload)
+        if device_id is None or not self._lan_valid_state_payload(payload):
+            return
+        device = self.devices.get(device_id)
+        expected_gateway = device.get("uid") if device is not None else None
+        if isinstance(expected_gateway, str) and expected_gateway != gateway_uid:
+            return
+        payload_gateway = self._lan_payload_gateway_uid(payload)
+        if payload_gateway is not None and payload_gateway != gateway_uid:
+            return
+        raw_status = {
+            "raw_data": payload,
+            "properties": payload.get("properties", {}),
+            "value1": payload.get("value1"),
+            "value2": payload.get("value2"),
+            "value3": payload.get("value3"),
+            "value4": payload.get("value4"),
+            "statusType": payload.get("statusType"),
+            "subDeviceType": payload.get("subDeviceType"),
+            "cmd": payload.get("cmd"),
+            "action": payload.get("action"),
+            "event": payload.get("event"),
+            "deviceId": device_id,
+            "uid": payload.get("uid", ""),
+            "online": True,
+        }
+        self.status_dispatcher.dispatch(
+            device_id,
+            raw_status,
+            source=StateSource.LAN,
         )
 
     async def _prewarm_cos_credentials(self) -> None:
@@ -834,6 +983,14 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         return state
 
     async def async_cleanup(self):
+        self._lan_closed = True
+        if self._lan_discover_task is not None:
+            self._lan_discover_task.cancel()
+            self._lan_discover_task = None
+        if self.gateway_manager is not None:
+            await self.gateway_manager.close()
+            self.gateway_manager = None
+            _LOGGER.debug("LAN 网关已清理")
         if self.ssl_client:
             await self.ssl_client._disconnect()
             _LOGGER.debug("SSL连接已断开清理")

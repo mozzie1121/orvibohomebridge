@@ -57,6 +57,7 @@ class HttpsClient:
         self.family_id: Optional[str] = None
         self.family_name: Optional[str] = None
         self.family_list: List[Dict[str, str]] = []  # 所有家庭列表
+        self.gateway_ips: Dict[str, str] = {}  # MixPad 网关 uid → 局域网 IP
 
     @property
     def is_logged_in(self) -> bool:
@@ -316,10 +317,34 @@ class HttpsClient:
                     f"readtable 响应中始终缺少 device 表: gateway表={data.get('gateway')}, "
                     f"userGatewayBind表={data.get('userGatewayBind')}"
                 )
+            self.gateway_ips = self._extract_gateway_ips(data)
             return data
         except Exception as e:
             _LOGGER.error("获取设备状态失败: %s", e)
             return None
+
+    @staticmethod
+    def _extract_gateway_ips(data: Dict[str, Any]) -> Dict[str, str]:
+        """从 readtable 提取 MixPad 网关 uid → 局域网 IP（移植自 orvibo-lan-control）。"""
+        gateways = data.get("gateway")
+        devices = data.get("device")
+        mixpad_uids = {
+            str(item.get("uid"))
+            for item in (devices if isinstance(devices, list) else [])
+            if item.get("deviceType") == 114 and item.get("uid")
+        }
+        result: Dict[str, str] = {}
+        for gateway in (gateways if isinstance(gateways, list) else []):
+            uid = gateway.get("uid")
+            raw_ip = gateway.get("localStaticIP") or gateway.get("ip")
+            if (
+                isinstance(uid, str)
+                and uid in mixpad_uids
+                and isinstance(raw_ip, str)
+                and raw_ip
+            ):
+                result[uid] = raw_ip.split(":", maxsplit=1)[0]
+        return result
 
     async def fetch_device_desc(self, last_update_time: int = 0) -> Optional[Dict[str, Any]]:
         """通过 getDeviceDesc API 获取设备描述和状态（用于初始化全量状态）"""
