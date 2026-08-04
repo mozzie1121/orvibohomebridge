@@ -12,10 +12,17 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+from types import ModuleType
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 MODULE_PATH = Path(__file__).parents[1] / "custom_components" / "orvibohomebridge"
+
+# The production modules use relative imports. Register the lightweight test
+# package itself (not only its children) so importlib can resolve additions such
+# as ``.known_device_models`` consistently under unittest discovery.
+_package = sys.modules.setdefault("orvibohomebridge", ModuleType("orvibohomebridge"))
+_package.__path__ = [str(MODULE_PATH)]
 
 # ── Mock homeassistant modules ──
 
