@@ -612,6 +612,15 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """停止窗帘电机。"""
         return await self.control.stop_cover(device_id)
 
+    async def async_dream_curtain_action(self, device_id: str, action: str) -> bool:
+        return await self.control.dream_curtain_action(device_id, action)
+
+    async def async_set_dream_curtain_angle(self, device_id: str, angle: int) -> bool:
+        return await self.control.set_dream_curtain_angle(device_id, angle)
+
+    async def async_set_floor_heating_temperature(self, device_id: str, temperature: int) -> bool:
+        return await self.control.set_floor_heating_temperature(device_id, temperature)
+
     async def async_set_brightness(self, device_id: str, brightness: int) -> bool:
         """设置亮度（HA LightEntity 使用 0-255 范围）。"""
         return await self.control.set_brightness(device_id, brightness)

@@ -19,6 +19,16 @@ UpdatedCallback = Callable[[], None]
 DeviceLabel = Callable[[str], str]
 
 
+def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 class StatusUpdateDispatcher:
     """Own the synchronous portion of inbound SSL status processing."""
 
@@ -63,22 +73,22 @@ class StatusUpdateDispatcher:
         if incoming_device_id in self._states:
             return incoming_device_id
 
-        uid = raw_status.get("uid", "")
-        if uid:
-            for stored_id, state in self._states.items():
-                if state.get("uid") == uid:
-                    return stored_id
-
+        candidates: set[str] = set()
         for stored_id, state in self._states.items():
-            if incoming_device_id in (
-                state.get("uid"),
+            device = self._devices.get(stored_id, {})
+            aliases = {
                 state.get("status_id"),
+                state.get("app_device_id"),
                 state.get("ext_addr"),
-            ):
-                return stored_id
+                device.get("status_id"),
+                device.get("app_device_id"),
+                device.get("ext_addr"),
+            }
+            if incoming_device_id in aliases:
+                candidates.add(stored_id)
             if stored_id.startswith("w-") and stored_id[2:] == incoming_device_id:
-                return stored_id
-        return None
+                candidates.add(stored_id)
+        return next(iter(candidates)) if len(candidates) == 1 else None
 
     def dispatch(self, incoming_device_id: str, raw_status: dict[str, Any]) -> None:
         """Apply one inbound status packet and notify coordinator listeners."""
@@ -109,7 +119,11 @@ class StatusUpdateDispatcher:
 
         state = self._states[device_id]
         state_before = dict(state)
-        state["properties"] = raw_status.get("properties", {})
+        incoming_properties = raw_status.get("properties")
+        if isinstance(incoming_properties, dict):
+            state["properties"] = _deep_merge(
+                state.get("properties", {}), incoming_properties
+            )
         state["online"] = True
         self._last_update_time[device_id] = self._clock()
 
@@ -166,14 +180,10 @@ class StatusUpdateDispatcher:
         category: DeviceCategory,
     ) -> Optional[DeviceCategory]:
         direct = {
-            502: DeviceCategory.DIMMABLE_LIGHT,
-            503: DeviceCategory.CCT_LIGHT,
             46: DeviceCategory.DOOR_WINDOW_SENSOR,
             27: DeviceCategory.SMOKE_SENSOR,
             54: DeviceCategory.WATER_LEAK_SENSOR,
             522: DeviceCategory.DOOR_LOCK,
-            102: DeviceCategory.LEGACY_LIGHT,
-            501: DeviceCategory.MONO_LIGHT,
             34: DeviceCategory.ZIGBEE_CURTAIN,
             36: DeviceCategory.FAN_COIL_AC,
             516: DeviceCategory.VENTILATION_SYSTEM,

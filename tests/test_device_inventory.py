@@ -78,6 +78,7 @@ class DeviceInventoryTests(unittest.TestCase):
                 {
                     "device_id": "lock",
                     "device_type_raw": 522,
+                    "sub_device_type": 463,
                     "online": "online",
                     "properties": {
                         "batteryManager": {

@@ -114,7 +114,7 @@ class TempPasswordManagerTests(unittest.TestCase):
     def test_grant_returns_password_but_public_event_does_not(self) -> None:
         ssl = FakeSsl()
         manager, updates = self.make_manager(
-            ssl, devices={"lock": {"device_type_raw": 522, "uid": "lock-uid"}}
+            ssl, devices={"lock": {"device_type_raw": 522, "sub_device_type": 463, "uid": "lock-uid"}}
         )
         manager.fetch_server_records = _empty_records
 
@@ -158,7 +158,7 @@ class TempPasswordManagerTests(unittest.TestCase):
     def test_revoke_removes_local_record_and_notifies(self) -> None:
         ssl = FakeSsl()
         manager, updates = self.make_manager(
-            ssl, devices={"lock": {"device_type_raw": 522, "uid": "lock-uid"}}
+            ssl, devices={"lock": {"device_type_raw": 522, "sub_device_type": 463, "uid": "lock-uid"}}
         )
         manager._records = {"lock": [{"authorized_id": 7}]}
 

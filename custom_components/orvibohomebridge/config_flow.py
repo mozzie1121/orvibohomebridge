@@ -19,7 +19,12 @@ from .const import (
     CONF_FAMILY_ID,
     CONF_LOCK_USER_NAMES,
 )
-from .device_types import classify_device, is_hidden_category
+from .device_types import (
+    DeviceCategory,
+    classify_device,
+    get_device_profile,
+    is_hidden_category,
+)
 from .lock_status import format_lock_user_names, parse_lock_user_names
 from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
 from .protocol import password_hash
@@ -32,6 +37,24 @@ def _device_label(device_id: str, name: str, room: str) -> str:
     if room and room != name:
         return f"{name} [{room}]"
     return name or device_id[-8:]
+
+
+def _device_option_label(device: dict) -> str:
+    """Add catalogue identity without implying unsupported control capability."""
+    label = _device_label(
+        str(device["device_id"]),
+        str(device.get("device_name") or ""),
+        str(device.get("room_name") or ""),
+    )
+    profile = get_device_profile(device)
+    if profile.category == DeviceCategory.OTHER or (
+        profile.registration_only
+        and profile.category != DeviceCategory.UNKNOWN
+    ):
+        return f"{label}（已识别：{profile.info.label}，暂未支持）"
+    if profile.category == DeviceCategory.UNKNOWN:
+        return f"{label}（未识别，暂未支持）"
+    return label
 
 
 async def _fetch_devices(
@@ -66,6 +89,82 @@ async def _fetch_devices(
         d for d in devices
         if not is_hidden_category(classify_device(d))
     ]
+
+
+async def _probe_ssl_credentials(
+    hass: HomeAssistant,
+    cloud: CloudEndpoint,
+    username: str,
+    password_digest: str,
+    family_id: str,
+) -> bool:
+    """Validate credentials against the binary SSL login endpoint."""
+    from .const import SSL_PORT
+    from .ssl_client import SSLClient
+
+    client = SSLClient(
+        hass=hass,
+        ssl_host=cloud.ssl_host,
+        ssl_port=SSL_PORT,
+        username=username,
+        password_hash=password_digest,
+        family_id=family_id,
+        on_session_id_obtained=lambda sid: None,
+        on_status_update=lambda did, raw: None,
+        retry_interval=0,
+    )
+    try:
+        ok = await client.connect_and_login(max_attempts=1, hello_wait=1.0)
+        if ok:
+            return True
+        status = getattr(client, "_login_status", None)
+        # Keep the existing behaviour: an explicit non-zero login response is
+        # an authentication failure; a network timeout must not lock users out.
+        return status is None or status == 0
+    finally:
+        await client._disconnect()
+
+
+async def _validate_updated_credentials(
+    hass: HomeAssistant,
+    username: str,
+    password_digest: str,
+    family_id: str,
+    cloud: CloudEndpoint,
+) -> Optional[CloudEndpoint]:
+    """Detect the account region and validate a replacement password."""
+    client = None
+    try:
+        client = HttpsClient(
+            username=username,
+            password_hash=password_digest,
+            session=async_get_clientsession(hass),
+            cloud=cloud,
+        )
+        if not await client.async_detect_cloud(family_id or None):
+            return None
+        detected_cloud = client.cloud
+    except Exception:
+        _LOGGER.debug("重新登录验证失败", exc_info=True)
+        return None
+    finally:
+        if client:
+            await client.close()
+
+    try:
+        valid = await _probe_ssl_credentials(
+            hass,
+            detected_cloud,
+            username,
+            password_digest,
+            family_id,
+        )
+    except Exception:
+        _LOGGER.debug("SSL 重新登录验证失败", exc_info=True)
+        return None
+    if not valid:
+        return None
+    return detected_cloud
 
 
 class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -209,11 +308,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         options = [
             selector.SelectOptionDict(
                 value=str(d["device_id"]),
-                label=_device_label(
-                    str(d["device_id"]),
-                    str(d.get("device_name") or ""),
-                    str(d.get("room_name") or ""),
-                ),
+                label=_device_option_label(d),
             )
             for d in self._devices
         ]
@@ -257,38 +352,33 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not password:
                 errors["base"] = "empty_username_or_password"
             else:
-                temp_client = None
-                success = False
-                try:
-                    password_digest = password_hash(password)
-                    temp_client = HttpsClient(
-                        username=username,
-                        password_hash=password_digest,
-                        session=async_get_clientsession(self.hass),
-                        cloud=cloud_for_region(entry.data.get(CONF_CLOUD_REGION)),
+                password_digest = password_hash(password)
+                detected_cloud = await _validate_updated_credentials(
+                    self.hass,
+                    username,
+                    password_digest,
+                    str(entry.data.get(CONF_FAMILY_ID, "")),
+                    cloud_for_region(entry.data.get(CONF_CLOUD_REGION)),
+                )
+                if detected_cloud is not None:
+                    data_updates = {
+                        CONF_PASSWORD_HASH: password_digest,
+                        CONF_CLOUD_REGION: detected_cloud.region.value,
+                    }
+                    # HA 2026.6+ delegates reload to the entry update listener;
+                    # retain the older helper for the declared HA 2024.1 floor.
+                    update_and_abort = getattr(
+                        self, "async_update_and_abort", None
                     )
-                    success = await temp_client.async_detect_cloud(
-                        str(entry.data.get(CONF_FAMILY_ID, "")) or None
-                    )
-                    if success:
-                        self._cloud = temp_client.cloud
-                except Exception:
-                    success = False
-                finally:
-                    if temp_client:
-                        await temp_client.close()
-                if success:
-                    self._username = username
-                    self._password_hash = password_digest
-                    family_id = str(entry.data.get(CONF_FAMILY_ID, ""))
-                    if await self._probe_ssl_login(family_id):
-                        return self.async_update_reload_and_abort(
+                    if update_and_abort is not None:
+                        return update_and_abort(
                             entry,
-                            data_updates={
-                                CONF_PASSWORD_HASH: password_digest,
-                                CONF_CLOUD_REGION: self._cloud.region.value,
-                            },
+                            data_updates=data_updates,
                         )
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates=data_updates,
+                    )
                 errors["base"] = "auth_failed"
 
         return self.async_show_form(
@@ -305,28 +395,13 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         10002 端口 SSL 登录。仅当服务器明确拒绝（status 非空且非 0）时
         判定为认证失败；网络/超时类失败不阻塞配置流程。
         """
-        from .ssl_client import SSLClient
-        from .const import SSL_PORT
-
-        client = SSLClient(
-            hass=self.hass,
-            ssl_host=self._cloud.ssl_host,
-            ssl_port=SSL_PORT,
-            username=self._username,
-            password_hash=self._password_hash,
-            family_id=family_id,
-            on_session_id_obtained=lambda sid: None,
-            on_status_update=lambda did, raw: None,
-            retry_interval=0,
+        return await _probe_ssl_credentials(
+            self.hass,
+            self._cloud,
+            self._username,
+            self._password_hash,
+            family_id,
         )
-        try:
-            ok = await client.connect_and_login(max_attempts=1, hello_wait=1.0)
-            if ok:
-                return True
-            status = getattr(client, "_login_status", None)
-            return status is None or status == 0
-        finally:
-            await client._disconnect()
 
     async def _create_entry(self) -> FlowResult:
         """创建配置条目"""
@@ -362,10 +437,50 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         self._devices: list[dict] = []
 
     async def async_step_init(self, user_input=None):
-        """选项菜单：选择设备 / 锁用户映射。"""
+        """选项菜单：重新登录 / 选择设备 / 锁用户映射。"""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["devices", "lock_users"],
+            menu_options=["reauth", "devices", "lock_users"],
+        )
+
+    async def async_step_reauth(self, user_input=None):
+        """主动更新密码，同时保留当前配置项及全部实体设置。"""
+        errors: dict[str, str] = {}
+        username = str(self._config_entry.data.get(CONF_USERNAME, ""))
+
+        if user_input is not None:
+            password = str(user_input.get(CONF_PASSWORD) or "")
+            if not password:
+                errors["base"] = "empty_username_or_password"
+            else:
+                password_digest = password_hash(password)
+                detected_cloud = await _validate_updated_credentials(
+                    self.hass,
+                    username,
+                    password_digest,
+                    str(self._config_entry.data.get(CONF_FAMILY_ID, "")),
+                    cloud_for_region(
+                        self._config_entry.data.get(CONF_CLOUD_REGION)
+                    ),
+                )
+                if detected_cloud is not None:
+                    updated_data = dict(self._config_entry.data)
+                    updated_data[CONF_PASSWORD_HASH] = password_digest
+                    updated_data[CONF_CLOUD_REGION] = detected_cloud.region.value
+                    self.hass.config_entries.async_update_entry(
+                        self._config_entry,
+                        data=updated_data,
+                    )
+                    # Do not create or replace an entry. The existing options,
+                    # selected devices, areas and entity registry stay intact.
+                    return self.async_abort(reason="reauth_successful")
+                errors["base"] = "auth_failed"
+
+        return self.async_show_form(
+            step_id="reauth",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+            description_placeholders={"username": username},
         )
 
     async def async_step_lock_users(self, user_input=None):
@@ -436,11 +551,7 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         options = [
             selector.SelectOptionDict(
                 value=str(d["device_id"]),
-                label=_device_label(
-                    str(d["device_id"]),
-                    str(d.get("device_name") or ""),
-                    str(d.get("room_name") or ""),
-                ),
+                label=_device_option_label(d),
             )
             for d in self._devices
         ]

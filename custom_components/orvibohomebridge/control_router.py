@@ -89,8 +89,24 @@ def power_route(
             {"brightness": current_brightness, "colortemp_mired": mired},
         )
 
-    if category == DeviceCategory.CCT_LIGHT:
+    if category in (DeviceCategory.CCT_LIGHT, DeviceCategory.CCT_LIGHT_STRIP):
         return ControlRoute("ssl", "send_control_cct_light_onoff", (is_on,))
+
+    if category == DeviceCategory.FLOOR_HEATING:
+        return ControlRoute("ssl", "send_control_floor_heating_power", (is_on,))
+
+    if category == DeviceCategory.LEGACY_FLOOR_HEATING:
+        packed_state = current_state.get("raw_value2")
+        if not isinstance(packed_state, int):
+            local = int(current_state.get("current_temperature") or 0)
+            target = int(current_state.get("target_temperature") or 10)
+            packed_state = (local << 8) | target
+        return ControlRoute(
+            "ssl",
+            "send_control_legacy_floor_heating_power",
+            (is_on,),
+            {"packed_state": packed_state},
+        )
 
     if category in (
         DeviceCategory.SIMPLE_ZIGBEE_LIGHT,
@@ -169,7 +185,7 @@ def brightness_route(
             {"colortemp_mired": mired},
             {"brightness": value, "state": True},
         )
-    if category == DeviceCategory.CCT_LIGHT:
+    if category in (DeviceCategory.CCT_LIGHT, DeviceCategory.CCT_LIGHT_STRIP):
         return ControlRoute(
             "ssl",
             "send_control_cct_light_brightness",
@@ -202,7 +218,7 @@ def color_temp_route(
     """Select a color-temperature transport and optimistic state."""
 
     optimistic = {"color_temp": color_temp_k}
-    if category == DeviceCategory.CCT_LIGHT:
+    if category in (DeviceCategory.CCT_LIGHT, DeviceCategory.CCT_LIGHT_STRIP):
         return ControlRoute(
             "ssl",
             "send_control_cct_light_colortemp",

@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_COVER, DEVICE_TYPE_CLOTHES_HORSE
 from .coordinator import OrviboMeshCoordinator
 from .selection import selected_device_ids
+from .device_types import DeviceCategory, classify_device
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +51,9 @@ class OrviboCover(CoordinatorEntity, CoverEntity):
         self._device_id = device["device_id"]
         self._attr_unique_id = f"orvibohomebridge_cover_{self._device_id}"
         self._attr_name = device.get("device_name", self._device_id)
+        self._category = classify_device(device)
+        if self._category == DeviceCategory.DREAM_CURTAIN:
+            self._attr_supported_features = self._attr_supported_features | CoverEntityFeature.SET_TILT_POSITION
         # 判断是否是卷帘（type=35），使用 SHUTTER 图标
         device_type_raw = device.get("device_type_raw", 0)
         if device_type_raw == 35:
@@ -84,10 +88,16 @@ class OrviboCover(CoordinatorEntity, CoverEntity):
         }
 
     async def async_open_cover(self, **kwargs) -> None:
-        await self.coordinator.async_set_cover_position(self._device_id, 100)
+        if self._category == DeviceCategory.DREAM_CURTAIN:
+            await self.coordinator.async_dream_curtain_action(self._device_id, "open")
+        else:
+            await self.coordinator.async_set_cover_position(self._device_id, 100)
 
     async def async_close_cover(self, **kwargs) -> None:
-        await self.coordinator.async_set_cover_position(self._device_id, 0)
+        if self._category == DeviceCategory.DREAM_CURTAIN:
+            await self.coordinator.async_dream_curtain_action(self._device_id, "close")
+        else:
+            await self.coordinator.async_set_cover_position(self._device_id, 0)
 
     async def async_stop_cover(self, **kwargs) -> None:
         await self.coordinator.async_stop_cover(self._device_id)
@@ -95,6 +105,22 @@ class OrviboCover(CoordinatorEntity, CoverEntity):
     async def async_set_cover_position(self, **kwargs) -> None:
         position = kwargs.get("position", 0)
         await self.coordinator.async_set_cover_position(self._device_id, position)
+
+    @property
+    def current_cover_tilt_position(self) -> Optional[int]:
+        if self._category != DeviceCategory.DREAM_CURTAIN:
+            return None
+        state = self.coordinator.get_device_state(self._device_id) or {}
+        angle = state.get("angle")
+        return round(int(angle) * 100 / 180) if angle is not None else None
+
+    async def async_set_cover_tilt_position(self, **kwargs) -> None:
+        if self._category != DeviceCategory.DREAM_CURTAIN:
+            return
+        tilt = max(0, min(100, int(kwargs.get("tilt_position", 0))))
+        await self.coordinator.async_set_dream_curtain_angle(
+            self._device_id, round(tilt * 180 / 100)
+        )
 
 
 class OrviboClothesHorseMotor(CoordinatorEntity, CoverEntity):

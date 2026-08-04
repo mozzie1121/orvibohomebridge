@@ -41,6 +41,10 @@ class FakeSsl:
         self.calls.append(("ventilation", args, kwargs))
         return True
 
+    async def send_control_legacy_floor_heating_temperature(self, *args, **kwargs):
+        self.calls.append(("legacy_floor_temperature", args, kwargs))
+        return True
+
     async def _wait_for_control_response(self, device_id):
         return self.response
 
@@ -100,6 +104,41 @@ class ControlExecutorTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(ssl.calls, [])
+
+    def test_known_unsupported_device_cannot_use_light_fallback(self) -> None:
+        executor, ssl, _, _ = self.make_executor({
+            "device_type_raw": 37,
+            "sub_device_type": -2,
+            "model": "82c167c95ed746cdbd21d6817f72c593",
+            "uid": "uid",
+        })
+
+        result = asyncio.run(executor.turn_on("device"))
+
+        self.assertFalse(result)
+        self.assertEqual(ssl.calls, [])
+
+    def test_legacy_floor_temperature_uses_offset_protocol(self) -> None:
+        executor, ssl, states, _ = self.make_executor(
+            {
+                "device_type_raw": 112,
+                "sub_device_type": -2,
+                "model": "2ac836760da10748856a7e4eafb91efa",
+                "uid": "uid",
+            },
+            {"min_temperature": 10, "max_temperature": 35},
+        )
+
+        result = asyncio.run(
+            executor.set_floor_heating_temperature("device", 25)
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(
+            ssl.calls[0],
+            ("legacy_floor_temperature", ("device", "uid", 25), {}),
+        )
+        self.assertEqual(states["device"]["target_temperature"], 25)
 
     def test_coordinator_uid_route_preserves_device_prefix(self) -> None:
         class Target:

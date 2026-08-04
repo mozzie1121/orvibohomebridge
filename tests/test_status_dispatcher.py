@@ -70,6 +70,35 @@ class StatusDispatcherTests(unittest.TestCase):
 
         self.assertEqual(resolved, "w-device")
 
+    def test_gateway_uid_is_never_used_as_device_identity(self) -> None:
+        states = {
+            "lamp-a": {"uid": "shared-gateway"},
+            "lamp-b": {"uid": "shared-gateway"},
+        }
+        dispatcher, _, _, _ = self.make_dispatcher(states=states)
+        self.assertIsNone(
+            dispatcher.resolve_device_id("unmatched", {"uid": "shared-gateway"})
+        )
+
+    def test_status_alias_resolves_without_uid(self) -> None:
+        devices = {"curtain": {"status_id": "status-curtain"}}
+        states = {"curtain": {"uid": "gateway"}}
+        dispatcher, _, _, _ = self.make_dispatcher(devices, states)
+        self.assertEqual(
+            dispatcher.resolve_device_id("status-curtain", {"uid": "gateway"}),
+            "curtain",
+        )
+
+    def test_partial_properties_are_deep_merged(self) -> None:
+        devices = {"lamp": {"device_type_raw": 503, "sub_device_type": 461}}
+        states = {"lamp": {"properties": {"brightness": {"percent": 50}}}}
+        dispatcher, _, _, _ = self.make_dispatcher(devices, states)
+        dispatcher.dispatch(
+            "lamp", {"properties": {"colorTemp": {"value": 3500}}}
+        )
+        self.assertEqual(states["lamp"]["properties"]["brightness"]["percent"], 50)
+        self.assertEqual(states["lamp"]["properties"]["colorTemp"]["value"], 3500)
+
     def test_light_packet_uses_registered_parser_and_notifies(self) -> None:
         devices = {"lamp": {"device_type_raw": 501}}
         states = {"lamp": {"state": False}}

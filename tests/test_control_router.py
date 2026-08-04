@@ -72,6 +72,16 @@ class ControlRouterTests(unittest.TestCase):
         self.assertEqual(cover.args, (100,))
         self.assertEqual(ventilation.args, (50,))
 
+    def test_legacy_floor_heating_preserves_packed_state_when_powering_off(self) -> None:
+        route = self.router.power_route(
+            self.category.LEGACY_FLOOR_HEATING,
+            False,
+            {"raw_value2": 6932},
+        )
+        self.assertEqual(route.method, "send_control_legacy_floor_heating_power")
+        self.assertEqual(route.args, (False,))
+        self.assertEqual(route.kwargs, {"packed_state": 6932})
+
     def test_registration_fallback_is_legacy_light_transport(self) -> None:
         route = self.router.power_route(self.category.OTHER, True, {})
 
@@ -86,8 +96,8 @@ class ControlRouterTests(unittest.TestCase):
             device_type_raw=503,
         )
 
-        self.assertEqual(route.method, "send_control_light_colortemp")
-        self.assertEqual(route.kwargs["brightness"], 128)
+        self.assertEqual(route.method, "send_control_cct_light_brightness")
+        self.assertEqual(route.args, (50,))
         self.assertEqual(route.optimistic["brightness"], 50)
 
     def test_fast_move_color_temp_route_converts_to_mired(self) -> None:

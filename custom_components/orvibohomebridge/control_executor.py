@@ -11,7 +11,7 @@ from .control_router import (
     color_temp_route,
     power_route,
 )
-from .device_types import classify_device, get_device_profile
+from .device_types import DeviceCategory, classify_device, get_device_profile
 from .state_store import StateSource, StateStore
 
 
@@ -133,9 +133,34 @@ class ControlExecutor:
         if device is None:
             return False
         client = self._ssl_client()
-        result = await client.send_control_cover(
-            device_id, device.get("uid", ""), position
-        )
+        category = classify_device(device)
+        if category == DeviceCategory.DREAM_CURTAIN:
+            current = self.states.get(device_id, {})
+            if current.get("angle") != 90:
+                if current.get("position") != 0:
+                    _LOGGER.warning("梦幻帘叶片未居中，拒绝直接设置开合位置: %s", device_id)
+                    return False
+                centered = await client.send_control_dream_curtain_angle(
+                    device_id, device.get("uid", ""), 90
+                )
+                if not centered:
+                    return False
+                response = await self.wait_for_response(device_id)
+                reported_angle = (
+                    response.get("properties", {}).get("curtain", {}).get("angle")
+                    if isinstance(response, dict)
+                    else None
+                )
+                if reported_angle != 90:
+                    _LOGGER.warning("梦幻帘叶片居中未确认，取消位置控制: %s", device_id)
+                    return False
+            result = await client.send_control_dream_curtain_percent(
+                device_id, device.get("uid", ""), position
+            )
+        else:
+            result = await client.send_control_cover(
+                device_id, device.get("uid", ""), position
+            )
         if result:
             response = await self.wait_for_response(device_id)
             if response:
@@ -155,9 +180,67 @@ class ControlExecutor:
         device = self._controllable_device(device_id, "窗帘")
         if device is None:
             return False
+        category = classify_device(device)
+        if category == DeviceCategory.DREAM_CURTAIN:
+            return await self._ssl_client().send_control_dream_curtain_action(
+                device_id, device.get("uid", ""), "pause"
+            )
+        stop_value2 = 255 if category == DeviceCategory.ZIGBEE_ROLLING_SHUTTER else 0
         return await self._ssl_client().send_control_cover(
-            device_id, device.get("uid", ""), "stop"
+            device_id, device.get("uid", ""), "stop", stop_value2=stop_value2
         )
+
+    async def set_dream_curtain_angle(self, device_id: str, angle: int) -> bool:
+        device = self._controllable_device(device_id, "梦幻帘角度")
+        if device is None or classify_device(device) != DeviceCategory.DREAM_CURTAIN:
+            return False
+        if self.states.get(device_id, {}).get("position") != 0:
+            _LOGGER.warning("梦幻帘仅在完全关闭时允许调节角度: %s", device_id)
+            return False
+        result = await self._ssl_client().send_control_dream_curtain_angle(
+            device_id, device.get("uid", ""), angle
+        )
+        if result:
+            self.apply_optimistic(device_id, {"angle": max(0, min(180, int(angle)))})
+            self._on_updated()
+        return result
+
+    async def dream_curtain_action(self, device_id: str, action: str) -> bool:
+        device = self._controllable_device(device_id, "梦幻帘动作")
+        if device is None or classify_device(device) != DeviceCategory.DREAM_CURTAIN:
+            return False
+        result = await self._ssl_client().send_control_dream_curtain_action(
+            device_id, device.get("uid", ""), action
+        )
+        if result:
+            self.apply_optimistic(device_id, {"cover_action": action})
+            self._on_updated()
+        return result
+
+    async def set_floor_heating_temperature(self, device_id: str, temperature: int) -> bool:
+        device = self._controllable_device(device_id, "地暖温度")
+        if device is None or classify_device(device) not in {
+            DeviceCategory.FLOOR_HEATING,
+            DeviceCategory.LEGACY_FLOOR_HEATING,
+        }:
+            return False
+        category = classify_device(device)
+        low_default = 10 if category == DeviceCategory.LEGACY_FLOOR_HEATING else 8
+        low = int(self.states.get(device_id, {}).get("min_temperature") or low_default)
+        high = int(self.states.get(device_id, {}).get("max_temperature") or 35)
+        target = max(low, min(high, int(round(temperature))))
+        if category == DeviceCategory.LEGACY_FLOOR_HEATING:
+            result = await self._ssl_client().send_control_legacy_floor_heating_temperature(
+                device_id, device.get("uid", ""), target
+            )
+        else:
+            result = await self._ssl_client().send_control_floor_heating_temperature(
+                device_id, device.get("uid", ""), target
+            )
+        if result:
+            self.apply_optimistic(device_id, {"target_temperature": target})
+            self._on_updated()
+        return result
 
     async def set_brightness(self, device_id: str, brightness: int) -> bool:
         device = self._controllable_device(device_id, "亮度")

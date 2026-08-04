@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_CLIMATE
 from .coordinator import OrviboMeshCoordinator
 from .selection import selected_device_ids
+from .device_types import DeviceCategory, classify_device
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +55,13 @@ async def async_setup_entry(
         if device_id not in selected_ids:
             continue
         if device.get("device_type") == DEVICE_TYPE_CLIMATE:
-            entities.append(OrviboFanCoilAC(coordinator, device))
+            if classify_device(device) in {
+                DeviceCategory.FLOOR_HEATING,
+                DeviceCategory.LEGACY_FLOOR_HEATING,
+            }:
+                entities.append(OrviboFloorHeating(coordinator, device))
+            else:
+                entities.append(OrviboFanCoilAC(coordinator, device))
 
     async_add_entities(entities)
 
@@ -157,3 +164,80 @@ def _ac_mode_name(hvac_mode: HVACMode) -> str:
         HVACMode.HEAT: "heat",
         HVACMode.FAN_ONLY: "fan_only",
     }.get(hvac_mode, "fan_only")
+
+
+class OrviboFloorHeating(CoordinatorEntity, ClimateEntity):
+    """Property-based and legacy packed-value floor-heating panels."""
+
+    _attr_has_entity_name = True
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
+    _attr_supported_features = (
+        ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.TARGET_TEMPERATURE
+    )
+    _attr_target_temperature_step = 1.0
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator)
+        self._device = device
+        self._device_id = device["device_id"]
+        self._attr_unique_id = f"orvibohomebridge_floor_heating_{self._device_id}"
+        self._attr_name = device.get("device_name", self._device_id)
+
+    @property
+    def available(self) -> bool:
+        return bool((self.coordinator.get_device_state(self._device_id) or {}).get("online"))
+
+    @property
+    def current_temperature(self) -> Optional[float]:
+        return (self.coordinator.get_device_state(self._device_id) or {}).get("current_temperature")
+
+    @property
+    def current_humidity(self) -> Optional[float]:
+        return (self.coordinator.get_device_state(self._device_id) or {}).get("current_humidity")
+
+    @property
+    def target_temperature(self) -> Optional[float]:
+        return (self.coordinator.get_device_state(self._device_id) or {}).get("target_temperature")
+
+    @property
+    def min_temp(self) -> float:
+        return float((self.coordinator.get_device_state(self._device_id) or {}).get("min_temperature") or 8)
+
+    @property
+    def max_temp(self) -> float:
+        return float((self.coordinator.get_device_state(self._device_id) or {}).get("max_temperature") or 35)
+
+    @property
+    def hvac_mode(self) -> HVACMode:
+        return HVACMode.HEAT if (self.coordinator.get_device_state(self._device_id) or {}).get("state") else HVACMode.OFF
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        if hvac_mode == HVACMode.OFF:
+            await self.coordinator.async_turn_off(self._device_id)
+        elif hvac_mode == HVACMode.HEAT:
+            await self.coordinator.async_turn_on(self._device_id)
+
+    async def async_set_temperature(self, **kwargs) -> None:
+        temperature = kwargs.get("temperature")
+        if temperature is not None:
+            await self.coordinator.async_set_floor_heating_temperature(
+                self._device_id, temperature
+            )
+
+    async def async_turn_on(self) -> None:
+        await self.coordinator.async_turn_on(self._device_id)
+
+    async def async_turn_off(self) -> None:
+        await self.coordinator.async_turn_off(self._device_id)
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", self._device_id),
+            "manufacturer": MANUFACTURER,
+            "model": self._device.get("model", "MixPadFloorHeat"),
+        }

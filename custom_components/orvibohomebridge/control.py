@@ -127,7 +127,7 @@ def cct_light_colortemp_command(kelvin: int) -> OrviboControlCommand:
     return OrviboControlCommand(
         "set property",
         0, 0, 0, 0,
-        properties={"colorTemp": {"value": kelvin_to_mired(k)}},
+        properties={"colorTemp": {"value": k}},
     )
 
 

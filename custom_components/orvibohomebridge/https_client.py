@@ -5,6 +5,7 @@ from aiohttp import ClientSession
 from typing import Optional, Any, Dict, List
 from .packet import HomemateJsonData
 from .protocol import normalize_password_hash
+from .known_device_models import identify_known_device
 from .cloud import (
     CHINA_CLOUD,
     CloudEndpoint,
@@ -20,9 +21,21 @@ from .const import (
     DEVICE_TYPE_COVER,
     DEVICE_TYPE_SWITCH,
     DEVICE_TYPE_SENSOR,
+    DEVICE_TYPE_CLIMATE,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _deep_merge_dict(base: dict, patch: dict) -> dict:
+    """Return a recursive merge without mutating either protocol payload."""
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 class HttpsClient:
@@ -506,17 +519,33 @@ class HttpsClient:
                 result.append({
                     "device_id": device_id,
                     "device_name": item.get("deviceName", ""),
-                    "device_type": self._get_device_type(item) or "light",
+                    # Unknown/known-only records must never inherit a light platform.
+                    "device_type": self._get_device_type(item) or "unknown",
                     "device_type_raw": device_type_raw,
+                    "sub_device_type": _safe_int(item.get("subDeviceType")),
                     "class_id": _safe_int(item.get("classId")),
                     "uid": item.get("uid", ""),
+                    "status_id": item.get("statusId", ""),
+                    "app_device_id": item.get("appDeviceId", ""),
+                    "gateway_id": item.get("gatewayId", ""),
+                    "ext_addr": item.get("extAddr", ""),
                     "model": item.get("model", ""),
+                    "class_name": item.get("className", ""),
+                    "ui_model": (
+                        item.get("ui", {}).get("model", "")
+                        if isinstance(item.get("ui"), dict)
+                        else ""
+                    ),
                     "room_id": item.get("roomId", ""),
                     "room_name": item.get("roomName", ""),
                     "online": self._parse_online_status(item.get("online")),
                     "properties": item.get("properties", {}),
                     "endpoint": item.get("endpoint", 0),
                     "status": item.get("status", {}),
+                    "value1": _safe_int(item.get("value1")),
+                    "value2": _safe_int(item.get("value2")),
+                    "value3": _safe_int(item.get("value3")),
+                    "value4": _safe_int(item.get("value4")),
                 })
             _LOGGER.info(f"从 device_status dict 解析到 {len(result)} 个设备")
             return result
@@ -544,7 +573,12 @@ class HttpsClient:
         for dev in devices:
             status_data = status_map.get(dev["device_id"], {})
             dev["status"] = status_data
-            dev["properties"] = dev.get("properties") or status_data.get("properties", {})
+            device_properties = dev.get("properties", {})
+            status_properties = status_data.get("properties", {})
+            if isinstance(device_properties, dict) and isinstance(status_properties, dict):
+                dev["properties"] = _deep_merge_dict(device_properties, status_properties)
+            elif isinstance(status_properties, dict):
+                dev["properties"] = dict(status_properties)
             result.append(dev)
         
         # 跳过父开关设备（type=135/136，properties 为空）
@@ -600,9 +634,11 @@ class HttpsClient:
                 continue
 
             device_type = self._get_device_type(item)
-            if device_type is None:
+            if device_type is None and identify_known_device(item) is None:
                 _LOGGER.debug(f"未识别的设备类型: deviceType={item.get('deviceType')}, classId={item.get('classId')}")
                 continue
+            if device_type is None:
+                device_type = "unknown"
 
             devices.append({
                 "device_id": device_id,
@@ -610,6 +646,12 @@ class HttpsClient:
                 "device_type": device_type,
                 "device_type_raw": item.get("deviceType"),
                 "class_id": item.get("classId"),
+                "sub_device_type": item.get("subDeviceType"),
+                "ui_model": (
+                    item.get("ui", {}).get("model", "")
+                    if isinstance(item.get("ui"), dict)
+                    else ""
+                ),
                 "uid": item.get("uid", ""),
                 "model": item.get("model", ""),
                 "room_id": item.get("roomId", ""),
@@ -624,14 +666,50 @@ class HttpsClient:
 
     def _get_device_type(self, item: dict) -> Optional[str]:
         device_type_raw = item.get("deviceType")
+        sub_device_type = item.get("subDeviceType")
         class_id = item.get("classId")
 
         try:
             device_type_raw = int(device_type_raw) if device_type_raw is not None else None
+            sub_device_type = int(sub_device_type) if sub_device_type is not None else None
             class_id = int(class_id) if class_id is not None else None
         except (TypeError, ValueError):
             device_type_raw = None
             class_id = None
+
+        if device_type_raw == 0:
+            return DEVICE_TYPE_LIGHT
+        if device_type_raw == 102:
+            return DEVICE_TYPE_LIGHT
+        if device_type_raw == 112:
+            ui_model = (
+                item.get("ui", {}).get("model")
+                if isinstance(item.get("ui"), dict)
+                else None
+            )
+            return (
+                DEVICE_TYPE_CLIMATE
+                if sub_device_type == -2 and (
+                    ui_model == "orb_floorheat"
+                    or item.get("model") == "2ac836760da10748856a7e4eafb91efa"
+                )
+                else None
+            )
+        if device_type_raw == 10086:
+            # 虚拟灯组尚未完成控制协议真机验证，不创建可控实体。
+            return None
+        if device_type_raw == 300:
+            return DEVICE_TYPE_CLIMATE if sub_device_type == 481 else DEVICE_TYPE_SENSOR if sub_device_type == 491 else None
+        if device_type_raw == 506:
+            return DEVICE_TYPE_COVER if sub_device_type == 408 else None
+        if device_type_raw == 501:
+            return DEVICE_TYPE_LIGHT if sub_device_type in (426, 429) else None
+        if device_type_raw == 502:
+            return DEVICE_TYPE_LIGHT if sub_device_type == 431 else None
+        if device_type_raw == 503:
+            return DEVICE_TYPE_LIGHT if sub_device_type in (436, 461) else None
+        if device_type_raw == 522:
+            return DEVICE_TYPE_SENSOR if sub_device_type == 463 else None
 
         if class_id in CLASS_ID_MAP:
             return CLASS_ID_MAP[class_id]

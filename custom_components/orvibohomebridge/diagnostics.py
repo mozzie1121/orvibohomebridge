@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
 from .const import DOMAIN
+from .device_types import get_device_profile
 from .redact import redact_packet
 
 
@@ -29,11 +30,16 @@ async def async_get_config_entry_diagnostics(
     # 整理设备列表
     devices_raw = {}
     for dev_id, dev in coordinator.devices.items():
+        profile = get_device_profile(dev)
         devices_raw[dev_id] = {
             "device_name": dev.get("device_name"),
             "device_type": dev.get("device_type"),
             "device_type_raw": dev.get("device_type_raw"),
             "model": dev.get("model"),
+            "recognized_as": profile.info.label,
+            "category": profile.category.value,
+            "hardware_verified": profile.hardware_verified,
+            "registration_only": profile.registration_only,
             "uid": dev.get("uid"),
             "online": dev.get("online"),
         }

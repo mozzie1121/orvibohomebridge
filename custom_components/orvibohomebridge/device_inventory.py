@@ -7,6 +7,7 @@ from typing import Any, Callable, MutableMapping
 
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .lock_status import normalize_battery_properties
+from .parsers import get_state_parser
 from .state_store import StateSource, StateStore
 
 
@@ -100,6 +101,18 @@ class DeviceInventory:
 
             self.devices[device_id] = device
             state = self._initial_state(device)
+            parser = get_state_parser(category)
+            if parser is not None:
+                parser(
+                    state,
+                    {
+                        "properties": device.get("properties", {}),
+                        "value1": device.get("value1"),
+                        "value2": device.get("value2"),
+                        "value3": device.get("value3"),
+                        "value4": device.get("value4"),
+                    },
+                ).apply_to(state)
             if category == DeviceCategory.DOOR_LOCK:
                 state.update(self._battery_state(device))
             elif category == DeviceCategory.CLOTHES_HORSE:
@@ -181,9 +194,14 @@ class DeviceInventory:
             "color_temp": device.get("color_temp"),
             "uid": device.get("uid", ""),
             "status_id": device.get("status_id", ""),
+            "app_device_id": device.get("app_device_id", ""),
             "gateway_id": device.get("gateway_id", ""),
             "ext_addr": device.get("ext_addr"),
-            "properties": {},
+            "properties": dict(device.get("properties") or {}),
+            "raw_value1": device.get("value1"),
+            "raw_value2": device.get("value2"),
+            "raw_value3": device.get("value3"),
+            "raw_value4": device.get("value4"),
         }
 
     @staticmethod
@@ -194,7 +212,7 @@ class DeviceInventory:
             "position": device.get("position", 0),
             "brightness": device.get("brightness"),
             "color_temp": device.get("color_temp"),
-            "properties": {},
+            "properties": dict(device.get("properties") or {}),
         }
 
     @staticmethod

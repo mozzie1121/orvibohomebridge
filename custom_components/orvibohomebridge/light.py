@@ -82,7 +82,7 @@ class OrviboLight(CoordinatorEntity, LightEntity):
 
         is_dimmable = False
 
-        if category in (DeviceCategory.DIM_COLOR_LIGHT, DeviceCategory.DIMMABLE_LIGHT, DeviceCategory.CCT_LIGHT, DeviceCategory.ZIGBEE_DIMMABLE_LIGHT, DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT):
+        if category in (DeviceCategory.DIM_COLOR_LIGHT, DeviceCategory.DIMMABLE_LIGHT, DeviceCategory.CCT_LIGHT, DeviceCategory.CCT_LIGHT_STRIP, DeviceCategory.ZIGBEE_DIMMABLE_LIGHT, DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT):
             is_dimmable = True
             _LOGGER.info(f"通过 classify_device 判断为调光灯: category={category}")
         # 通过 ui.model 判断
@@ -101,7 +101,7 @@ class OrviboLight(CoordinatorEntity, LightEntity):
                 is_dimmable = True
                 _LOGGER.info(f"通过 properties 判断为调光灯: brightness={has_brightness}, colortemp={has_colortemp}")
         # classId=426/436 调光灯
-        elif class_id in (426, 436):
+        elif category == DeviceCategory.UNKNOWN and class_id in (426, 436):
             is_dimmable = True
             _LOGGER.info(f"通过 classId={class_id} 判断为调光灯")
 
