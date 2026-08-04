@@ -210,3 +210,8 @@ def capability_for_type(
             "sub_device_type": sub_type,
         }
     )
+
+
+def lan_state_allowed(device: Any) -> bool:
+    """门锁等 cloud_only 设备的状态只走云端，LAN 推送一律忽略。"""
+    return not capability_for(device).cloud_only

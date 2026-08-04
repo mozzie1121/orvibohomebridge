@@ -10,7 +10,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .ssl_client import SSLClient
 from .lan import GatewayManager, LanControlAdapter
-from .capabilities import TransportMode
+from .capabilities import TransportMode, lan_state_allowed
 from .https_client import HttpsClient
 from .device_types import (
     DeviceCategory,
@@ -281,6 +281,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         data = self.lock_events.build_event(device_id, raw_status)
         if data is None:
             return
+        data["source"] = raw_status.get("source", "ssl")
         if data.get("kind"):
             data.update(self.lock_media.attach_urls(device_id, raw_status, data))
         self.hass.bus.async_fire(LOCK_EVENT, data)
@@ -420,6 +421,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         event = self.lock_events.build_message(device_id, raw_status)
         if event is None:
             return
+        event["source"] = raw_status.get("source", "ssl")
         event.update(self.lock_media.attach_urls(device_id, raw_status, event))
         self.hass.bus.async_fire(LOCK_EVENT, event)
         _LOGGER.debug(
@@ -696,6 +698,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if device_id is None or not self._lan_valid_state_payload(payload):
             return
         device = self.devices.get(device_id)
+        if not lan_state_allowed(device or {}):
+            return
         expected_gateway = device.get("uid") if device is not None else None
         if isinstance(expected_gateway, str) and expected_gateway != gateway_uid:
             return

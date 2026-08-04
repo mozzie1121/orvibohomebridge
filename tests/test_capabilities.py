@@ -47,6 +47,17 @@ class CapabilityRegistryTests(unittest.TestCase):
             heating.channels, frozenset({self.cap.ControlChannel.SSL})
         )
 
+    def test_lan_state_allowed_filters_cloud_only_devices(self) -> None:
+        self.assertFalse(
+            self.cap.lan_state_allowed({"device_type_raw": 522, "sub_device_type": 463})
+        )
+        self.assertFalse(
+            self.cap.lan_state_allowed({"device_type_raw": 52})
+        )
+        self.assertTrue(
+            self.cap.lan_state_allowed({"device_type_raw": 38})
+        )
+
     def test_door_lock_platforms_include_camera(self) -> None:
         cap = self.cap.capability_for_type(522, 463)
         self.assertIn(self.cap.PLATFORM_SENSOR, cap.platforms)
