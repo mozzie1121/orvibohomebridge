@@ -27,6 +27,7 @@ from .temp_password_manager import TempPasswordManager
 from .device_inventory import DeviceInventory
 from .control_executor import ControlExecutor
 from .const import (
+    DOMAIN,
     SSL_PORT,
     UPDATE_INTERVAL,
     CMD_CONTROL,
