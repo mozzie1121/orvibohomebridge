@@ -4,7 +4,8 @@
 严格封包编解码与日志脱敏。当前只接入"状态接收"链路，控制路由在阶段 2 接入。
 """
 
+from .control_adapter import LanControlAdapter
 from .gateway_manager import GatewayManager
 from .privacy import mask_host, mask_identifier
 
-__all__ = ["GatewayManager", "mask_host", "mask_identifier"]
+__all__ = ["GatewayManager", "LanControlAdapter", "mask_host", "mask_identifier"]
