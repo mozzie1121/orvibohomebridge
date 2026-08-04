@@ -269,7 +269,7 @@ class GatewayConnection:
                     reason=reason,
                 )
             if expected_uid is not None and self.peer_uid is None:
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "Gateway %s did not return an identity; using the cloud-provided endpoint",
                     mask_host(self.host),
                 )
