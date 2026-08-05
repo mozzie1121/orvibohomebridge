@@ -108,6 +108,36 @@ class StateParserTests(unittest.TestCase):
             {"state": True, "brightness": 128, "color_temp": 2700},
         )
 
+    def test_dim_color_light_accepts_property_brightness_percent_dict(self) -> None:
+        patch = self.light.parse_dim_color_light(
+            {},
+            {
+                "properties": {
+                    "onoff": {"status": "on"},
+                    "brightness": {"percent": 80},
+                }
+            },
+        )
+
+        # type=38 量纲 0-255：80% → 204
+        self.assertEqual(patch.values["state"], True)
+        self.assertEqual(patch.values["brightness"], 204)
+
+    def test_dim_color_light_accepts_property_brightness_value_dict(self) -> None:
+        patch = self.light.parse_dim_color_light(
+            {},
+            {
+                "properties": {
+                    "onoff": {"status": "on"},
+                    "brightness": {"value": 128},
+                    "colorTemp": {"value": 3500},
+                }
+            },
+        )
+
+        self.assertEqual(patch.values["brightness"], 128)
+        self.assertEqual(patch.values["color_temp"], 3500)
+
     def test_fast_move_zero_brightness_overrides_on_state(self) -> None:
         patch = self.light.parse_fast_move_dim_color_light(
             {"state": True}, {"value1": 0, "value2": -2, "value3": 200}

@@ -13,6 +13,7 @@ class StateSource(IntEnum):
     OPTIMISTIC = 10
     CLOUD = 20
     SSL = 30
+    LAN = 40  # 局域网网关实时推送（优先级最高，融合后本地优先）
 
 
 @dataclass(frozen=True, slots=True)

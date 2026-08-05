@@ -90,11 +90,17 @@ class StatusUpdateDispatcher:
                 candidates.add(stored_id)
         return next(iter(candidates)) if len(candidates) == 1 else None
 
-    def dispatch(self, incoming_device_id: str, raw_status: dict[str, Any]) -> None:
+    def dispatch(
+        self,
+        incoming_device_id: str,
+        raw_status: dict[str, Any],
+        source: StateSource = StateSource.SSL,
+    ) -> None:
         """Apply one inbound status packet and notify coordinator listeners."""
 
         _LOGGER.debug(
-            "收到 SSL 状态更新: device=%s cmd=%s",
+            "收到状态更新(source=%s): device=%s cmd=%s",
+            source.name,
             self._device_label(incoming_device_id),
             raw_status.get("cmd"),
         )
@@ -133,9 +139,10 @@ class StatusUpdateDispatcher:
         category = classify_device(device) if device else DeviceCategory.UNKNOWN
 
         if raw_status.get("cmd") == 82:
+            raw_status["source"] = source.name.lower()
             self._on_lock_message(device_id, raw_status)
             self._state_store.mark(
-                device_id, ("online", "properties"), StateSource.SSL
+                device_id, ("online", "properties"), source
             )
             return
 
@@ -162,7 +169,7 @@ class StatusUpdateDispatcher:
         self._state_store.mark(
             device_id,
             changed_fields | set(state),
-            StateSource.SSL,
+            source,
         )
 
         if (
@@ -170,6 +177,7 @@ class StatusUpdateDispatcher:
             or category == DeviceCategory.DOOR_LOCK
             or raw_status.get("cmd") == 352
         ):
+            raw_status["source"] = source.name.lower()
             self._on_lock_event(device_id, raw_status)
         self._on_updated()
 

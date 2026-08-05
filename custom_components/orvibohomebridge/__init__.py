@@ -20,9 +20,11 @@ from .const import (
     DOMAIN,
     CONF_FAMILY_ID,
     CONF_LOCK_USER_NAMES,
+    CONF_TRANSPORT_MODE,
     CONF_PASSWORD_HASH,
     CONF_CLOUD_REGION,
 )
+from .capabilities import TransportMode
 from .protocol import migrate_password_credentials
 from .models import AccountCredentials
 from .cloud import cloud_for_region
@@ -118,6 +120,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         ),
         lock_user_names=entry.options.get(CONF_LOCK_USER_NAMES),
         cloud=cloud_for_region(entry.data.get(CONF_CLOUD_REGION)),
+        transport_mode=TransportMode(
+            entry.options.get(CONF_TRANSPORT_MODE, TransportMode.AUTO.value)
+        ),
     )
 
     try:

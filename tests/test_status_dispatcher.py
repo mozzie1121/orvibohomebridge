@@ -99,6 +99,36 @@ class StatusDispatcherTests(unittest.TestCase):
         self.assertEqual(states["lamp"]["properties"]["brightness"]["percent"], 50)
         self.assertEqual(states["lamp"]["properties"]["colorTemp"]["value"], 3500)
 
+    def test_lock_event_carries_source(self) -> None:
+        devices = {"lock": {"device_type_raw": 522, "sub_device_type": 463}}
+        states = {"lock": {"properties": {}}}
+        captured: list[str] = []
+
+        def on_lock_event(device_id: str, raw: dict) -> None:
+            captured.append(raw.get("source", ""))
+
+        diagnostics: list[dict] = []
+        updates: dict[str, float] = {}
+        dispatcher = self.module.StatusUpdateDispatcher(
+            devices,
+            states,
+            self.state_store.StateStore(states),
+            updates,
+            diagnostics,
+            on_motion=lambda *_: None,
+            on_emergency=lambda *_: None,
+            on_lock_transient=lambda *_: None,
+            on_lock_message=lambda *_: None,
+            on_lock_event=on_lock_event,
+            on_updated=lambda: None,
+        )
+        dispatcher.dispatch(
+            "lock",
+            {"cmd": 42, "properties": {"doorLock": {"doorState": "on"}}},
+            source=self.state_store.StateSource.LAN,
+        )
+        self.assertEqual(captured, ["lan"])
+
     def test_light_packet_uses_registered_parser_and_notifies(self) -> None:
         devices = {"lamp": {"device_type_raw": 501}}
         states = {"lamp": {"state": False}}

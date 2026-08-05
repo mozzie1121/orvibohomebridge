@@ -38,9 +38,32 @@ def parse_dim_color_light(
     props = raw_status.get("properties", {})
     brightness = raw_status.get("value2")
     if brightness is None:
-        brightness = props.get("brightness")
+        raw_brightness = props.get("brightness")
+        if isinstance(raw_brightness, dict):
+            # 属性型亮度可能是 {"percent": 0-100} / {"value": 0-255} / {"level": ...}
+            percent = raw_brightness.get("percent")
+            if percent is not None:
+                try:
+                    # type=38 量纲为 0-255，percent 换算后钳制
+                    brightness = min(255, max(0, int(float(percent) * 255 / 100)))
+                except (TypeError, ValueError):
+                    brightness = None
+            else:
+                brightness = next(
+                    (
+                        raw_brightness[key]
+                        for key in ("value", "level", "brightness")
+                        if key in raw_brightness
+                    ),
+                    None,
+                )
+        else:
+            brightness = raw_brightness
     if brightness is not None:
-        brightness = int(brightness)
+        try:
+            brightness = int(brightness)
+        except (TypeError, ValueError):
+            brightness = None
 
     color_temp = raw_status.get("value3")
     if color_temp is not None:
@@ -49,15 +72,27 @@ def parse_dim_color_light(
             color_temp = 1_000_000 // color_temp
     else:
         color_temp = props.get("colortemp")
+        if color_temp is None:
+            color_temp = props.get("colorTemp")
+        if isinstance(color_temp, dict):
+            color_temp = color_temp.get("value")
         if color_temp is not None:
-            color_temp = int(color_temp)
+            try:
+                color_temp = int(color_temp)
+            except (TypeError, ValueError):
+                color_temp = None
     if color_temp is not None:
         color_temp = min(6500, max(2700, color_temp))
 
     value1 = raw_status.get("value1")
+    if isinstance(value1, dict):
+        value1 = value1.get("value")
     if value1 is not None:
         sub_device_type = _subdevice_type(raw_status)
-        state = int(value1) == (0 if sub_device_type == -2 else 1)
+        try:
+            state = int(value1) == (0 if sub_device_type == -2 else 1)
+        except (TypeError, ValueError):
+            state = current_state.get("state", False)
     else:
         onoff_obj = props.get("onoff", {})
         if isinstance(onoff_obj, dict) and onoff_obj.get("status"):

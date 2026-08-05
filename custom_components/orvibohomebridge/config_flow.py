@@ -18,6 +18,7 @@ from .const import (
     CONF_CLOUD_REGION,
     CONF_FAMILY_ID,
     CONF_LOCK_USER_NAMES,
+    CONF_TRANSPORT_MODE,
 )
 from .device_types import (
     DeviceCategory,
@@ -26,6 +27,7 @@ from .device_types import (
     is_hidden_category,
 )
 from .lock_status import format_lock_user_names, parse_lock_user_names
+from .capabilities import TransportMode
 from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
 from .protocol import password_hash
 
@@ -437,10 +439,47 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         self._devices: list[dict] = []
 
     async def async_step_init(self, user_input=None):
-        """选项菜单：重新登录 / 选择设备 / 锁用户映射。"""
+        """选项菜单：重新登录 / 选择设备 / 锁用户映射 / 传输模式。"""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["reauth", "devices", "lock_users"],
+            menu_options=["reauth", "devices", "lock_users", "transport_mode"],
+        )
+
+    async def async_step_transport_mode(self, user_input=None):
+        """传输模式：自动（LAN 优先 + 云兜底）/ 仅云。"""
+        if user_input is not None:
+            options = dict(self._config_entry.options)
+            options[CONF_TRANSPORT_MODE] = str(
+                user_input.get(CONF_TRANSPORT_MODE, TransportMode.AUTO.value)
+            )
+            return self.async_create_entry(title="", data=options)
+
+        current = self._config_entry.options.get(
+            CONF_TRANSPORT_MODE, TransportMode.AUTO.value
+        )
+        return self.async_show_form(
+            step_id="transport_mode",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_TRANSPORT_MODE, default=current
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(
+                                    value=TransportMode.AUTO.value,
+                                    label="自动（LAN 优先，不支持 LAN 的设备走云）",
+                                ),
+                                selector.SelectOptionDict(
+                                    value=TransportMode.CLOUD_ONLY.value,
+                                    label="仅云（所有设备走云端通道）",
+                                ),
+                            ],
+                            mode=selector.SelectSelectorMode.LIST,
+                        )
+                    )
+                }
+            ),
         )
 
     async def async_step_reauth(self, user_input=None):
