@@ -314,6 +314,30 @@ class LanControlAdapter:
             )
         )
 
+    async def send_ac_control(
+        self,
+        device_id: str,
+        device_uid: str,
+        *,
+        order: str,
+        value1: int | None = None,
+        value2: int | None = None,
+        value3: int | None = None,
+        value4: int | None = None,
+    ) -> bool:
+        return await self._send(
+            HomemateJsonData.ssl_control_ac(
+                self._username,
+                device_id,
+                device_uid,
+                order=order,
+                value1=value1,
+                value2=value2,
+                value3=value3,
+                value4=value4,
+            )
+        )
+
     async def send_light_bri_ct(
         self,
         device_id: str,

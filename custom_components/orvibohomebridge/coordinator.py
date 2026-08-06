@@ -817,84 +817,105 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
           - 设温度:   order="temperature setting",  value1=0, value2=模式, value3=风速, value4=(temp*100)<<16
           - 设风速:   order="wind setting",     value1=0, value2=模式, value3=风速, value4=温度<<16
         """
-        if not self.ssl_client:
-            _LOGGER.error("SSL客户端未初始化")
+        from .packet import HomemateJsonData
+
+        owner, scope = self.control._transport(device_id)
+        if owner is None:
+            _LOGGER.error("控制通道未初始化，无法下发空调指令")
             return False
-        if not self.ssl_client.session_key or self.ssl_client.session_key == DEFAULT_KEY.encode("utf-8"):
+
+        _LOGGER.debug(
+            f"下发空调控制 {device_id} scope={scope} order={order} "
+            f"v1={value1}, v2={value2}, v3={value3}, v4={value4}"
+        )
+        if scope == "lan":
+            ok = await owner.send_ac_control(
+                device_id,
+                device_uid,
+                order=order,
+                value1=value1,
+                value2=value2,
+                value3=value3,
+                value4=value4,
+            )
+            if ok:
+                self._apply_ac_optimistic(device_id, value1, value2, value3, value4)
+            return ok
+
+        if (
+            not self.ssl_client
+            or not self.ssl_client.session_key
+            or self.ssl_client.session_key == DEFAULT_KEY.encode("utf-8")
+        ):
             _LOGGER.warning("会话密钥无效，无法下发空调指令")
             return False
 
-        from .packet import HomemateJsonData
-        from .functions import generate_serial
-
-        serial = generate_serial()
-        uni_serial = generate_serial(use_time=True)
-
-        payload = {
-            "uid": device_uid,
-            "userName": self.username,
-            "deviceId": device_id,
-            "groupId": "",
-            "order": order,
-            "value1": value1 if value1 is not None else 0,
-            "value2": value2 if value2 is not None else 0,
-            "value3": value3 if value3 is not None else 0,
-            "value4": value4 if value4 is not None else 0,
-            "delayTime": 0,
-            "qualityOfService": 1,
-            "defaultResponse": 1,
-            "propertyResponse": 0,
-            "cmd": CMD_CONTROL,
-            "serial": serial,
-            "clientType": 1,
-            "uniSerial": uni_serial,
-            "serverRecord": False,
-            "ver": SOFTWARE_VER,
-            "debugInfo": DEBUG_INFO,
-        }
-
-        _LOGGER.debug(f"下发空调控制 {device_id} order={order} v1={value1}, v2={value2}, v3={value3}, v4={value4}")
+        payload = HomemateJsonData.ssl_control_ac(
+            self.username,
+            device_id,
+            device_uid,
+            order=order,
+            value1=value1,
+            value2=value2,
+            value3=value3,
+            value4=value4,
+        )
         await self.ssl_client._send_packet(payload, self.ssl_client.session_key)
 
         # ★ 等待空调设备响应
         response = await self._wait_for_control_response(device_id)
         if not response:
             # 超时，保留乐观更新兜底
-            dev_state = self.get_device_state(device_id)
-            if dev_state:
-                optimistic_fields = set()
-                if value1 is not None:
-                    dev_state["state"] = value1 == 0
-                    optimistic_fields.add("state")
-                if value2 is not None:
-                    ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
-                    dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
-                    dev_state["ac_mode_raw"] = value2
-                    optimistic_fields.update(("ac_mode", "ac_mode_raw"))
-                if value3 is not None:
-                    fan_speed_map = {1: "low", 2: "medium", 3: "high"}
-                    dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
-                    dev_state["fan_speed_raw"] = value3
-                    optimistic_fields.update(("fan_speed", "fan_speed_raw"))
-                if value4 is not None:
-                    try:
-                        temp_raw = value4 >> 16
-                        dev_state["temperature"] = round(temp_raw / 100.0, 1) if temp_raw else 0
-                    except (TypeError, ValueError):
-                        dev_state["temperature"] = value4
-                    optimistic_fields.add("temperature")
-                self.state_store.mark(
-                    device_id,
-                    optimistic_fields,
-                    StateSource.OPTIMISTIC,
-                )
-                self.async_set_updated_data(self.device_states)
+            self._apply_ac_optimistic(device_id, value1, value2, value3, value4)
         else:
             # 有响应就触发 coordinator 更新（SSL 推送会回调 on_status_update）
             dev_state = self.get_device_state(device_id)
             if dev_state:
                 self.async_set_updated_data(self.device_states)
         return True
+
+    def _apply_ac_optimistic(
+        self,
+        device_id: str,
+        value1,
+        value2,
+        value3,
+        value4,
+    ) -> None:
+        """空调控制后的乐观状态回写（等待回显超时时使用）。"""
+        dev_state = self.get_device_state(device_id)
+        if not dev_state:
+            return
+        optimistic_fields = set()
+        if value1 is not None:
+            dev_state["state"] = value1 == 0
+            optimistic_fields.add("state")
+        if value2 is not None:
+            ac_mode_map = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
+            dev_state["ac_mode"] = ac_mode_map.get(value2, f"unknown({value2})")
+            dev_state["ac_mode_raw"] = value2
+            optimistic_fields.update(("ac_mode", "ac_mode_raw"))
+        if value3 is not None:
+            fan_speed_map = {1: "low", 2: "medium", 3: "high"}
+            dev_state["fan_speed"] = fan_speed_map.get(value3, f"unknown({value3})")
+            dev_state["fan_speed_raw"] = value3
+            optimistic_fields.update(("fan_speed", "fan_speed_raw"))
+        if value4 is not None:
+            try:
+                temp_raw = value4 >> 16
+                dev_state["temperature"] = (
+                    round(temp_raw / 100.0, 1) if temp_raw else 0
+                )
+            except (TypeError, ValueError):
+                dev_state["temperature"] = value4
+            optimistic_fields.add("temperature")
+        if optimistic_fields:
+            self.state_store.mark(
+                device_id,
+                optimistic_fields,
+                StateSource.OPTIMISTIC,
+            )
+        self.async_set_updated_data(self.device_states)
 
     async def async_set_ac_mode(self, device_id: str, ac_mode: str) -> bool:
         """控制空调模式（cool/dehumidify/heat/fan_only）"""

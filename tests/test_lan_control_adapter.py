@@ -131,6 +131,30 @@ class LanControlAdapterTests(unittest.TestCase):
         self.assertEqual(payload["order"], "off")
         self.assertEqual(payload["value1"], 1)
 
+    def test_ac_control_sends_trimmed_lan_payload(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(
+            adapter.send_ac_control(
+                "dev-1",
+                "gw-1",
+                order="on",
+                value1=0,
+                value2=3,
+                value3=1,
+                value4=2500 << 16,
+            )
+        )
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["order"], "on")
+        self.assertEqual(payload["value1"], 0)
+        self.assertEqual(payload["value2"], 3)
+        self.assertEqual(payload["value4"], 2500 << 16)
+        self.assertNotIn("qualityOfService", payload)
+        self.assertNotIn("groupId", payload)
+        self.assertNotIn("debugInfo", payload)
+
 
 if __name__ == "__main__":
     unittest.main()

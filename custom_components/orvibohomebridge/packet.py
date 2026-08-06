@@ -190,6 +190,45 @@ class HomemateJsonData:
         return payload
 
     @classmethod
+    def ssl_control_ac(
+        cls,
+        username: str,
+        device_id: str,
+        device_uid: str,
+        *,
+        order: str,
+        value1: int | None = None,
+        value2: int | None = None,
+        value3: int | None = None,
+        value4: int | None = None,
+    ):
+        """空调原始控制（cmd=15 set property，value1~value4 语义与 App 一致）。"""
+        serial = generate_serial()
+        uniSerial = generate_serial(use_time=True)
+        return {
+            "uid": device_uid,
+            "userName": username,
+            "deviceId": device_id,
+            "groupId": "",
+            "order": order,
+            "value1": value1 if value1 is not None else 0,
+            "value2": value2 if value2 is not None else 0,
+            "value3": value3 if value3 is not None else 0,
+            "value4": value4 if value4 is not None else 0,
+            "delayTime": 0,
+            "qualityOfService": 1,
+            "defaultResponse": 1,
+            "propertyResponse": 0,
+            "cmd": CMD_CONTROL,
+            "serial": serial,
+            "clientType": 1,
+            "uniSerial": uniSerial,
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
+
+    @classmethod
     def ssl_control_dimmable_light_brightness(cls, username: str, device_id: str, device_uid: str, brightness_percent: int):
         """可调光灯亮度控制（set property 格式，适用于 type=502）。
 
