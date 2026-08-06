@@ -103,6 +103,34 @@ class LanControlAdapterTests(unittest.TestCase):
         ok = asyncio.run(adapter.send_control_switch("dev-1", "gw-1", False))
         self.assertFalse(ok)
 
+    def test_light_on_sends_full_brightness_over_lan(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(adapter.send_control_light("dev-1", "gw-1", True))
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["order"], "on")
+        self.assertEqual(payload["value1"], 0)
+        # LAN 旧协议开灯必须带满亮度，否则设备开灯即亮度 0 熄灭
+        self.assertEqual(payload["value2"], 255)
+
+    def test_light_on_preserves_explicit_brightness(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(adapter.send_control_light("dev-1", "gw-1", True, 128))
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["value2"], 128)
+
+    def test_light_off_keeps_zero_brightness(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(adapter.send_control_light("dev-1", "gw-1", False))
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["order"], "off")
+        self.assertEqual(payload["value1"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -213,6 +213,10 @@ class LanControlAdapter:
         brightness: int = 0,
         colortemp_mired: int = 0,
     ) -> bool:
+        if state and (brightness is None or int(brightness or 0) <= 0):
+            # LAN 旧协议（type 0/1/38）开灯必须带满亮度 value2=255，
+            # 否则设备开灯即亮度 0 熄灭（lan-control light_on 实测语义）
+            brightness = 255
         return await self._send(
             HomemateJsonData.ssl_control_light(
                 self._username,
