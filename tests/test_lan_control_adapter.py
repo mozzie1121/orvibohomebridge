@@ -56,6 +56,15 @@ class LanControlAdapterTests(unittest.TestCase):
         payload.pop("uniSerial", None)
         expected.pop("serial", None)
         expected.pop("uniSerial", None)
+        for field in (
+            "groupId",
+            "qualityOfService",
+            "defaultResponse",
+            "propertyResponse",
+            "debugInfo",
+        ):
+            payload.pop(field, None)
+            expected.pop(field, None)
         self.assertEqual(payload, expected)
 
     def test_cover_control_reuses_homebridge_payload_builder(self) -> None:
@@ -73,6 +82,15 @@ class LanControlAdapterTests(unittest.TestCase):
         payload.pop("uniSerial", None)
         expected.pop("serial", None)
         expected.pop("uniSerial", None)
+        for field in (
+            "groupId",
+            "qualityOfService",
+            "defaultResponse",
+            "propertyResponse",
+            "debugInfo",
+        ):
+            payload.pop(field, None)
+            expected.pop(field, None)
         self.assertEqual(payload, expected)
 
     def test_send_failure_returns_false(self) -> None:
@@ -84,6 +102,58 @@ class LanControlAdapterTests(unittest.TestCase):
         adapter = self.adapter_mod.LanControlAdapter("user", BrokenManager())
         ok = asyncio.run(adapter.send_control_switch("dev-1", "gw-1", False))
         self.assertFalse(ok)
+
+    def test_light_on_sends_full_brightness_over_lan(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(adapter.send_control_light("dev-1", "gw-1", True))
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["order"], "on")
+        self.assertEqual(payload["value1"], 0)
+        # LAN 旧协议开灯必须带满亮度，否则设备开灯即亮度 0 熄灭
+        self.assertEqual(payload["value2"], 255)
+
+    def test_light_on_preserves_explicit_brightness(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(adapter.send_control_light("dev-1", "gw-1", True, 128))
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["value2"], 128)
+
+    def test_light_off_keeps_zero_brightness(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(adapter.send_control_light("dev-1", "gw-1", False))
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["order"], "off")
+        self.assertEqual(payload["value1"], 1)
+
+    def test_ac_control_sends_trimmed_lan_payload(self) -> None:
+        manager = FakeGatewayManager()
+        adapter = self.adapter_mod.LanControlAdapter("user", manager)
+        asyncio.run(
+            adapter.send_ac_control(
+                "dev-1",
+                "gw-1",
+                order="on",
+                value1=0,
+                value2=3,
+                value3=1,
+                value4=2500 << 16,
+            )
+        )
+
+        _, payload = manager.sent[0]
+        self.assertEqual(payload["order"], "on")
+        self.assertEqual(payload["value1"], 0)
+        self.assertEqual(payload["value2"], 3)
+        self.assertEqual(payload["value4"], 2500 << 16)
+        self.assertNotIn("qualityOfService", payload)
+        self.assertNotIn("groupId", payload)
+        self.assertNotIn("debugInfo", payload)
 
 
 if __name__ == "__main__":

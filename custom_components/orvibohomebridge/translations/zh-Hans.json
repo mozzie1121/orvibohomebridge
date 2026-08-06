@@ -58,7 +58,15 @@
                 "menu_options": {
                     "reauth": "重新登录",
                     "devices": "选择设备",
-                    "lock_users": "锁用户映射"
+                    "lock_users": "锁用户映射",
+                    "transport_mode": "传输模式"
+                }
+            },
+            "transport_mode": {
+                "title": "传输模式",
+                "description": "自动：LAN 优先，不支持 LAN 的设备走云；仅云：所有设备走云端通道。",
+                "data": {
+                    "transport_mode": "传输模式"
                 }
             },
             "reauth": {

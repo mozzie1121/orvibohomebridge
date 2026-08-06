@@ -58,7 +58,15 @@
                 "menu_options": {
                     "reauth": "Sign in again",
                     "devices": "Select devices",
-                    "lock_users": "Lock user mapping"
+                    "lock_users": "Lock user mapping",
+                    "transport_mode": "Transport mode"
+                }
+            },
+            "transport_mode": {
+                "title": "Transport mode",
+                "description": "Auto: LAN-first with cloud fallback. Cloud only: all devices use the cloud channel.",
+                "data": {
+                    "transport_mode": "Transport mode"
                 }
             },
             "reauth": {

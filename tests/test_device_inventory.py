@@ -121,6 +121,27 @@ class DeviceInventoryTests(unittest.TestCase):
         self.assertTrue(states["light"]["online"])
         self.assertEqual(states["light"]["value1"], 1)
 
+    def test_merge_cloud_refreshes_door_lock_state(self) -> None:
+        inventory, _devices, states, _removed = self.make_inventory()
+
+        inventory.merge_cloud(
+            [
+                {
+                    "device_id": "lock",
+                    "device_type_raw": 522,
+                    "sub_device_type": 463,
+                    "online": True,
+                    "properties": {
+                        "doorLock": {"doorState": "on", "lockState": "on"}
+                    },
+                }
+            ]
+        )
+
+        self.assertTrue(states["lock"]["door_state"])
+        self.assertFalse(states["lock"]["locked"])
+        self.assertEqual(states["lock"]["lock_status"], "unlocked")
+
 
 if __name__ == "__main__":
     unittest.main()

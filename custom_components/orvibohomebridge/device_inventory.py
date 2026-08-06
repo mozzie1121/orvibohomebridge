@@ -174,6 +174,26 @@ class DeviceInventory:
                     self._battery_state(device),
                     StateSource.CLOUD,
                 )
+                # 门锁为 cloud_only：周期云端快照需覆盖门磁/锁状态字段，
+                # 仅靠 SSL 推送维护会在推送丢失/重启后残留旧值。
+                # StateStore guard 保证 30s 内新的 SSL 值不被覆盖。
+                lock_state: dict[str, Any] = {}
+                parser = get_state_parser(category)
+                if parser is not None:
+                    parser(
+                        lock_state,
+                        {
+                            "properties": device.get("properties", {}),
+                            "value1": device.get("value1"),
+                            "value2": device.get("value2"),
+                            "value3": device.get("value3"),
+                            "value4": device.get("value4"),
+                        },
+                    ).apply_to(lock_state)
+                if lock_state:
+                    self.state_store.merge(
+                        device_id, lock_state, StateSource.CLOUD
+                    )
 
     def _remove(self, device_id: str) -> None:
         self.devices.pop(device_id, None)

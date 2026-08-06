@@ -80,9 +80,20 @@ class ControlExecutor:
             if owner is None:
                 return False
             method = getattr(owner, route.method)
-            return bool(
+            ok = bool(
                 await method(device_id, device_uid, *route.args, **route.kwargs)
             )
+            if not ok and self._last_scope == "lan":
+                # 自动降级：LAN 控制失败/无回执时改走云（设计 ADR-2 兜底）
+                self._last_scope = "ssl"
+                ssl = self._ssl_client()
+                if ssl is not None:
+                    ok = bool(
+                        await getattr(ssl, route.method)(
+                            device_id, device_uid, *route.args, **route.kwargs
+                        )
+                    )
+            return ok
         owner = self._route_target()
         if owner is None:
             return False

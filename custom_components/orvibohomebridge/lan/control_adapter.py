@@ -11,6 +11,11 @@ from ..packet import HomemateJsonData
 
 _LOGGER = logging.getLogger(__name__)
 
+# SSL 专属字段：云端报文带这些字段，LAN 网关/固件不识别，需剥离（真机验证）
+_SSL_ONLY_FIELDS = frozenset(
+    ("groupId", "qualityOfService", "defaultResponse", "propertyResponse", "debugInfo")
+)
+
 
 class LanControlAdapter:
     """与 ssl_client.send_control_* 同名同参的控制方法集，走网关发送。"""
@@ -20,12 +25,19 @@ class LanControlAdapter:
         self._gateway_manager = gateway_manager
 
     async def _send(self, payload: dict[str, Any]) -> bool:
-        uid = payload.get("uid", "")
+        lan_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in _SSL_ONLY_FIELDS
+        }
+        uid = lan_payload.get("uid", "")
+        _LOGGER.debug("LAN 控制发送 device=%s payload=%s", lan_payload.get("deviceId"), lan_payload)
         try:
-            response = await self._gateway_manager.send(uid, payload, timeout=8.0)
+            response = await self._gateway_manager.send(uid, lan_payload, timeout=8.0)
         except Exception as e:  # noqa: BLE001
             _LOGGER.debug("LAN 控制发送失败: %s", e)
             return False
+        _LOGGER.debug("LAN 控制响应: %s", response)
         return response is not None
 
     async def send_control_switch(
@@ -201,6 +213,10 @@ class LanControlAdapter:
         brightness: int = 0,
         colortemp_mired: int = 0,
     ) -> bool:
+        if state and (brightness is None or int(brightness or 0) <= 0):
+            # LAN 旧协议（type 0/1/38）开灯必须带满亮度 value2=255，
+            # 否则设备开灯即亮度 0 熄灭（lan-control light_on 实测语义）
+            brightness = 255
         return await self._send(
             HomemateJsonData.ssl_control_light(
                 self._username,
@@ -295,6 +311,30 @@ class LanControlAdapter:
         return await self._send(
             HomemateJsonData.ssl_control_ventilation(
                 self._username, device_id, device_uid, value1
+            )
+        )
+
+    async def send_ac_control(
+        self,
+        device_id: str,
+        device_uid: str,
+        *,
+        order: str,
+        value1: int | None = None,
+        value2: int | None = None,
+        value3: int | None = None,
+        value4: int | None = None,
+    ) -> bool:
+        return await self._send(
+            HomemateJsonData.ssl_control_ac(
+                self._username,
+                device_id,
+                device_uid,
+                order=order,
+                value1=value1,
+                value2=value2,
+                value3=value3,
+                value4=value4,
             )
         )
 
