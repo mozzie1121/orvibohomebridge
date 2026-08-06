@@ -11,6 +11,11 @@ from ..packet import HomemateJsonData
 
 _LOGGER = logging.getLogger(__name__)
 
+# SSL 专属字段：云端报文带这些字段，LAN 网关/固件不识别，需剥离（真机验证）
+_SSL_ONLY_FIELDS = frozenset(
+    ("groupId", "qualityOfService", "defaultResponse", "propertyResponse", "debugInfo")
+)
+
 
 class LanControlAdapter:
     """与 ssl_client.send_control_* 同名同参的控制方法集，走网关发送。"""
@@ -20,12 +25,19 @@ class LanControlAdapter:
         self._gateway_manager = gateway_manager
 
     async def _send(self, payload: dict[str, Any]) -> bool:
-        uid = payload.get("uid", "")
+        lan_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in _SSL_ONLY_FIELDS
+        }
+        uid = lan_payload.get("uid", "")
+        _LOGGER.debug("LAN 控制发送 device=%s payload=%s", lan_payload.get("deviceId"), lan_payload)
         try:
-            response = await self._gateway_manager.send(uid, payload, timeout=8.0)
+            response = await self._gateway_manager.send(uid, lan_payload, timeout=8.0)
         except Exception as e:  # noqa: BLE001
             _LOGGER.debug("LAN 控制发送失败: %s", e)
             return False
+        _LOGGER.debug("LAN 控制响应: %s", response)
         return response is not None
 
     async def send_control_switch(

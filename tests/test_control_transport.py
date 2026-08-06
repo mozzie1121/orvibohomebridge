@@ -56,6 +56,12 @@ class FakeLan:
         return method
 
 
+class FailingLan(FakeLan):
+    async def send_control_light_colortemp(self, *args, **kwargs):
+        self.calls.append(("lan_light_colortemp", args, kwargs))
+        return False
+
+
 class ControlTransportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -120,6 +126,16 @@ class ControlTransportTests(unittest.TestCase):
         ok = asyncio.run(executor.turn_on("device"))
         self.assertTrue(ok)
         self.assertFalse(lan.calls)
+        self.assertTrue(ssl.calls)
+
+    def test_lan_failure_falls_back_to_ssl(self) -> None:
+        device = {"device_type_raw": 38, "uid": "gw-1"}
+        lan = FailingLan()
+        executor, ssl = self.make_executor(device, lan=lan, gateway_connected=True)
+
+        ok = asyncio.run(executor.turn_on("device"))
+        self.assertTrue(ok)
+        self.assertTrue(lan.calls)
         self.assertTrue(ssl.calls)
 
 

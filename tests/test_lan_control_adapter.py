@@ -56,6 +56,15 @@ class LanControlAdapterTests(unittest.TestCase):
         payload.pop("uniSerial", None)
         expected.pop("serial", None)
         expected.pop("uniSerial", None)
+        for field in (
+            "groupId",
+            "qualityOfService",
+            "defaultResponse",
+            "propertyResponse",
+            "debugInfo",
+        ):
+            payload.pop(field, None)
+            expected.pop(field, None)
         self.assertEqual(payload, expected)
 
     def test_cover_control_reuses_homebridge_payload_builder(self) -> None:
@@ -73,6 +82,15 @@ class LanControlAdapterTests(unittest.TestCase):
         payload.pop("uniSerial", None)
         expected.pop("serial", None)
         expected.pop("uniSerial", None)
+        for field in (
+            "groupId",
+            "qualityOfService",
+            "defaultResponse",
+            "propertyResponse",
+            "debugInfo",
+        ):
+            payload.pop(field, None)
+            expected.pop(field, None)
         self.assertEqual(payload, expected)
 
     def test_send_failure_returns_false(self) -> None:
