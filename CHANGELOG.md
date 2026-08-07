@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.1] - 2026-08-07
+
+### Fixed
+
+- LAN 控制报文剥离 SSL 专属字段（网关只认精简报文），修复灯/空调 LAN 控制异常
+  （"开了立马关"）。
+- 旧协议灯（type 0/1/38）开灯翻译 `value2=255`，避免开灯即亮度 0 熄灭。
+- LAN 控制失败自动降级云（自动模式兜底）。
+- 调光调色灯解析兼容属性型 `brightness`/`colortemp` 为 dict（修复 `int(dict)` 崩溃）。
+- `lan` 包导出 `LanControlAdapter`，修复 coordinator 加载失败。
+- 周期云端快照覆盖门锁状态（cloud_only 设备兜底刷新）。
+- 传输模式选项补齐中英文翻译（修复选项界面空白）。
+- 网关空 UID 提示降级为 debug（云端可信端点预期行为）。
+
+### Changed
+
+- 空调控制接入 LAN 优先 + 云兜底（payload 构造统一到 `HomemateJsonData`）。
+
 ## [0.5.0] - 2026-08-05
 
 ### Added
