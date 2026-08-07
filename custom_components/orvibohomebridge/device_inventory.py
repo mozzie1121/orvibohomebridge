@@ -138,62 +138,70 @@ class DeviceInventory:
     def merge_cloud(self, discovered: list[dict[str, Any]]) -> None:
         """Merge a periodic cloud snapshot without overwriting fresh SSL fields."""
         for device in discovered:
-            device_id = device["device_id"]
-            category = classify_device(device)
-            if is_hidden_category(category):
-                self._remove(device_id)
-                continue
+            try:
+                device_id = device["device_id"]
+                category = classify_device(device)
+                if is_hidden_category(category):
+                    self._remove(device_id)
+                    continue
 
-            self.devices[device_id] = device
-            if device_id not in self.states:
-                self.states[device_id] = self._periodic_initial_state(device)
+                self.devices[device_id] = device
+                if device_id not in self.states:
+                    self.states[device_id] = self._periodic_initial_state(device)
 
-            cloud_state = {
-                field: device[field]
-                for field in (
-                    "state",
-                    "online",
-                    "position",
-                    "brightness",
-                    "color_temp",
-                    "temperature",
-                    "humidity",
-                )
-                if field in device and device[field] is not None
-            }
-            status = device.get("status", {})
-            if isinstance(status, dict):
-                cloud_state.update(status)
-            if cloud_state:
-                self.state_store.merge(
-                    device_id, cloud_state, StateSource.CLOUD
-                )
-            if category == DeviceCategory.DOOR_LOCK:
-                self.state_store.merge(
-                    device_id,
-                    self._battery_state(device),
-                    StateSource.CLOUD,
-                )
-                # 门锁为 cloud_only：周期云端快照需覆盖门磁/锁状态字段，
-                # 仅靠 SSL 推送维护会在推送丢失/重启后残留旧值。
-                # StateStore guard 保证 30s 内新的 SSL 值不被覆盖。
-                lock_state: dict[str, Any] = {}
-                parser = get_state_parser(category)
-                if parser is not None:
-                    parser(
-                        lock_state,
-                        {
-                            "properties": device.get("properties", {}),
-                            "value1": device.get("value1"),
-                            "value2": device.get("value2"),
-                            "value3": device.get("value3"),
-                            "value4": device.get("value4"),
-                        },
-                    ).apply_to(lock_state)
-                if lock_state:
-                    self.state_store.merge(
-                        device_id, lock_state, StateSource.CLOUD
+                cloud_state = {
+                    field: device[field]
+                    for field in (
+                        "state",
+                        "online",
+                        "position",
+                        "brightness",
+                        "color_temp",
+                        "temperature",
+                        "humidity",
                     )
+                    if field in device and device[field] is not None
+                }
+                status = device.get("status", {})
+                if isinstance(status, dict):
+                    cloud_state.update(status)
+                if cloud_state:
+                    self.state_store.merge(
+                        device_id, cloud_state, StateSource.CLOUD
+                    )
+                if category == DeviceCategory.DOOR_LOCK:
+                    self.state_store.merge(
+                        device_id,
+                        self._battery_state(device),
+                        StateSource.CLOUD,
+                    )
+                    # 门锁为 cloud_only：周期云端快照需覆盖门磁/锁状态字段，
+                    # 仅靠 SSL 推送维护会在推送丢失/重启后残留旧值。
+                    # StateStore guard 保证 30s 内新的 SSL 值不被覆盖。
+                    lock_state: dict[str, Any] = {}
+                    parser = get_state_parser(category)
+                    if parser is not None:
+                        parser(
+                            lock_state,
+                            {
+                                "properties": device.get("properties", {}),
+                                "value1": device.get("value1"),
+                                "value2": device.get("value2"),
+                                "value3": device.get("value3"),
+                                "value4": device.get("value4"),
+                            },
+                        ).apply_to(lock_state)
+                    if lock_state:
+                        self.state_store.merge(
+                            device_id, lock_state, StateSource.CLOUD
+                        )
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.warning(
+                    "云端快照合并失败 device=%s: %s",
+                    device.get("device_id"),
+                    e,
+                )
+                continue
 
     def _remove(self, device_id: str) -> None:
         self.devices.pop(device_id, None)

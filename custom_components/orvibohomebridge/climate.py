@@ -90,8 +90,7 @@ class OrviboFanCoilAC(CoordinatorEntity, ClimateEntity):
 
     @property
     def available(self) -> bool:
-        state = self.coordinator.get_device_state(self._device_id)
-        return state.get("online", False) if state else False
+        return self.coordinator.is_device_online(self._device_id)
 
     @property
     def current_temperature(self) -> Optional[float]:
@@ -188,7 +187,7 @@ class OrviboFloorHeating(CoordinatorEntity, ClimateEntity):
 
     @property
     def available(self) -> bool:
-        return bool((self.coordinator.get_device_state(self._device_id) or {}).get("online"))
+        return self.coordinator.is_device_online(self._device_id)
 
     @property
     def current_temperature(self) -> Optional[float]:
