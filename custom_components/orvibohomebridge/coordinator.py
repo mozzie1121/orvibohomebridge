@@ -87,7 +87,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._cmd42_log: list[dict] = []
         self._redaction_salt = secrets.token_bytes(32)
         self._last_update_time: Dict[str, float] = {}  # 设备最后更新时间戳
-        self.OFFLINE_TIMEOUT = 600  # 设备离线超时秒数
+        self.OFFLINE_TIMEOUT = 3600  # 设备离线超时秒数（须大于 30 分钟周期轮询间隔）
 
         super().__init__(
             hass,
@@ -549,6 +549,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if device_status_data:
                 devices = self.https_client.parse_device_status_list(device_status_data)
                 self.inventory.merge_cloud(devices)
+                # 周期轮询作为在线心跳：避免低频推送设备被离线启发式误判
+                _now = __import__("time").time()
+                for device in devices:
+                    online = device.get("online")
+                    online = online is True or str(online).lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                        "online",
+                    )
+                    if online:
+                        self._last_update_time[device.get("device_id", "")] = _now
             if self.gateway_manager is not None:
                 await self.gateway_manager.async_update_cloud_gateways(
                     self.https_client.gateway_ips
@@ -698,16 +710,40 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """网关推送 → 校验 → 与云端同一条解析链（StateSource.LAN 优先）。"""
         device_id = self._lan_payload_device_id(payload)
         if device_id is None or not self._lan_valid_state_payload(payload):
+            _LOGGER.debug("LAN 推送丢弃: 无有效 deviceId 或畸形 payload")
             return
         device = self.devices.get(device_id)
         if not lan_state_allowed(device or {}):
+            _LOGGER.debug("LAN 推送丢弃: 设备 %s 为 cloud_only", device_id)
             return
         expected_gateway = device.get("uid") if device is not None else None
         if isinstance(expected_gateway, str) and expected_gateway != gateway_uid:
+            _LOGGER.debug(
+                "LAN 推送丢弃: 设备 %s 期望网关 %s != 推送网关 %s",
+                device_id,
+                expected_gateway,
+                gateway_uid,
+            )
             return
         payload_gateway = self._lan_payload_gateway_uid(payload)
         if payload_gateway is not None and payload_gateway != gateway_uid:
+            _LOGGER.debug(
+                "LAN 推送丢弃: 包内网关 %s != 推送网关 %s",
+                payload_gateway,
+                gateway_uid,
+            )
             return
+        _LOGGER.debug(
+            "LAN 推送: device=%s properties=%s value1-4=%s",
+            device_id,
+            payload.get("properties"),
+            (
+                payload.get("value1"),
+                payload.get("value2"),
+                payload.get("value3"),
+                payload.get("value4"),
+            ),
+        )
         raw_status = {
             "raw_data": payload,
             "properties": payload.get("properties", {}),
