@@ -654,7 +654,16 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         return self._lan_gateway_connected(device.get("uid", ""))
 
     def is_device_online(self, device_id: str) -> bool:
-        """设备在线判定：LAN 通道优先，否则看云端/推送的 online 标志。"""
+        """设备在线判定（参照上游 orvibo-lan 模型）：
+        只读设备跟随 coordinator 更新成功；可控设备优先看 LAN 网关连接，
+        否则看云端/推送的 online 标志。"""
+        device = self.devices.get(device_id)
+        if device is None:
+            return False
+        capability = capability_for(device)
+        if not capability.channels:
+            # 只读设备（传感器/门锁）：不因推送静默被误判不可用
+            return bool(getattr(self, "last_update_success", True))
         if self._lan_channel_online(device_id):
             return True
         return bool((self.device_states.get(device_id) or {}).get("online"))
