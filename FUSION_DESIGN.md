@@ -66,14 +66,14 @@ class TransportMode(str, Enum):
 
 ```
 mode=cloud_only        → 一律 ssl（含状态）
-mode=auto：
+mode=auto（严格语义）：
   device.cloud_only    → ssl
-  device.control_channel=lan 且网关可达 → lan
-  否则 → ssl
+  其余设备             → 一律 lan（无云兜底；网关不可达则控制失败/设备不可用）
 ```
 
-不提供"仅 LAN"模式：默认自动下非 `cloud_only` 设备已优先走 LAN；`cloud_only` 设备
-（门锁 107/300/522、晾衣机 52 等 WiFi 直连）必须走云，强制仅 LAN 会导致这些设备不可用。
+自动模式即"仅本地 + 云专属"：非 `cloud_only` 设备一律走 LAN（状态与控制都由本地
+维护，云端轮询只同步 online，不覆盖本地状态）；`cloud_only` 设备（门锁、晾衣机 52
+等 WiFi 直连）必须走云。
 
 模式切换时：清空旧传输源的状态修订（或整体重建 StateStore），避免残留高优先级值。
 
@@ -111,8 +111,8 @@ class StateSource(IntEnum):
    - 控制后的乐观更新（OPTIMISTIC=10）优先级最低，任何真实推送都可覆盖。
 2. **控制响应（谁的回执有效）**：以发起方为准，transport 隔离：
    - LAN 控制 → 只等网关 cmd=15 回执 + 对应 cmd=42 推送；
-   - 云控制 → 只等 SSL 回显；
-   - LAN 超时降级云：先作废 LAN pending，再发云控制，**绝不跨 transport 匹配**（两者 serial 空间独立）；
+   - 云控制（仅 cloud_only/仅云模式）→ 只等 SSL 回显；
+   - 非 cloud_only 设备不做云兜底，**绝不跨 transport 匹配**（两者 serial 空间独立）；
    - 回执只做成功确认，最终状态一律由 StateStore 按上述优先级合并。
 
 ## 7. 门锁策略（ADR-4）

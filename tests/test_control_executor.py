@@ -60,6 +60,8 @@ class ControlExecutorTests(unittest.TestCase):
         updates = []
         ssl = FakeSsl(response)
         store = self.module.StateStore(states)
+        # 这些用例验证 executor 逻辑（乐观回写/回执确认），走 SSL 路径：
+        # 严格语义下非 cloud_only 设备走本地，故用仅云模式驱动 SSL 分支
         executor = self.module.ControlExecutor(
             devices,
             states,
@@ -68,6 +70,7 @@ class ControlExecutorTests(unittest.TestCase):
             lambda: target or object(),
             states.get,
             lambda: updates.append(dict(states["device"])),
+            transport_mode=self.module.TransportMode.CLOUD_ONLY,
         )
         return executor, ssl, states, updates
 

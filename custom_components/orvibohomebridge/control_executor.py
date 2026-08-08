@@ -11,7 +11,7 @@ from .control_router import (
     color_temp_route,
     power_route,
 )
-from .capabilities import ControlChannel, TransportMode, capability_for
+from .capabilities import TransportMode, capability_for
 from .device_types import DeviceCategory, classify_device, get_device_profile
 from .state_store import StateSource, StateStore
 
@@ -80,20 +80,9 @@ class ControlExecutor:
             if owner is None:
                 return False
             method = getattr(owner, route.method)
-            ok = bool(
+            return bool(
                 await method(device_id, device_uid, *route.args, **route.kwargs)
             )
-            if not ok and self._last_scope == "lan":
-                # 自动降级：LAN 控制失败/无回执时改走云（设计 ADR-2 兜底）
-                self._last_scope = "ssl"
-                ssl = self._ssl_client()
-                if ssl is not None:
-                    ok = bool(
-                        await getattr(ssl, route.method)(
-                            device_id, device_uid, *route.args, **route.kwargs
-                        )
-                    )
-            return ok
         owner = self._route_target()
         if owner is None:
             return False
@@ -107,24 +96,21 @@ class ControlExecutor:
         return bool(await method(*prefix, *route.args, **route.kwargs))
 
     def _transport(self, device_id: str) -> tuple[Any, str]:
-        """按能力表 + 网关可达性选择控制通道（LAN 优先 / 云兜底）。"""
+        """按能力表选择控制通道（严格语义：仅 cloud_only 走云，其余一律走本地）。"""
         device = self.devices.get(device_id) or {}
-        device_uid = device.get("uid", "")
-        if self._transport_mode != TransportMode.CLOUD_ONLY:
-            lan = self._lan_adapter()
-            if lan is not None and self._gateway_connected(device_uid):
-                try:
-                    capability = capability_for(device)
-                except Exception:  # noqa: BLE001
-                    capability = None
-                if (
-                    capability is not None
-                    and ControlChannel.LAN in capability.channels
-                ):
-                    self._last_scope = "lan"
-                    return lan, "lan"
-        self._last_scope = "ssl"
-        return self._ssl_client(), "ssl"
+        if self._transport_mode == TransportMode.CLOUD_ONLY:
+            self._last_scope = "ssl"
+            return self._ssl_client(), "ssl"
+        try:
+            capability = capability_for(device)
+        except Exception:  # noqa: BLE001
+            capability = None
+        if capability is None or capability.cloud_only:
+            self._last_scope = "ssl"
+            return self._ssl_client(), "ssl"
+        lan = self._lan_adapter()
+        self._last_scope = "lan"
+        return lan, "lan"
 
     async def _wait_if_ssl(self, device_id: str) -> dict | None:
         """LAN 控制已同步拿到网关回执，不再等 SSL 回显。"""

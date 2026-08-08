@@ -96,15 +96,15 @@ class ControlTransportTests(unittest.TestCase):
         self.assertTrue(lan.calls)
         self.assertFalse(ssl.calls)
 
-    def test_ssl_fallback_when_gateway_disconnected(self) -> None:
+    def test_lan_used_for_local_device_even_when_gateway_flag_off(self) -> None:
         device = {"device_type_raw": 38, "uid": "gw-1"}
         lan = FakeLan()
         executor, ssl = self.make_executor(device, lan=lan, gateway_connected=False)
 
         ok = asyncio.run(executor.turn_on("device"))
         self.assertTrue(ok)
-        self.assertFalse(lan.calls)
-        self.assertTrue(ssl.calls)
+        self.assertTrue(lan.calls)
+        self.assertFalse(ssl.calls)
 
     def test_cloud_only_mode_forces_ssl(self) -> None:
         device = {"device_type_raw": 38, "uid": "gw-1"}
@@ -128,15 +128,15 @@ class ControlTransportTests(unittest.TestCase):
         self.assertFalse(lan.calls)
         self.assertTrue(ssl.calls)
 
-    def test_lan_failure_falls_back_to_ssl(self) -> None:
+    def test_lan_failure_does_not_fall_back_to_ssl(self) -> None:
         device = {"device_type_raw": 38, "uid": "gw-1"}
         lan = FailingLan()
         executor, ssl = self.make_executor(device, lan=lan, gateway_connected=True)
 
         ok = asyncio.run(executor.turn_on("device"))
-        self.assertTrue(ok)
+        self.assertFalse(ok)
         self.assertTrue(lan.calls)
-        self.assertTrue(ssl.calls)
+        self.assertFalse(ssl.calls)
 
 
 if __name__ == "__main__":

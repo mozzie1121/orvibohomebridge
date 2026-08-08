@@ -113,13 +113,23 @@ class DeviceInventoryTests(unittest.TestCase):
                     "online": True,
                     "status": {"value1": 1},
                 },
+                {
+                    "device_id": "rack",
+                    "device_type_raw": 52,
+                    "online": True,
+                    "status": {"state": True},
+                },
             ]
         )
 
         self.assertNotIn("old", devices)
         self.assertEqual(removed, ["old"])
+        # 非 cloud_only 设备：云端快照只同步 online，不合并 status/状态字段
         self.assertTrue(states["light"]["online"])
-        self.assertEqual(states["light"]["value1"], 1)
+        self.assertNotIn("value1", states["light"])
+        # cloud_only 设备（晾衣机）：云端状态照常合并
+        self.assertTrue(states["rack"]["online"])
+        self.assertTrue(states["rack"]["state"])
 
     def test_merge_cloud_refreshes_door_lock_state(self) -> None:
         inventory, _devices, states, _removed = self.make_inventory()

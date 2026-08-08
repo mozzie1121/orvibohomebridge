@@ -6,6 +6,7 @@ import logging
 from typing import Any, Callable, MutableMapping
 
 from .device_types import DeviceCategory, classify_device, is_hidden_category
+from .capabilities import capability_for
 from .lock_status import normalize_battery_properties
 from .parsers import get_state_parser
 from .state_store import StateSource, StateStore
@@ -165,6 +166,18 @@ class DeviceInventory:
                 status = device.get("status", {})
                 if isinstance(status, dict):
                     cloud_state.update(status)
+                try:
+                    cloud_only = capability_for(device).cloud_only
+                except Exception:  # noqa: BLE001
+                    cloud_only = True
+                if not cloud_only:
+                    # 非 cloud_only：状态由本地（LAN/SSL 推送）维护，
+                    # 云端快照只同步 online，避免陈旧的云端值覆盖本地状态
+                    cloud_state = {
+                        key: value
+                        for key, value in cloud_state.items()
+                        if key == "online"
+                    }
                 if cloud_state:
                     self.state_store.merge(
                         device_id, cloud_state, StateSource.CLOUD
