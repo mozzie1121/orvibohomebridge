@@ -10,7 +10,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .ssl_client import SSLClient
 from .lan import GatewayManager, LanControlAdapter
-from .capabilities import ControlChannel, TransportMode, capability_for, lan_state_allowed
+from .capabilities import TransportMode, lan_state_allowed
 from .https_client import HttpsClient
 from .device_types import (
     DeviceCategory,
@@ -87,7 +87,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._cmd42_log: list[dict] = []
         self._redaction_salt = secrets.token_bytes(32)
         self._last_update_time: Dict[str, float] = {}  # 设备最后更新时间戳
-        self.OFFLINE_TIMEOUT = 3600  # 设备离线超时秒数（须大于 30 分钟周期轮询间隔）
 
         super().__init__(
             hass,
@@ -549,18 +548,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             if device_status_data:
                 devices = self.https_client.parse_device_status_list(device_status_data)
                 self.inventory.merge_cloud(devices)
-                # 周期轮询作为在线心跳：避免低频推送设备被离线启发式误判
-                _now = __import__("time").time()
-                for device in devices:
-                    online = device.get("online")
-                    online = online is True or str(online).lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                        "online",
-                    )
-                    if online:
-                        self._last_update_time[device.get("device_id", "")] = _now
             if self.gateway_manager is not None:
                 await self.gateway_manager.async_update_cloud_gateways(
                     self.https_client.gateway_ips
@@ -641,31 +628,12 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             return False
         return self.gateway_manager.is_connected(device_uid)
 
-    def _lan_channel_online(self, device_id: str) -> bool:
-        """LAN 通道是否在线（设备支持 LAN 且网关连接就绪）。"""
-        if self._transport_mode == TransportMode.CLOUD_ONLY:
-            return False
-        device = self.devices.get(device_id)
-        if device is None:
-            return False
-        capability = capability_for(device)
-        if ControlChannel.LAN not in capability.channels:
-            return False
-        return self._lan_gateway_connected(device.get("uid", ""))
-
     def is_device_online(self, device_id: str) -> bool:
-        """设备在线判定（参照上游 orvibo-lan 模型）：
-        只读设备跟随 coordinator 更新成功；可控设备优先看 LAN 网关连接，
-        否则看云端/推送的 online 标志。"""
-        device = self.devices.get(device_id)
-        if device is None:
-            return False
-        capability = capability_for(device)
-        if not capability.channels:
-            # 只读设备（传感器/门锁）：不因推送静默被误判不可用
-            return bool(getattr(self, "last_update_success", True))
-        if self._lan_channel_online(device_id):
-            return True
+        """设备在线判定：由云端 readtable 权威 online + 实时推送共同维护。
+
+        不采用"网关连接即在线"或"coordinator 更新成功即在线"（会误报离线设备在线）；
+        也不采用"无推送即离线"启发式（会误判安静设备离线）。online 由数据源写入。
+        """
         return bool((self.device_states.get(device_id) or {}).get("online"))
 
     async def _lan_discover_loop(self) -> None:
@@ -1076,17 +1044,6 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         state = self.device_states.get(device_id)
         if state is None:
             return None
-        # 检查离线超时：最后更新超过 OFFLINE_TIMEOUT 秒则标记为离线。
-        # LAN 通道在线的设备不受此启发式影响（在线由网关连接判定）。
-        last_time = self._last_update_time.get(device_id)
-        if last_time is not None:
-            elapsed = __import__("time").time() - last_time
-            if (
-                elapsed > self.OFFLINE_TIMEOUT
-                and state.get("online", False)
-                and not self._lan_channel_online(device_id)
-            ):
-                state["online"] = False
         return state
 
     async def async_cleanup(self):
