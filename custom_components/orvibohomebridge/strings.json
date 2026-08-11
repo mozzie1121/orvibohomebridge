@@ -1,0 +1,204 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Login - HomeMate",
+                "description": "Enter your HomeMate account (phone number or email) and password",
+                "data": {
+                    "username": "Phone / Email",
+                    "password": "Password"
+                }
+            },
+            "select_family": {
+                "title": "Select Family",
+                "description": "Multiple families found, select one to manage",
+                "data": {
+                    "family_id": "Family"
+                }
+            },
+            "reauth_confirm": {
+                "title": "Re-authenticate",
+                "description": "Update the password for {username}",
+                "data": {
+                    "password": "Password"
+                }
+            },
+            "devices": {
+                "title": "Select Devices",
+                "description": "Only checked devices will be added to Home Assistant.",
+                "data": {
+                    "selected_device_ids": "Devices",
+                    "device_group_lights": "Lights",
+                    "device_group_covers": "Covers",
+                    "device_group_climate": "Climate",
+                    "device_group_sensors": "Sensors",
+                    "device_group_locks": "Locks",
+                    "device_group_other": "Other"
+                }
+            },
+            "custom_devices": {
+                "title": "Custom device selection",
+                "description": "Only categories set to Custom selection on the previous page are shown.",
+                "data": {
+                    "custom_device_group_lights": "Lights",
+                    "custom_device_group_covers": "Covers",
+                    "custom_device_group_climate": "Climate",
+                    "custom_device_group_sensors": "Sensors",
+                    "custom_device_group_locks": "Locks",
+                    "custom_device_group_other": "Other"
+                }
+            },
+            "area": {
+                "title": "Assign Area",
+                "description": "Select HA area for {device} ({position}/{total}). The room from HomeMate is {room}. Leave empty for no area.",
+                "data": {
+                    "area_id": "Area"
+                }
+            }
+        },
+        "error": {
+            "auth_failed": "Login failed, check your credentials",
+            "empty_username_or_password": "Username and password are required",
+            "invalid_username": "Invalid phone number or email format",
+            "no_devices_selected": "Select at least one device",
+            "no_devices": "No devices found in this family",
+            "cannot_connect": "Cannot connect to ORVIBO cloud"
+        },
+        "abort": {
+            "already_configured": "This account is already configured",
+            "reauth_entry_missing": "The configuration entry no longer exists"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "ORVIBO options",
+                "menu_options": {
+                    "lan_credentials": "Configure independent MixPad LAN credentials",
+                    "polling": "Configure polling interval",
+                    "reauth": "Sign in again",
+                    "devices": "Select devices",
+                    "lock_users": "Lock user mapping",
+                    "transport_mode": "Transport mode"
+                }
+            },
+            "transport_mode": {
+                "title": "Transport mode",
+                "description": "Combined (default): LAN-first with cloud fallback. LAN only: no cloud realtime connection or periodic cloud polling after initial discovery. Cloud only: do not connect to MixPad.",
+                "data": {
+                    "transport_mode": "Transport mode"
+                }
+            },
+            "lan_credentials": {
+                "title": "Independent MixPad LAN credentials",
+                "description": "Enable only when MixPad uses a different account. The password is stored only as a protocol digest; leave it blank to retain the configured value.",
+                "data": {
+                    "use_independent_lan_credentials": "Use independent MixPad LAN credentials",
+                    "lan_username": "MixPad username",
+                    "lan_password": "MixPad password"
+                }
+            },
+            "polling": {
+                "title": "Cloud polling interval",
+                "description": "Fallback cloud snapshot polling interval in minutes. LAN-only mode does not perform periodic cloud polling.",
+                "data": {"poll_interval_minutes": "Polling interval"}
+            },
+            "reauth": {
+                "title": "Sign in again",
+                "description": "Enter the new password for {username}. Your family, devices, entities, and area assignments will be preserved.",
+                "data": {
+                    "password": "New password"
+                }
+            },
+            "lock_users": {
+                "title": "Lock user mapping",
+                "description": "One entry per line: userID=name (e.g. 1=John, 2=Jane). Used to show who opened the door.",
+                "data": {
+                    "lock_user_names": "User mapping"
+                }
+            },
+            "devices": {
+                "title": "Select Devices",
+                "description": "Only checked devices will be added to Home Assistant.",
+                "data": {
+                    "selected_device_ids": "Devices",
+                    "device_group_lights": "Lights",
+                    "device_group_covers": "Covers",
+                    "device_group_climate": "Climate",
+                    "device_group_sensors": "Sensors",
+                    "device_group_locks": "Locks",
+                    "device_group_other": "Other"
+                }
+            },
+            "custom_devices": {
+                "title": "Custom device selection",
+                "description": "Only categories set to Custom selection on the previous page are shown.",
+                "data": {
+                    "custom_device_group_lights": "Lights",
+                    "custom_device_group_covers": "Covers",
+                    "custom_device_group_climate": "Climate",
+                    "custom_device_group_sensors": "Sensors",
+                    "custom_device_group_locks": "Locks",
+                    "custom_device_group_other": "Other"
+                }
+            },
+            "area": {
+                "title": "Assign Area",
+                "description": "Select HA area for {device} ({position}/{total}). ORVIBO room is {room}.",
+                "data": {
+                    "area_id": "Area"
+                }
+            }
+        },
+        "error": {
+            "auth_failed": "Login failed, check the new password",
+            "empty_username_or_password": "Password is required",
+            "no_devices_selected": "Select at least one device",
+            "cannot_connect": "Cannot connect to ORVIBO cloud",
+            "no_devices": "No devices found in this family",
+            "lan_credentials_required": "Enter the independent MixPad username and password"
+        },
+        "abort": {
+            "reauth_successful": "Signed in successfully; existing device and entity settings were preserved"
+        }
+    },
+    "selector": {
+        "device_group_mode": {
+            "options": {
+                "all": "Include all",
+                "none": "Do not include",
+                "custom": "Custom selection"
+            }
+        },
+        "transport_mode": {
+            "options": {
+                "auto": "Combined LAN and cloud (default, LAN-first with fallback)",
+                "lan_only": "LAN only (runtime state and control use MixPad only)",
+                "cloud_only": "Cloud only (do not connect to MixPad LAN)"
+            }
+        }
+    },
+    "entity": {
+        "sensor": {
+            "door_lock_state": {
+                "name": "Lock state",
+                "state": {
+                    "locked": "Locked",
+                    "unlocked": "Unlocked",
+                    "inside_locked": "Inside locked",
+                    "abnormal": "Abnormal"
+                }
+            },
+            "transport_path": {
+                "name": "Transport path",
+                "state": {
+                    "lan": "LAN",
+                    "cloud": "Cloud",
+                    "lan_cloud": "LAN first, cloud fallback",
+                    "unavailable": "Unavailable in current mode"
+                }
+            }
+        }
+    }
+}
+
