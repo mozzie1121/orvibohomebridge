@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from datetime import timedelta
 try:
     from homeassistant.components.frontend import add_extra_js_url
 except ImportError:  # 旧版 HA 兼容
@@ -23,6 +24,13 @@ from .const import (
     CONF_TRANSPORT_MODE,
     CONF_PASSWORD_HASH,
     CONF_CLOUD_REGION,
+    CONF_USE_INDEPENDENT_LAN_CREDENTIALS,
+    CONF_LAN_USERNAME,
+    CONF_LAN_PASSWORD_HASH,
+    CONF_POLL_INTERVAL_MINUTES,
+    DEFAULT_POLL_INTERVAL_MINUTES,
+    MIN_POLL_INTERVAL_MINUTES,
+    MAX_POLL_INTERVAL_MINUTES,
 )
 from .capabilities import TransportMode
 from .protocol import migrate_password_credentials
@@ -111,6 +119,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     password_hash = entry.data[CONF_PASSWORD_HASH]
     family_id = entry.data.get(CONF_FAMILY_ID)
 
+    options = entry.options
+    try:
+        transport_mode = TransportMode(
+            options.get(CONF_TRANSPORT_MODE, TransportMode.AUTO.value)
+        )
+    except ValueError:
+        transport_mode = TransportMode.AUTO
+    try:
+        poll_minutes = int(
+            options.get(CONF_POLL_INTERVAL_MINUTES, DEFAULT_POLL_INTERVAL_MINUTES)
+        )
+    except (TypeError, ValueError):
+        poll_minutes = DEFAULT_POLL_INTERVAL_MINUTES
+    poll_minutes = max(
+        MIN_POLL_INTERVAL_MINUTES,
+        min(MAX_POLL_INTERVAL_MINUTES, poll_minutes),
+    )
+
+    lan_credentials = None
+    if options.get(CONF_USE_INDEPENDENT_LAN_CREDENTIALS, False):
+        lan_credentials = AccountCredentials(
+            username=str(options.get(CONF_LAN_USERNAME, "")),
+            password_hash=str(options.get(CONF_LAN_PASSWORD_HASH, "")),
+            family_id=str(family_id or ""),
+        )
+
     coordinator = OrviboMeshCoordinator(
         hass,
         AccountCredentials(
@@ -118,11 +152,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             password_hash=password_hash,
             family_id=str(family_id or ""),
         ),
-        lock_user_names=entry.options.get(CONF_LOCK_USER_NAMES),
+        lock_user_names=options.get(CONF_LOCK_USER_NAMES),
         cloud=cloud_for_region(entry.data.get(CONF_CLOUD_REGION)),
-        transport_mode=TransportMode(
-            entry.options.get(CONF_TRANSPORT_MODE, TransportMode.AUTO.value)
-        ),
+        transport_mode=transport_mode,
+        lan_credentials=lan_credentials,
+        poll_interval=timedelta(minutes=poll_minutes),
     )
 
     try:

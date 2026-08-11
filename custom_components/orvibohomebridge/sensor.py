@@ -13,11 +13,18 @@ from typing import Optional
 
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_SENSOR
+from .capabilities import (
+    ControlChannel,
+    TransportPath,
+    capability_for,
+    transport_path_for,
+)
 from .coordinator import OrviboMeshCoordinator
 from .device_types import DeviceCategory, classify_device
 from .selection import selected_device_ids
@@ -38,6 +45,9 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         if device_id not in selected_ids:
             continue
+        capability = capability_for(device)
+        if capability.platforms:
+            entities.append(OrviboTransportPathSensor(coordinator, device))
         if device.get("device_type") != DEVICE_TYPE_SENSOR:
             continue
         category = classify_device(device)
@@ -90,6 +100,59 @@ class OrviboSensorBase(CoordinatorEntity, SensorEntity):
             "model": self._device.get("model", "Orvibo Sensor"),
             "sw_version": "1.0",
         }
+
+
+class OrviboTransportPathSensor(OrviboSensorBase):
+    """Diagnostic marker for the device's configured control/state path."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_options = [path.value for path in TransportPath]
+    _attr_translation_key = "transport_path"
+
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
+        super().__init__(coordinator, device)
+        self._attr_unique_id = (
+            f"orvibohomebridge_transport_path_{self._device_id}"
+        )
+        self._attr_name = None
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def native_value(self) -> str:
+        return transport_path_for(
+            self._device,
+            self.coordinator.transport_mode,
+        ).value
+
+    @property
+    def icon(self) -> str:
+        return {
+            TransportPath.LAN.value: "mdi:lan-connect",
+            TransportPath.CLOUD.value: "mdi:cloud",
+            TransportPath.LAN_CLOUD.value: "mdi:swap-horizontal",
+            TransportPath.UNAVAILABLE.value: "mdi:lan-disconnect",
+        }[self.native_value]
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        capability = capability_for(self._device)
+        attributes = {
+            "configured_mode": self.coordinator.transport_mode.value,
+            "lan_control_supported": ControlChannel.LAN in capability.channels,
+            "cloud_control_supported": ControlChannel.SSL in capability.channels,
+            "cloud_only": capability.cloud_only,
+            "gateway_connected": self.coordinator.lan_gateway_connected(
+                self._device_id
+            ),
+        }
+        last_transport = self.coordinator.control.last_transport(self._device_id)
+        if last_transport is not None:
+            attributes["last_control_transport"] = last_transport
+        return attributes
 
 
 class OrviboMotionBatterySensor(OrviboSensorBase):

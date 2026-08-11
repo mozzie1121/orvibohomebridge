@@ -94,11 +94,20 @@ def _load_config_flow():
             CONF_FAMILY_ID="family_id",
             CONF_LOCK_USER_NAMES="lock_user_names",
             CONF_TRANSPORT_MODE="transport_mode",
+            CONF_USE_INDEPENDENT_LAN_CREDENTIALS="use_independent_lan_credentials",
+            CONF_LAN_USERNAME="lan_username",
+            CONF_LAN_PASSWORD="lan_password",
+            CONF_LAN_PASSWORD_HASH="lan_password_hash",
+            CONF_POLL_INTERVAL_MINUTES="poll_interval_minutes",
+            DEFAULT_POLL_INTERVAL_MINUTES=30,
+            MIN_POLL_INTERVAL_MINUTES=5,
+            MAX_POLL_INTERVAL_MINUTES=1440,
         ),
         f"{package_name}.capabilities": _module(
             f"{package_name}.capabilities",
             TransportMode=SimpleNamespace(
                 AUTO=SimpleNamespace(value="auto"),
+                LAN_ONLY=SimpleNamespace(value="lan_only"),
                 CLOUD_ONLY=SimpleNamespace(value="cloud_only"),
             ),
         ),
@@ -160,7 +169,9 @@ class TestOptionsReauth(unittest.IsolatedAsyncioTestCase):
     async def test_menu_exposes_reauth(self):
         flow, _ = self._flow()
         result = await flow.async_step_init()
-        self.assertEqual(result["menu_options"][0], "reauth")
+        self.assertIn("reauth", result["menu_options"])
+        self.assertIn("lan_credentials", result["menu_options"])
+        self.assertIn("polling", result["menu_options"])
 
     async def test_success_updates_same_entry_and_preserves_other_settings(self):
         flow, entry = self._flow()

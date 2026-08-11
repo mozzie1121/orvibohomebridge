@@ -3,8 +3,10 @@ from datetime import timedelta
 
 _CERTS_DIR = os.path.join(os.path.dirname(__file__), "certs")
 
-# 设置为 None 禁用自动更新，或设置一个很长的时间
-UPDATE_INTERVAL = timedelta(minutes=30)  # 长间隔兜底轮询
+DEFAULT_POLL_INTERVAL_MINUTES = 30
+MIN_POLL_INTERVAL_MINUTES = 5
+MAX_POLL_INTERVAL_MINUTES = 1440
+UPDATE_INTERVAL = timedelta(minutes=DEFAULT_POLL_INTERVAL_MINUTES)
 SSL_MAX_RECONNECT_ATTEMPTS = 3
 
 CMD_HELLO = 0
@@ -108,4 +110,18 @@ CONF_PASSWORD_HASH = "password_hash"
 CONF_CLOUD_REGION = "cloud_region"
 CONF_FAMILY_ID = "family_id"
 CONF_LOCK_USER_NAMES = "lock_user_names"  # {user_id: 名称}，持久化于 entry.options
-CONF_TRANSPORT_MODE = "transport_mode"  # auto / cloud_only（LAN 优先 / 仅云）
+CONF_TRANSPORT_MODE = "transport_mode"  # auto / lan_only / cloud_only
+CONF_USE_INDEPENDENT_LAN_CREDENTIALS = "use_independent_lan_credentials"
+CONF_LAN_USERNAME = "lan_username"
+CONF_LAN_PASSWORD = "lan_password"
+CONF_LAN_PASSWORD_HASH = "lan_password_hash"
+CONF_POLL_INTERVAL_MINUTES = "poll_interval_minutes"
+CONF_AVAILABILITY_NOTIFICATIONS = "availability_notifications"
+CONF_NOTIFY_ONLINE = "notify_online"
+CONF_NOTIFY_OFFLINE = "notify_offline"
+CONF_NOTIFY_SERVICE = "notify_service"
+CONF_UPDATE_CHECK_ENABLED = "update_check_enabled"
+CONF_UPDATE_CHECK_INTERVAL_HOURS = "update_check_interval_hours"
+DEFAULT_UPDATE_CHECK_INTERVAL_HOURS = 24
+MIN_UPDATE_CHECK_INTERVAL_HOURS = 6
+MAX_UPDATE_CHECK_INTERVAL_HOURS = 168

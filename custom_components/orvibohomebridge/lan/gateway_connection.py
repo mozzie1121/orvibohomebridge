@@ -239,9 +239,22 @@ class GatewayConnection:
                 },
                 timeout=request_timeout,
             )
-            if login.get("status") != 0:
+            login_status = login.get("status")
+            if login_status != 0:
+                safe_status = (
+                    login_status
+                    if isinstance(login_status, int)
+                    and not isinstance(login_status, bool)
+                    else "invalid"
+                )
+                _LOGGER.debug(
+                    "Gateway login rejected for %s (status=%s)",
+                    mask_host(self.host),
+                    safe_status,
+                )
                 raise GatewayLoginRejectedError(
-                    f"gateway login failed with status {login.get('status')!r}"
+                    "gateway login was rejected",
+                    reason="login_rejected",
                 )
 
             login_uid = self._extract_uid(login)

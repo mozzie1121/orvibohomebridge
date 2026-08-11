@@ -56,6 +56,8 @@
             "init": {
                 "title": "ORVIBO options",
                 "menu_options": {
+                    "lan_credentials": "Configure independent MixPad LAN credentials",
+                    "polling": "Configure polling interval",
                     "reauth": "Sign in again",
                     "devices": "Select devices",
                     "lock_users": "Lock user mapping",
@@ -64,10 +66,24 @@
             },
             "transport_mode": {
                 "title": "Transport mode",
-                "description": "Auto: LAN-first with cloud fallback. Cloud only: all devices use the cloud channel.",
+                "description": "Combined (default): LAN-first with cloud fallback. LAN only: no cloud realtime connection or periodic cloud polling after initial discovery. Cloud only: do not connect to MixPad.",
                 "data": {
                     "transport_mode": "Transport mode"
                 }
+            },
+            "lan_credentials": {
+                "title": "Independent MixPad LAN credentials",
+                "description": "Enable only when MixPad uses a different account. The password is stored only as a protocol digest; leave it blank to retain the configured value.",
+                "data": {
+                    "use_independent_lan_credentials": "Use independent MixPad LAN credentials",
+                    "lan_username": "MixPad username",
+                    "lan_password": "MixPad password"
+                }
+            },
+            "polling": {
+                "title": "Cloud polling interval",
+                "description": "Fallback cloud snapshot polling interval in minutes. LAN-only mode does not perform periodic cloud polling.",
+                "data": {"poll_interval_minutes": "Polling interval"}
             },
             "reauth": {
                 "title": "Sign in again",
@@ -103,10 +119,20 @@
             "empty_username_or_password": "Password is required",
             "no_devices_selected": "Select at least one device",
             "cannot_connect": "Cannot connect to ORVIBO cloud",
-            "no_devices": "No devices found in this family"
+            "no_devices": "No devices found in this family",
+            "lan_credentials_required": "Enter the independent MixPad username and password"
         },
         "abort": {
             "reauth_successful": "Signed in successfully; existing device and entity settings were preserved"
+        }
+    },
+    "selector": {
+        "transport_mode": {
+            "options": {
+                "auto": "Combined LAN and cloud (default, LAN-first with fallback)",
+                "lan_only": "LAN only (runtime state and control use MixPad only)",
+                "cloud_only": "Cloud only (do not connect to MixPad LAN)"
+            }
         }
     },
     "entity": {
@@ -118,6 +144,15 @@
                     "unlocked": "Unlocked",
                     "inside_locked": "Inside locked",
                     "abnormal": "Abnormal"
+                }
+            },
+            "transport_path": {
+                "name": "Transport path",
+                "state": {
+                    "lan": "LAN",
+                    "cloud": "Cloud",
+                    "lan_cloud": "LAN first, cloud fallback",
+                    "unavailable": "Unavailable in current mode"
                 }
             }
         }

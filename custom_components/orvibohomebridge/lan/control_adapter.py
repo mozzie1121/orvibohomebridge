@@ -1,5 +1,5 @@
-"""LAN control adapter：复用 homebridge 的 HomemateJsonData payload 构造器，
-仅把发送通道从 SSL 换成网关 TCP（ADR-3：以 homebridge 协议为归一基准）。
+"""LAN control adapter：复用 HomeMate 云端 HomemateJsonData payload 构造器，
+仅把发送通道从 SSL 换成网关 TCP（ADR-3：统一控制语义）。
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from ..packet import HomemateJsonData
+from .privacy import mask_identifier
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,14 +32,34 @@ class LanControlAdapter:
             if key not in _SSL_ONLY_FIELDS
         }
         uid = lan_payload.get("uid", "")
-        _LOGGER.debug("LAN 控制发送 device=%s payload=%s", lan_payload.get("deviceId"), lan_payload)
+        _LOGGER.debug(
+            "LAN 控制发送 device=%s cmd=%s",
+            mask_identifier(lan_payload.get("deviceId", "")),
+            lan_payload.get("cmd"),
+        )
         try:
             response = await self._gateway_manager.send(uid, lan_payload, timeout=8.0)
-        except Exception as e:  # noqa: BLE001
-            _LOGGER.debug("LAN 控制发送失败: %s", e)
+        except Exception as error:  # noqa: BLE001
+            _LOGGER.debug("LAN 控制发送失败: %s", type(error).__name__)
             return False
-        _LOGGER.debug("LAN 控制响应: %s", response)
-        return response is not None
+        if response is None:
+            return False
+        status = response.get("status") if isinstance(response, dict) else None
+        if isinstance(status, bool):
+            status_ok = False
+        elif isinstance(status, int):
+            status_ok = status == 0
+        elif isinstance(status, str):
+            status_ok = status.strip() == "0"
+        else:
+            # Some gateway firmware acknowledges cmd=15 without a status field.
+            status_ok = True
+        _LOGGER.debug(
+            "LAN 控制响应 device=%s status=%s",
+            mask_identifier(lan_payload.get("deviceId", "")),
+            status if isinstance(status, int) and not isinstance(status, bool) else "legacy",
+        )
+        return status_ok
 
     async def send_control_switch(
         self, device_id: str, device_uid: str, state: bool

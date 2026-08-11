@@ -19,6 +19,14 @@ from .const import (
     CONF_FAMILY_ID,
     CONF_LOCK_USER_NAMES,
     CONF_TRANSPORT_MODE,
+    CONF_USE_INDEPENDENT_LAN_CREDENTIALS,
+    CONF_LAN_USERNAME,
+    CONF_LAN_PASSWORD,
+    CONF_LAN_PASSWORD_HASH,
+    CONF_POLL_INTERVAL_MINUTES,
+    DEFAULT_POLL_INTERVAL_MINUTES,
+    MIN_POLL_INTERVAL_MINUTES,
+    MAX_POLL_INTERVAL_MINUTES,
 )
 from .device_types import (
     DeviceCategory,
@@ -32,6 +40,14 @@ from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
 from .protocol import password_hash
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
 
 
 def _device_label(device_id: str, name: str, room: str) -> str:
@@ -442,11 +458,18 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         """选项菜单：重新登录 / 选择设备 / 锁用户映射 / 传输模式。"""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["reauth", "devices", "lock_users", "transport_mode"],
+        menu_options=[
+            "transport_mode",
+            "lan_credentials",
+            "polling",
+            "reauth",
+            "devices",
+            "lock_users",
+        ],
         )
 
     async def async_step_transport_mode(self, user_input=None):
-        """传输模式：自动（LAN 优先 + 云兜底）/ 仅云。"""
+        """选择 LAN 优先、纯 LAN 或纯云端运行模式。"""
         if user_input is not None:
             options = dict(self._config_entry.options)
             options[CONF_TRANSPORT_MODE] = str(
@@ -466,16 +489,100 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=[
-                                selector.SelectOptionDict(
-                                    value=TransportMode.AUTO.value,
-                                    label="自动（LAN 优先，不支持 LAN 的设备走云）",
-                                ),
-                                selector.SelectOptionDict(
-                                    value=TransportMode.CLOUD_ONLY.value,
-                                    label="仅云（所有设备走云端通道）",
-                                ),
+                                TransportMode.AUTO.value,
+                                TransportMode.LAN_ONLY.value,
+                                TransportMode.CLOUD_ONLY.value,
                             ],
                             mode=selector.SelectSelectorMode.LIST,
+                            translation_key="transport_mode",
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_lan_credentials(self, user_input=None):
+        """配置仅用于 MixPad 局域网登录的独立凭据。"""
+        errors: dict[str, str] = {}
+        options = dict(self._config_entry.options)
+        if user_input is not None:
+            enabled = bool(
+                user_input.get(CONF_USE_INDEPENDENT_LAN_CREDENTIALS, False)
+            )
+            username = str(user_input.get(CONF_LAN_USERNAME) or "").strip()
+            password = str(user_input.get(CONF_LAN_PASSWORD) or "")
+            digest = (
+                password_hash(password)
+                if password
+                else str(options.get(CONF_LAN_PASSWORD_HASH) or "")
+            )
+            if enabled and (not username or not digest):
+                errors["base"] = "lan_credentials_required"
+            else:
+                options[CONF_USE_INDEPENDENT_LAN_CREDENTIALS] = enabled
+                if enabled:
+                    options[CONF_LAN_USERNAME] = username
+                    options[CONF_LAN_PASSWORD_HASH] = digest
+                else:
+                    options.pop(CONF_LAN_USERNAME, None)
+                    options.pop(CONF_LAN_PASSWORD_HASH, None)
+                return self.async_create_entry(title="", data=options)
+
+        return self.async_show_form(
+            step_id="lan_credentials",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USE_INDEPENDENT_LAN_CREDENTIALS,
+                        default=bool(options.get(
+                            CONF_USE_INDEPENDENT_LAN_CREDENTIALS, False
+                        )),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_LAN_USERNAME,
+                        default=str(options.get(CONF_LAN_USERNAME)
+                                    or self._config_entry.data.get(CONF_USERNAME, "")),
+                    ): selector.TextSelector(),
+                    vol.Optional(CONF_LAN_PASSWORD): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_polling(self, user_input=None):
+        """配置非纯 LAN 模式下的云端快照轮询周期。"""
+        options = dict(self._config_entry.options)
+        if user_input is not None:
+            options[CONF_POLL_INTERVAL_MINUTES] = _bounded_int(
+                user_input.get(CONF_POLL_INTERVAL_MINUTES),
+                DEFAULT_POLL_INTERVAL_MINUTES,
+                MIN_POLL_INTERVAL_MINUTES,
+                MAX_POLL_INTERVAL_MINUTES,
+            )
+            return self.async_create_entry(title="", data=options)
+        current = _bounded_int(
+            options.get(CONF_POLL_INTERVAL_MINUTES),
+            DEFAULT_POLL_INTERVAL_MINUTES,
+            MIN_POLL_INTERVAL_MINUTES,
+            MAX_POLL_INTERVAL_MINUTES,
+        )
+        return self.async_show_form(
+            step_id="polling",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_POLL_INTERVAL_MINUTES, default=current
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=MIN_POLL_INTERVAL_MINUTES,
+                            max=MAX_POLL_INTERVAL_MINUTES,
+                            step=5,
+                            mode=selector.NumberSelectorMode.BOX,
+                            unit_of_measurement="min",
                         )
                     )
                 }

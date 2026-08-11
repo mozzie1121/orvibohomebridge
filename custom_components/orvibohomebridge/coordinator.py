@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import secrets
+from datetime import timedelta
 from typing import Dict, Any, Optional
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -16,7 +17,7 @@ from .device_types import (
     DeviceCategory,
     classify_device,
 )
-from .redact import fingerprint, redact_packet
+from .redact import fingerprint
 from .models import AccountCredentials
 from .cloud import CHINA_CLOUD, CloudEndpoint, cloud_candidates
 from .state_store import StateSource, StateStore
@@ -31,9 +32,7 @@ from .const import (
     DOMAIN,
     SSL_PORT,
     UPDATE_INTERVAL,
-    CMD_CONTROL,
     DEFAULT_KEY,
-    SOFTWARE_VER, DEBUG_INFO,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +51,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         lock_user_names: Optional[Dict[str, str]] = None,
         cloud: CloudEndpoint = CHINA_CLOUD,
         transport_mode: TransportMode = TransportMode.AUTO,
+        lan_credentials: AccountCredentials | None = None,
+        poll_interval: timedelta | None = UPDATE_INTERVAL,
     ):
         self.credentials = credentials
         self.username = credentials.username
@@ -59,6 +60,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.family_id = credentials.family_id
         self.hass = hass
         self._transport_mode = transport_mode
+        self.lan_credentials = lan_credentials or credentials
 
         self.https_client = HttpsClient(
             username=credentials.username,
@@ -93,7 +95,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             hass,
             _LOGGER,
             name="Orvibo Mesh Coordinator",
-            update_interval=UPDATE_INTERVAL,
+            update_interval=(
+                None
+                if transport_mode == TransportMode.LAN_ONLY
+                else poll_interval
+            ),
         )
 
         self.devices: Dict[str, Any] = {}
@@ -150,6 +156,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 device_id, self._redaction_salt
             ),
         )
+
+    @property
+    def transport_mode(self) -> TransportMode:
+        """Return the configured transport mode for diagnostic entities."""
+
+        return self._transport_mode
+
+    def lan_gateway_connected(self, device_id: str) -> bool:
+        """Return whether the device's owning gateway has an active LAN session."""
+
+        device = self.devices.get(device_id) or {}
+        return self._lan_gateway_connected(str(device.get("uid") or ""))
 
     def _apply_registered_state_parser(
         self, category: DeviceCategory, dev_state: dict, raw_status: dict
@@ -479,9 +497,10 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
             _LOGGER.info(f"设备列表拉取完成，共 {len(self.devices)} 个设备")
 
-            await self._init_ssl_client()
+            if self._transport_mode != TransportMode.LAN_ONLY:
+                await self._init_ssl_client()
 
-            if self.ssl_client:
+            if self.ssl_client is not None:
                 ssl_ok = await self.ssl_client.connect_and_login()
                 login_status = getattr(self.ssl_client, "_login_status", None)
                 if not ssl_ok and login_status is not None and login_status != 0:
@@ -498,11 +517,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         "SSL 连接/登录未就绪（非认证拒绝），将在后台重试"
                     )
 
-            # LAN 网关通道（阶段 1：仅状态接收；失败不影响云端）
-            try:
-                await self._init_lan_gateways()
-            except Exception as e:  # noqa: BLE001
-                _LOGGER.warning("LAN 网关初始化失败（继续使用云端）: %s", e)
+            if self._transport_mode != TransportMode.CLOUD_ONLY:
+                try:
+                    await self._init_lan_gateways()
+                except Exception as e:  # noqa: BLE001
+                    _LOGGER.warning("LAN 网关初始化失败: %s", e)
 
             _LOGGER.info(f"初始化完成，共 {len(self.devices)} 个设备")
             for device_id, dev in self.devices.items():
@@ -544,6 +563,8 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
     async def _async_update_data(self) -> Dict[str, Any]:
         _LOGGER.debug("正在更新设备数据...")
+        if self._transport_mode == TransportMode.LAN_ONLY:
+            return self.device_states
         try:
             device_status_data = await self.https_client.fetch_device_status()
             if device_status_data:
@@ -591,14 +612,18 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """发现并连接局域网 MixPad 网关，接入 LAN 实时状态推送。"""
         if self.gateway_manager is not None:
             return
+        lan_credentials = self.lan_credentials
         self.gateway_manager = GatewayManager(
-            self.username,
-            self.password_hash,
+            lan_credentials.username,
+            lan_credentials.password_hash,
             self.https_client.gateway_ips,
             push_callback=self._on_lan_status_update,
             password_is_hash=True,
         )
-        self.lan_adapter = LanControlAdapter(self.username, self.gateway_manager)
+        self.lan_adapter = LanControlAdapter(
+            lan_credentials.username,
+            self.gateway_manager,
+        )
         await self._connect_all_lan_gateways()
         self._lan_discover_task = self.hass.async_create_background_task(
             self._lan_discover_loop(),
@@ -700,7 +725,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         if device_id is None or not self._lan_valid_state_payload(payload):
             return
         device = self.devices.get(device_id)
-        if not lan_state_allowed(device or {}):
+        if not lan_state_allowed(device or {}, self._transport_mode):
             return
         expected_gateway = device.get("uid") if device is not None else None
         if isinstance(expected_gateway, str) and expected_gateway != gateway_uid:
@@ -829,18 +854,29 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             f"v1={value1}, v2={value2}, v3={value3}, v4={value4}"
         )
         if scope == "lan":
-            ok = await owner.send_ac_control(
-                device_id,
-                device_uid,
-                order=order,
-                value1=value1,
-                value2=value2,
-                value3=value3,
-                value4=value4,
-            )
+            try:
+                ok = bool(
+                    await owner.send_ac_control(
+                        device_id,
+                        device_uid,
+                        order=order,
+                        value1=value1,
+                        value2=value2,
+                        value3=value3,
+                        value4=value4,
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - cloud fallback is intentional
+                _LOGGER.debug(
+                    "LAN 空调控制失败，回退云端: device=%s error=%s",
+                    device_id,
+                    type(error).__name__,
+                )
+                ok = False
             if ok:
                 self._apply_ac_optimistic(device_id, value1, value2, value3, value4)
-            return ok
+                return ok
+            _LOGGER.debug("LAN 空调控制未确认，回退 SSL: device=%s", device_id)
 
         if (
             not self.ssl_client

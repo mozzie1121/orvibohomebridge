@@ -41,7 +41,7 @@ class LanControlAdapterTests(unittest.TestCase):
         )
         cls.packet = importlib.import_module(f"{package.__name__}.packet")
 
-    def test_switch_control_reuses_homebridge_payload_builder(self) -> None:
+    def test_switch_control_reuses_homemate_payload_builder(self) -> None:
         manager = FakeGatewayManager()
         adapter = self.adapter_mod.LanControlAdapter("user", manager)
         asyncio.run(adapter.send_control_switch("dev-1", "gw-1", True))
@@ -67,7 +67,7 @@ class LanControlAdapterTests(unittest.TestCase):
             expected.pop(field, None)
         self.assertEqual(payload, expected)
 
-    def test_cover_control_reuses_homebridge_payload_builder(self) -> None:
+    def test_cover_control_reuses_homemate_payload_builder(self) -> None:
         manager = FakeGatewayManager()
         adapter = self.adapter_mod.LanControlAdapter("user", manager)
         asyncio.run(adapter.send_control_cover("dev-1", "gw-1", 60))
@@ -100,6 +100,16 @@ class LanControlAdapterTests(unittest.TestCase):
                 raise TimeoutError("gateway timeout")
 
         adapter = self.adapter_mod.LanControlAdapter("user", BrokenManager())
+        ok = asyncio.run(adapter.send_control_switch("dev-1", "gw-1", False))
+        self.assertFalse(ok)
+
+    def test_gateway_error_status_returns_false_for_cloud_fallback(self) -> None:
+        class RejectingManager(FakeGatewayManager):
+            async def send(self, uid, payload, *, timeout=None):  # type: ignore[override]
+                del uid, payload, timeout
+                return {"status": 12}
+
+        adapter = self.adapter_mod.LanControlAdapter("user", RejectingManager())
         ok = asyncio.run(adapter.send_control_switch("dev-1", "gw-1", False))
         self.assertFalse(ok)
 

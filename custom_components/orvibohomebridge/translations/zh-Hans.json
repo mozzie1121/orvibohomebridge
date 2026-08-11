@@ -56,6 +56,8 @@
             "init": {
                 "title": "Orvibo 配置",
                 "menu_options": {
+                    "lan_credentials": "配置独立 MixPad LAN 凭据",
+                    "polling": "配置轮询间隔时间",
                     "reauth": "重新登录",
                     "devices": "选择设备",
                     "lock_users": "锁用户映射",
@@ -64,10 +66,24 @@
             },
             "transport_mode": {
                 "title": "传输模式",
-                "description": "自动：LAN 优先，不支持 LAN 的设备走云；仅云：所有设备走云端通道。",
+                "description": "LAN 与云端结合（默认）：LAN 优先并自动回退云端；纯 LAN：首次发现后不连接云端实时通道，也不周期轮询云端；纯云端：不连接 MixPad。",
                 "data": {
                     "transport_mode": "传输模式"
                 }
+            },
+            "lan_credentials": {
+                "title": "独立 MixPad LAN 凭据",
+                "description": "仅当 MixPad 使用不同账号时启用。密码只保存协议摘要；已配置后留空密码可保留原值。",
+                "data": {
+                    "use_independent_lan_credentials": "使用独立的 MixPad LAN 凭据",
+                    "lan_username": "MixPad 用户名",
+                    "lan_password": "MixPad 密码"
+                }
+            },
+            "polling": {
+                "title": "云端轮询间隔",
+                "description": "设置云端快照兜底轮询间隔（分钟）。纯 LAN 模式不会执行周期云轮询。",
+                "data": {"poll_interval_minutes": "轮询间隔"}
             },
             "reauth": {
                 "title": "重新登录",
@@ -103,10 +119,20 @@
             "empty_username_or_password": "密码不能为空",
             "no_devices_selected": "请至少勾选一台设备",
             "cannot_connect": "无法连接欧瑞博云",
-            "no_devices": "该家庭中没有发现设备"
+            "no_devices": "该家庭中没有发现设备",
+            "lan_credentials_required": "请输入独立的 MixPad 用户名和密码"
         },
         "abort": {
             "reauth_successful": "重新登录成功，现有设备和实体设置已保留"
+        }
+    },
+    "selector": {
+        "transport_mode": {
+            "options": {
+                "auto": "LAN 与云端结合（默认，LAN 优先并自动回退）",
+                "lan_only": "纯 LAN（运行时状态与控制仅使用 MixPad）",
+                "cloud_only": "纯云端（不连接 MixPad LAN）"
+            }
         }
     },
     "entity": {
@@ -118,6 +144,15 @@
                     "unlocked": "未上锁",
                     "inside_locked": "门内已反锁",
                     "abnormal": "异常"
+                }
+            },
+            "transport_path": {
+                "name": "传输通道",
+                "state": {
+                    "lan": "LAN",
+                    "cloud": "云端",
+                    "lan_cloud": "LAN 优先，云端回退",
+                    "unavailable": "当前模式不可用"
                 }
             }
         }

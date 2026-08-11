@@ -124,13 +124,13 @@ class StatusUpdateDispatcher:
             return
 
         state = self._states[device_id]
-        state_before = dict(state)
+        candidate = dict(state)
         incoming_properties = raw_status.get("properties")
         if isinstance(incoming_properties, dict):
-            state["properties"] = _deep_merge(
+            candidate["properties"] = _deep_merge(
                 state.get("properties", {}), incoming_properties
             )
-        state["online"] = True
+        candidate["online"] = True
         self._last_update_time[device_id] = self._clock()
 
         device = self._devices.get(device_id)
@@ -141,34 +141,34 @@ class StatusUpdateDispatcher:
         if raw_status.get("cmd") == 82:
             raw_status["source"] = source.name.lower()
             self._on_lock_message(device_id, raw_status)
-            self._state_store.mark(
-                device_id, ("online", "properties"), source
+            self._state_store.merge(
+                device_id,
+                {
+                    "online": candidate["online"],
+                    "properties": candidate.get("properties", {}),
+                },
+                source,
             )
             return
 
         if raw_status.get("is_clothes_horse"):
-            self._apply_parser(DeviceCategory.CLOTHES_HORSE, state, raw_status)
+            self._apply_parser(DeviceCategory.CLOTHES_HORSE, candidate, raw_status)
         elif raw_status.get("cmd") == 352:
-            self._on_lock_transient(state, raw_status, device_id)
+            self._on_lock_transient(candidate, raw_status, device_id)
         elif device_type == 26 or category == DeviceCategory.MOTION_SENSOR:
-            self._on_motion(state, raw_status, device_id)
+            self._on_motion(candidate, raw_status, device_id)
         elif device_type == 56 or category == DeviceCategory.EMERGENCY_BUTTON:
-            self._on_emergency(state, raw_status, device_id)
+            self._on_emergency(candidate, raw_status, device_id)
         else:
             parser_category = self._parser_category(device_type, sub_type, category)
             if parser_category is None:
-                self._apply_generic(state, raw_status)
+                self._apply_generic(candidate, raw_status)
             else:
-                self._apply_parser(parser_category, state, raw_status)
+                self._apply_parser(parser_category, candidate, raw_status)
 
-        changed_fields = {
-            field
-            for field in set(state_before) | set(state)
-            if state_before.get(field) != state.get(field)
-        }
-        self._state_store.mark(
+        self._state_store.merge(
             device_id,
-            changed_fields | set(state),
+            candidate,
             source,
         )
 

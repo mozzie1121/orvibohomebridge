@@ -1,4 +1,4 @@
-"""Tests for the unified device capability registry (Stage 0)."""
+"""Tests for the unified device capability registry."""
 
 from __future__ import annotations
 
@@ -33,13 +33,13 @@ class CapabilityRegistryTests(unittest.TestCase):
                 self.assertEqual(cap.channels, frozenset())
                 self.assertFalse(cap.controllable)
 
-    def test_type300_follows_homebridge_real_device_semantics(self) -> None:
+    def test_type300_follows_verified_cloud_device_semantics(self) -> None:
         # 300/491 温湿度传感器：只读、不云专属
         sensor = self.cap.capability_for_type(300, 491)
         self.assertTrue(sensor.status_only)
         self.assertFalse(sensor.cloud_only)
         self.assertEqual(sensor.channels, frozenset())
-        # 300/481 地暖：可云控、不云专属（homebridge 实测定义）
+        # 300/481 地暖：可云控、不云专属（云端实测定义）
         heating = self.cap.capability_for_type(300, 481)
         self.assertFalse(heating.status_only)
         self.assertFalse(heating.cloud_only)
@@ -56,6 +56,71 @@ class CapabilityRegistryTests(unittest.TestCase):
         )
         self.assertTrue(
             self.cap.lan_state_allowed({"device_type_raw": 38})
+        )
+
+    def test_cloud_only_mode_filters_every_lan_state(self) -> None:
+        self.assertFalse(
+            self.cap.lan_state_allowed(
+                {"device_type_raw": 38},
+                self.cap.TransportMode.CLOUD_ONLY,
+            )
+        )
+
+    def test_lan_only_mode_accepts_lan_state_except_cloud_only_devices(self) -> None:
+        self.assertTrue(
+            self.cap.lan_state_allowed(
+                {"device_type_raw": 38},
+                self.cap.TransportMode.LAN_ONLY,
+            )
+        )
+        self.assertFalse(
+            self.cap.lan_state_allowed(
+                {"device_type_raw": 522, "sub_device_type": 463},
+                self.cap.TransportMode.LAN_ONLY,
+            )
+        )
+
+    def test_transport_path_matches_mode_and_device_capability(self) -> None:
+        lan_light = {"device_type_raw": 38}
+        cloud_lock = {"device_type_raw": 522, "sub_device_type": 463}
+        cloud_heating = {"device_type_raw": 300, "sub_device_type": 481}
+        status_sensor = {"device_type_raw": 26}
+
+        self.assertEqual(
+            self.cap.transport_path_for(lan_light),
+            self.cap.TransportPath.LAN_CLOUD,
+        )
+        self.assertEqual(
+            self.cap.transport_path_for(
+                lan_light, self.cap.TransportMode.LAN_ONLY
+            ),
+            self.cap.TransportPath.LAN,
+        )
+        self.assertEqual(
+            self.cap.transport_path_for(
+                lan_light, self.cap.TransportMode.CLOUD_ONLY
+            ),
+            self.cap.TransportPath.CLOUD,
+        )
+        self.assertEqual(
+            self.cap.transport_path_for(cloud_lock),
+            self.cap.TransportPath.CLOUD,
+        )
+        self.assertEqual(
+            self.cap.transport_path_for(
+                cloud_lock, self.cap.TransportMode.LAN_ONLY
+            ),
+            self.cap.TransportPath.UNAVAILABLE,
+        )
+        self.assertEqual(
+            self.cap.transport_path_for(
+                cloud_heating, self.cap.TransportMode.LAN_ONLY
+            ),
+            self.cap.TransportPath.UNAVAILABLE,
+        )
+        self.assertEqual(
+            self.cap.transport_path_for(status_sensor),
+            self.cap.TransportPath.LAN_CLOUD,
         )
 
     def test_door_lock_platforms_include_camera(self) -> None:

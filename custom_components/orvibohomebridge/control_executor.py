@@ -54,7 +54,12 @@ class ControlExecutor:
         self._lan_adapter = lan_adapter
         self._gateway_connected = gateway_connected
         self._transport_mode = transport_mode
-        self._last_scope = "ssl"
+        self._last_transport: dict[str, str] = {}
+
+    def last_transport(self, device_id: str) -> str | None:
+        """Return ``lan`` or ``cloud`` for the latest successful control."""
+
+        return self._last_transport.get(device_id)
 
     async def wait_for_response(self, device_id: str) -> dict | None:
         client = self._ssl_client()
@@ -75,36 +80,94 @@ class ControlExecutor:
     async def execute_route(
         self, device_id: str, device_uid: str, route: ControlRoute
     ) -> bool:
+        ok, _scope = await self._execute_route(
+            device_id, device_uid, route
+        )
+        return ok
+
+    async def _execute_route(
+        self, device_id: str, device_uid: str, route: ControlRoute
+    ) -> tuple[bool, str]:
         if route.scope == "ssl":
-            owner, _scope = self._transport(device_id)
-            if owner is None:
-                return False
-            method = getattr(owner, route.method)
-            ok = bool(
-                await method(device_id, device_uid, *route.args, **route.kwargs)
+            owner, selected_scope = self._transport(device_id)
+            return await self._invoke_with_fallback(
+                device_id,
+                owner,
+                selected_scope,
+                route.method,
+                device_id,
+                device_uid,
+                *route.args,
+                **route.kwargs,
             )
-            if not ok and self._last_scope == "lan":
-                # 自动降级：LAN 控制失败/无回执时改走云（设计 ADR-2 兜底）
-                self._last_scope = "ssl"
-                ssl = self._ssl_client()
-                if ssl is not None:
-                    ok = bool(
-                        await getattr(ssl, route.method)(
-                            device_id, device_uid, *route.args, **route.kwargs
-                        )
-                    )
-            return ok
         owner = self._route_target()
         if owner is None:
-            return False
-        self._last_scope = route.scope
+            return False, route.scope
         method = getattr(owner, route.method)
         prefix = (
             (device_id, device_uid)
             if route.scope == "coordinator_uid"
             else (device_id,)
         )
-        return bool(await method(*prefix, *route.args, **route.kwargs))
+        return bool(await method(*prefix, *route.args, **route.kwargs)), route.scope
+
+    async def _invoke_with_fallback(
+        self,
+        device_id: str,
+        owner: Any,
+        scope: str,
+        method_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[bool, str]:
+        """Invoke a selected transport and retry once on SSL after LAN failure."""
+
+        if owner is None:
+            return False, scope
+        try:
+            result = bool(
+                await getattr(owner, method_name)(*args, **kwargs)
+            )
+        except Exception as error:  # noqa: BLE001 - LAN failure is recoverable
+            if scope != "lan":
+                raise
+            _LOGGER.debug(
+                "LAN 控制 %s 失败，回退云端: device=%s error=%s",
+                method_name,
+                device_id,
+                type(error).__name__,
+            )
+            result = False
+        if (
+            result
+            or scope != "lan"
+            or self._transport_mode == TransportMode.LAN_ONLY
+        ):
+            if result and scope in {"lan", "ssl"}:
+                self._last_transport[device_id] = (
+                    "cloud" if scope == "ssl" else scope
+                )
+            return result, scope
+
+        ssl = self._ssl_client()
+        if ssl is None:
+            return False, scope
+        result = bool(await getattr(ssl, method_name)(*args, **kwargs))
+        if result:
+            self._last_transport[device_id] = "cloud"
+        return result, "ssl"
+
+    async def _send_selected(
+        self,
+        device_id: str,
+        method_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[bool, str]:
+        owner, scope = self._transport(device_id)
+        return await self._invoke_with_fallback(
+            device_id, owner, scope, method_name, *args, **kwargs
+        )
 
     def _transport(self, device_id: str) -> tuple[Any, str]:
         """按能力表 + 网关可达性选择控制通道（LAN 优先 / 云兜底）。"""
@@ -121,14 +184,14 @@ class ControlExecutor:
                     capability is not None
                     and ControlChannel.LAN in capability.channels
                 ):
-                    self._last_scope = "lan"
                     return lan, "lan"
-        self._last_scope = "ssl"
+            if self._transport_mode == TransportMode.LAN_ONLY:
+                return None, "lan"
         return self._ssl_client(), "ssl"
 
-    async def _wait_if_ssl(self, device_id: str) -> dict | None:
-        """LAN 控制已同步拿到网关回执，不再等 SSL 回显。"""
-        if self._last_scope == "lan":
+    async def _wait_if_ssl(self, device_id: str, scope: str) -> dict | None:
+        """Wait only for controls that directly used the SSL client."""
+        if scope != "ssl":
             return None
         return await self.wait_for_response(device_id)
 
@@ -149,11 +212,11 @@ class ControlExecutor:
             brightness=brightness,
             color_temp=color_temp,
         )
-        result = await self.execute_route(
+        result, scope = await self._execute_route(
             device_id, device.get("uid", ""), route
         )
         if result:
-            response = await self._wait_if_ssl(device_id)
+            response = await self._wait_if_ssl(device_id, scope)
             if not response:
                 optimistic = {"state": True}
                 if brightness is not None:
@@ -173,11 +236,11 @@ class ControlExecutor:
             False,
             self._get_state(device_id) or {},
         )
-        result = await self.execute_route(
+        result, scope = await self._execute_route(
             device_id, device.get("uid", ""), route
         )
         if result:
-            if not await self._wait_if_ssl(device_id):
+            if not await self._wait_if_ssl(device_id, scope):
                 self.apply_optimistic(device_id, {"state": False})
             self._on_updated()
         return result
@@ -186,7 +249,9 @@ class ControlExecutor:
         device = self._controllable_device(device_id, "窗帘")
         if device is None:
             return False
-        client, _scope = self._transport(device_id)
+        client, selected_scope = self._transport(device_id)
+        if client is None:
+            return False
         category = classify_device(device)
         if category == DeviceCategory.DREAM_CURTAIN:
             current = self.states.get(device_id, {})
@@ -194,12 +259,18 @@ class ControlExecutor:
                 if current.get("position") != 0:
                     _LOGGER.warning("梦幻帘叶片未居中，拒绝直接设置开合位置: %s", device_id)
                     return False
-                centered = await client.send_control_dream_curtain_angle(
-                    device_id, device.get("uid", ""), 90
+                centered, selected_scope = await self._invoke_with_fallback(
+                    device_id,
+                    client,
+                    selected_scope,
+                    "send_control_dream_curtain_angle",
+                    device_id,
+                    device.get("uid", ""),
+                    90,
                 )
                 if not centered:
                     return False
-                response = await self._wait_if_ssl(device_id)
+                response = await self._wait_if_ssl(device_id, selected_scope)
                 reported_angle = (
                     response.get("properties", {}).get("curtain", {}).get("angle")
                     if isinstance(response, dict)
@@ -208,15 +279,31 @@ class ControlExecutor:
                 if reported_angle != 90:
                     _LOGGER.warning("梦幻帘叶片居中未确认，取消位置控制: %s", device_id)
                     return False
-            result = await client.send_control_dream_curtain_percent(
-                device_id, device.get("uid", ""), position
+                if selected_scope == "ssl":
+                    client = self._ssl_client()
+                    if client is None:
+                        return False
+            result, selected_scope = await self._invoke_with_fallback(
+                device_id,
+                client,
+                selected_scope,
+                "send_control_dream_curtain_percent",
+                device_id,
+                device.get("uid", ""),
+                position,
             )
         else:
-            result = await client.send_control_cover(
-                device_id, device.get("uid", ""), position
+            result, selected_scope = await self._invoke_with_fallback(
+                device_id,
+                client,
+                selected_scope,
+                "send_control_cover",
+                device_id,
+                device.get("uid", ""),
+                position,
             )
         if result:
-            response = await self._wait_if_ssl(device_id)
+            response = await self._wait_if_ssl(device_id, selected_scope)
             if response:
                 actual = response.get("value1")
                 if isinstance(actual, (int, float)) and 0 <= actual <= 100:
@@ -235,15 +322,32 @@ class ControlExecutor:
         if device is None:
             return False
         category = classify_device(device)
-        client, _scope = self._transport(device_id)
+        client, scope = self._transport(device_id)
+        if client is None:
+            return False
         if category == DeviceCategory.DREAM_CURTAIN:
-            return await client.send_control_dream_curtain_action(
-                device_id, device.get("uid", ""), "pause"
+            result, _scope = await self._invoke_with_fallback(
+                device_id,
+                client,
+                scope,
+                "send_control_dream_curtain_action",
+                device_id,
+                device.get("uid", ""),
+                "pause",
             )
+            return result
         stop_value2 = 255 if category == DeviceCategory.ZIGBEE_ROLLING_SHUTTER else 0
-        return await client.send_control_cover(
-            device_id, device.get("uid", ""), "stop", stop_value2=stop_value2
+        result, _scope = await self._invoke_with_fallback(
+            device_id,
+            client,
+            scope,
+            "send_control_cover",
+            device_id,
+            device.get("uid", ""),
+            "stop",
+            stop_value2=stop_value2,
         )
+        return result
 
     async def set_dream_curtain_angle(self, device_id: str, angle: int) -> bool:
         device = self._controllable_device(device_id, "梦幻帘角度")
@@ -252,9 +356,12 @@ class ControlExecutor:
         if self.states.get(device_id, {}).get("position") != 0:
             _LOGGER.warning("梦幻帘仅在完全关闭时允许调节角度: %s", device_id)
             return False
-        client, _scope = self._transport(device_id)
-        result = await client.send_control_dream_curtain_angle(
-            device_id, device.get("uid", ""), angle
+        result, _scope = await self._send_selected(
+            device_id,
+            "send_control_dream_curtain_angle",
+            device_id,
+            device.get("uid", ""),
+            angle,
         )
         if result:
             self.apply_optimistic(device_id, {"angle": max(0, min(180, int(angle)))})
@@ -265,9 +372,12 @@ class ControlExecutor:
         device = self._controllable_device(device_id, "梦幻帘动作")
         if device is None or classify_device(device) != DeviceCategory.DREAM_CURTAIN:
             return False
-        client, _scope = self._transport(device_id)
-        result = await client.send_control_dream_curtain_action(
-            device_id, device.get("uid", ""), action
+        result, _scope = await self._send_selected(
+            device_id,
+            "send_control_dream_curtain_action",
+            device_id,
+            device.get("uid", ""),
+            action,
         )
         if result:
             self.apply_optimistic(device_id, {"cover_action": action})
@@ -286,14 +396,21 @@ class ControlExecutor:
         low = int(self.states.get(device_id, {}).get("min_temperature") or low_default)
         high = int(self.states.get(device_id, {}).get("max_temperature") or 35)
         target = max(low, min(high, int(round(temperature))))
-        client, _scope = self._transport(device_id)
         if category == DeviceCategory.LEGACY_FLOOR_HEATING:
-            result = await client.send_control_legacy_floor_heating_temperature(
-                device_id, device.get("uid", ""), target
+            result, _scope = await self._send_selected(
+                device_id,
+                "send_control_legacy_floor_heating_temperature",
+                device_id,
+                device.get("uid", ""),
+                target,
             )
         else:
-            result = await client.send_control_floor_heating_temperature(
-                device_id, device.get("uid", ""), target
+            result, _scope = await self._send_selected(
+                device_id,
+                "send_control_floor_heating_temperature",
+                device_id,
+                device.get("uid", ""),
+                target,
             )
         if result:
             self.apply_optimistic(device_id, {"target_temperature": target})
@@ -330,31 +447,33 @@ class ControlExecutor:
         brightness: int | None,
         color_temp_k: int | None,
     ) -> bool:
-        client, _scope = self._transport(device_id)
-        if client is None:
-            _LOGGER.error("控制通道未连接，无法下发灯光复合参数")
-            return False
         device = self.devices.get(device_id)
         if device is None:
             _LOGGER.error("找不到设备 %s", device_id)
             return False
-        return await client.send_light_bri_ct(
+        result, _scope = await self._send_selected(
+            device_id,
+            "send_light_bri_ct",
             device_id,
             device.get("uid", ""),
             brightness,
             color_temp_k,
         )
+        return result
 
     async def ventilation_state_update(self, device_id: str, value1: int) -> bool:
         device = self._connected_device(device_id)
         if device is None:
             return False
-        client, _scope = self._transport(device_id)
-        result = await client.send_control_ventilation(
-            device_id, device.get("uid", ""), value1
+        result, scope = await self._send_selected(
+            device_id,
+            "send_control_ventilation",
+            device_id,
+            device.get("uid", ""),
+            value1,
         )
         if result:
-            if not await self._wait_if_ssl(device_id):
+            if not await self._wait_if_ssl(device_id, scope):
                 state = self.states.setdefault(device_id, {})
                 if value1 == 0:
                     state.update({"fan_speed": "慢", "state": True})
@@ -408,6 +527,7 @@ class ControlExecutor:
             ctrl_value=value,
         )
         if result:
+            self._last_transport[device_id] = "cloud"
             state = self.states.get(device_id)
             if state is not None:
                 if feature == "motor":
@@ -435,11 +555,11 @@ class ControlExecutor:
         device: dict[str, Any],
         route: ControlRoute,
     ) -> bool:
-        result = await self.execute_route(
+        result, scope = await self._execute_route(
             device_id, device.get("uid", ""), route
         )
         if result:
-            if not await self._wait_if_ssl(device_id):
+            if not await self._wait_if_ssl(device_id, scope):
                 self.apply_optimistic(device_id, route.optimistic)
             self._on_updated()
         return result

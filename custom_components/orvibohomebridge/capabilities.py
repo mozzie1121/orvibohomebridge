@@ -1,14 +1,8 @@
-"""Unified device capability registry for the fused LAN + cloud integration.
+"""Declare Home Assistant platforms and transport policy for each device.
 
-阶段 0 产物：把 `orvibo-lan-control` 的 profiles（device_type → platforms /
-status_only）与现有 `device_types`（category / verified / hidden）合并为一张
-能力表，并新增融合所需的两个维度：
-
-- ``channels``：设备支持的控制通道（LAN / SSL）；
-- ``cloud_only``：必须走云的设备（门锁 107/300/522、晾衣机 52 等 WiFi 直连）。
-
-本模块当前是纯数据声明，**不改变现有注册行为**；阶段 1/2 再让
-control_router / 平台注册改用它。
+Profiles identify device semantics; this module adds the runtime decisions used
+by entity registration, LAN push filtering, and control transport selection.
+Unknown devices remain registration-only and never receive inferred commands.
 """
 
 from __future__ import annotations
@@ -38,10 +32,20 @@ class ControlChannel(str, Enum):
 
 
 class TransportMode(str, Enum):
-    """融合后的传输模式（默认自动：LAN 优先 + 云兜底）。"""
+    """Select which realtime/control transports may be used."""
 
     AUTO = "auto"
+    LAN_ONLY = "lan_only"
     CLOUD_ONLY = "cloud_only"
+
+
+class TransportPath(str, Enum):
+    """User-facing transport policy for one device in the active mode."""
+
+    LAN = "lan"
+    CLOUD = "cloud"
+    LAN_CLOUD = "lan_cloud"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,16 +64,16 @@ class DeviceCapability:
         return bool(self.channels)
 
 
-# ---- 类型级标志（来自 orvibo-lan-control profiles + ADR-4） ----
+# ---- 类型级传输与只读策略 ----
 
 # LAN 可直接控制的设备类型（gateway 转发；源自 lan profiles 的非只读类型）
 _LAN_CONTROLLABLE_TYPES = frozenset(
     {0, 1, 34, 35, 36, 38, 81, 102, 501, 502, 503, 516}
 )
 
-# 类型级只读标记：仅保留 homebridge 未映射为分类的 WiFi 门锁（107）。
+# 类型级只读标记：仅保留云端实现未映射为分类的 WiFi 门锁（107）。
 # 其余只读类型（传感器类、522 门锁）由 _STATUS_ONLY_CATEGORIES 按分类判定，
-# type 300 按子类型走 homebridge 实测定义（481 地暖可云控 / 491 温湿度只读）。
+# type 300 按云端实测子类型定义（481 地暖可云控 / 491 温湿度只读）。
 _STATUS_ONLY_TYPES = frozenset({107})
 
 # 必须走云的设备（WiFi 直连 / 门锁 LAN 走不通；ADR-4）
@@ -90,7 +94,7 @@ _STATUS_ONLY_CATEGORIES = frozenset(
 )
 
 
-# ---- 分类 → HA 平台（快照；阶段 1/2 改为平台注册唯一来源） ----
+# ---- 分类 → Home Assistant 平台 ----
 
 _CATEGORY_PLATFORMS: Dict[DeviceCategory, FrozenSet[str]] = {
     DeviceCategory.SIMPLE_ZIGBEE_LIGHT: frozenset({PLATFORM_LIGHT}),
@@ -181,7 +185,7 @@ def capability_for(device: Any) -> DeviceCapability:
     elif status_only:
         channels = frozenset()
     elif profile.registration_only:
-        # 未知/未验证类别只展示、不下发控制（沿用 v0.4.2 保守策略）
+        # 未知/未验证类别只展示、不下发控制（项目默认的保守策略）
         channels = frozenset()
     elif device_type in _LAN_CONTROLLABLE_TYPES:
         # 本地优先：LAN 与云都支持，路由层按模式/可达性选择
@@ -212,6 +216,39 @@ def capability_for_type(
     )
 
 
-def lan_state_allowed(device: Any) -> bool:
-    """门锁等 cloud_only 设备的状态只走云端，LAN 推送一律忽略。"""
-    return not capability_for(device).cloud_only
+def lan_state_allowed(
+    device: Any,
+    transport_mode: TransportMode = TransportMode.AUTO,
+) -> bool:
+    """Return whether a LAN push may update this device in the active mode."""
+
+    return (
+        transport_mode != TransportMode.CLOUD_ONLY
+        and not capability_for(device).cloud_only
+    )
+
+
+def transport_path_for(
+    device: Any,
+    transport_mode: TransportMode = TransportMode.AUTO,
+) -> TransportPath:
+    """Describe the configured runtime path without probing network state."""
+
+    capability = capability_for(device)
+    if transport_mode == TransportMode.CLOUD_ONLY:
+        return TransportPath.CLOUD
+
+    if transport_mode == TransportMode.LAN_ONLY:
+        if capability.cloud_only:
+            return TransportPath.UNAVAILABLE
+        if capability.status_only or ControlChannel.LAN in capability.channels:
+            return TransportPath.LAN
+        return TransportPath.UNAVAILABLE
+
+    if capability.cloud_only:
+        return TransportPath.CLOUD
+    if capability.status_only or ControlChannel.LAN in capability.channels:
+        return TransportPath.LAN_CLOUD
+    if ControlChannel.SSL in capability.channels:
+        return TransportPath.CLOUD
+    return TransportPath.UNAVAILABLE

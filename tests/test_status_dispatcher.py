@@ -99,6 +99,24 @@ class StatusDispatcherTests(unittest.TestCase):
         self.assertEqual(states["lamp"]["properties"]["brightness"]["percent"], 50)
         self.assertEqual(states["lamp"]["properties"]["colorTemp"]["value"], 3500)
 
+    def test_lower_priority_cloud_status_cannot_rollback_lan_state(self) -> None:
+        devices = {"lamp": {"device_type_raw": 501}}
+        states = {"lamp": {"state": False}}
+        dispatcher, _, _, _ = self.make_dispatcher(devices, states)
+
+        dispatcher.dispatch(
+            "lamp",
+            {"properties": {"onoff": {"status": "on"}}},
+            source=self.state_store.StateSource.LAN,
+        )
+        dispatcher.dispatch(
+            "lamp",
+            {"properties": {"onoff": {"status": "off"}}},
+            source=self.state_store.StateSource.CLOUD,
+        )
+
+        self.assertTrue(states["lamp"]["state"])
+
     def test_lock_event_carries_source(self) -> None:
         devices = {"lock": {"device_type_raw": 522, "sub_device_type": 463}}
         states = {"lock": {"properties": {}}}
