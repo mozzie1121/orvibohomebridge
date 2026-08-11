@@ -36,6 +36,18 @@
                     "device_group_other": "Other"
                 }
             },
+            "custom_devices": {
+                "title": "Custom device selection",
+                "description": "Only categories set to Custom selection on the previous page are shown.",
+                "data": {
+                    "custom_device_group_lights": "Lights",
+                    "custom_device_group_covers": "Covers",
+                    "custom_device_group_climate": "Climate",
+                    "custom_device_group_sensors": "Sensors",
+                    "custom_device_group_locks": "Locks",
+                    "custom_device_group_other": "Other"
+                }
+            },
             "area": {
                 "title": "Assign Area",
                 "description": "Select HA area for {device} ({position}/{total}). The room from HomeMate is {room}. Leave empty for no area.",
@@ -118,6 +130,18 @@
                     "device_group_other": "Other"
                 }
             },
+            "custom_devices": {
+                "title": "Custom device selection",
+                "description": "Only categories set to Custom selection on the previous page are shown.",
+                "data": {
+                    "custom_device_group_lights": "Lights",
+                    "custom_device_group_covers": "Covers",
+                    "custom_device_group_climate": "Climate",
+                    "custom_device_group_sensors": "Sensors",
+                    "custom_device_group_locks": "Locks",
+                    "custom_device_group_other": "Other"
+                }
+            },
             "area": {
                 "title": "Assign Area",
                 "description": "Select HA area for {device} ({position}/{total}). ORVIBO room is {room}.",
@@ -139,6 +163,13 @@
         }
     },
     "selector": {
+        "device_group_mode": {
+            "options": {
+                "all": "Include all",
+                "none": "Do not include",
+                "custom": "Custom selection"
+            }
+        },
         "transport_mode": {
             "options": {
                 "auto": "Combined LAN and cloud (default, LAN-first with fallback)",

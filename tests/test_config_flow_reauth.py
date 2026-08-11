@@ -120,7 +120,36 @@ def _load_config_flow():
         ),
         f"{package_name}.device_selection": _module(
             f"{package_name}.device_selection",
-            device_selection_groups=lambda devices: (),
+            device_selection_groups=lambda devices: (
+                SimpleNamespace(
+                    key="lights",
+                    label="灯光",
+                    field="device_group_lights",
+                    device_ids=tuple(
+                        str(device["device_id"])
+                        for device in devices
+                        if device.get("group") == "lights"
+                    ),
+                    devices=tuple(
+                        device for device in devices
+                        if device.get("group") == "lights"
+                    ),
+                ),
+                SimpleNamespace(
+                    key="sensors",
+                    label="传感器",
+                    field="device_group_sensors",
+                    device_ids=tuple(
+                        str(device["device_id"])
+                        for device in devices
+                        if device.get("group") == "sensors"
+                    ),
+                    devices=tuple(
+                        device for device in devices
+                        if device.get("group") == "sensors"
+                    ),
+                ),
+            ),
             merge_grouped_selection=lambda user_input, devices: list(
                 user_input.get("selected_device_ids", [])
             ),
@@ -212,6 +241,36 @@ class TestOptionsReauth(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["type"], "form")
         self.assertEqual(result["errors"]["base"], "auth_failed")
         flow.hass.config_entries.async_update_entry.assert_not_called()
+
+    def test_group_modes_build_all_none_and_custom_plan(self):
+        devices = [
+            {"device_id": "light-1", "group": "lights"},
+            {"device_id": "light-2", "group": "lights"},
+            {"device_id": "sensor-1", "group": "sensors"},
+        ]
+        selected, custom = self.module._selection_plan(
+            {
+                "device_group_lights": "all",
+                "device_group_sensors": "custom",
+            },
+            devices,
+        )
+        self.assertEqual(selected, ["light-1", "light-2"])
+        self.assertEqual(custom, {"sensors"})
+
+    def test_custom_step_merges_with_categories_selected_as_all(self):
+        devices = [
+            {"device_id": "light-1", "group": "lights"},
+            {"device_id": "sensor-1", "group": "sensors"},
+            {"device_id": "sensor-2", "group": "sensors"},
+        ]
+        selected = self.module._merge_custom_selection(
+            ["light-1"],
+            {"custom_device_group_sensors": ["sensor-2"]},
+            devices,
+            {"sensors"},
+        )
+        self.assertEqual(selected, ["light-1", "sensor-2"])
 
 
 if __name__ == "__main__":

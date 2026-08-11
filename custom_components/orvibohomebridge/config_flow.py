@@ -34,7 +34,7 @@ from .device_types import (
     get_device_profile,
     is_hidden_category,
 )
-from .device_selection import device_selection_groups, merge_grouped_selection
+from .device_selection import device_selection_groups
 from .lock_status import format_lock_user_names, parse_lock_user_names
 from .capabilities import TransportMode
 from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
@@ -76,42 +76,103 @@ def _device_option_label(device: dict) -> str:
     return label
 
 
-def _device_selection_schema(
+DEVICE_GROUP_MODE_ALL = "all"
+DEVICE_GROUP_MODE_NONE = "none"
+DEVICE_GROUP_MODE_CUSTOM = "custom"
+CUSTOM_GROUP_FIELD_PREFIX = "custom_device_group_"
+
+
+def _device_group_mode_schema(
     devices: list[dict], selected_ids: set[str]
 ) -> vol.Schema:
-    """Build one multi-select list for each broad device category."""
+    """Select all, none, or custom for every broad device category."""
 
     fields: dict[object, object] = {}
     for group in device_selection_groups(devices):
         ids = set(group.device_ids)
-        selected_in_group = [
-            device_id for device_id in group.device_ids if device_id in selected_ids
-        ]
-        all_selected = bool(ids) and ids.issubset(selected_ids)
-        default = [group.all_value] if all_selected else selected_in_group
-        options = [
-            selector.SelectOptionDict(
-                value=group.all_value,
-                label=f"全部{group.label}",
-            ),
-            *[
-                selector.SelectOptionDict(
-                    value=str(device["device_id"]),
-                    label=_device_option_label(device),
-                )
-                for device in group.devices
-            ],
-        ]
-        fields[vol.Optional(group.field, default=default)] = (
+        selected = ids & selected_ids
+        if selected == ids:
+            default = DEVICE_GROUP_MODE_ALL
+        elif not selected:
+            default = DEVICE_GROUP_MODE_NONE
+        else:
+            default = DEVICE_GROUP_MODE_CUSTOM
+        fields[vol.Required(group.field, default=default)] = (
             selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=options,
-                    multiple=True,
+                    options=[
+                        DEVICE_GROUP_MODE_ALL,
+                        DEVICE_GROUP_MODE_NONE,
+                        DEVICE_GROUP_MODE_CUSTOM,
+                    ],
                     mode=selector.SelectSelectorMode.LIST,
+                    translation_key="device_group_mode",
                 )
             )
         )
     return vol.Schema(fields)
+
+
+def _custom_device_schema(
+    devices: list[dict], group_keys: set[str], selected_ids: set[str]
+) -> vol.Schema:
+    """Show concrete devices only for categories configured as custom."""
+
+    fields: dict[object, object] = {}
+    for group in device_selection_groups(devices):
+        if group.key not in group_keys:
+            continue
+        field = f"{CUSTOM_GROUP_FIELD_PREFIX}{group.key}"
+        default = [
+            device_id for device_id in group.device_ids if device_id in selected_ids
+        ]
+        fields[vol.Optional(field, default=default)] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[
+                    selector.SelectOptionDict(
+                        value=str(device["device_id"]),
+                        label=_device_option_label(device),
+                    )
+                    for device in group.devices
+                ],
+                multiple=True,
+                mode=selector.SelectSelectorMode.LIST,
+            )
+        )
+    return vol.Schema(fields)
+
+
+def _selection_plan(
+    user_input: dict, devices: list[dict]
+) -> tuple[list[str], set[str]]:
+    """Resolve all/none categories and return categories needing a detail step."""
+
+    selected: list[str] = []
+    custom: set[str] = set()
+    for group in device_selection_groups(devices):
+        mode = str(user_input.get(group.field, DEVICE_GROUP_MODE_NONE))
+        if mode == DEVICE_GROUP_MODE_ALL:
+            selected.extend(group.device_ids)
+        elif mode == DEVICE_GROUP_MODE_CUSTOM:
+            custom.add(group.key)
+    return selected, custom
+
+
+def _merge_custom_selection(
+    base_ids: list[str], user_input: dict, devices: list[dict], group_keys: set[str]
+) -> list[str]:
+    requested = set(base_ids)
+    for group in device_selection_groups(devices):
+        if group.key not in group_keys:
+            continue
+        values = user_input.get(f"{CUSTOM_GROUP_FIELD_PREFIX}{group.key}", [])
+        if isinstance(values, (list, tuple, set)):
+            requested.update(str(value) for value in values)
+    return [
+        str(device["device_id"])
+        for device in devices
+        if str(device["device_id"]) in requested
+    ]
 
 
 async def _fetch_devices(
@@ -230,6 +291,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._devices: list[dict] = []
         self._pending_selected_ids: list[str] = []
+        self._selection_defaults: set[str] = set()
+        self._selection_base_ids: list[str] = []
+        self._custom_group_keys: set[str] = set()
         self._cloud = CHINA_CLOUD
 
     async def async_step_user(
@@ -350,22 +414,48 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "no_devices"
 
         if user_input is not None:
-            available = {str(d["device_id"]) for d in self._devices}
-            requested = set(merge_grouped_selection(user_input, self._devices))
-            self._pending_selected_ids = [
-                str(d["device_id"])
-                for d in self._devices
-                if str(d["device_id"]) in requested & available
-            ]
+            self._selection_base_ids, self._custom_group_keys = _selection_plan(
+                user_input, self._devices
+            )
+            if self._custom_group_keys:
+                return await self.async_step_custom_devices()
+            self._pending_selected_ids = list(self._selection_base_ids)
             if not self._pending_selected_ids:
                 errors["base"] = "no_devices_selected"
             else:
                 return await self._create_entry()
 
         default_ids = {str(d["device_id"]) for d in self._devices}
+        self._selection_defaults = default_ids
         return self.async_show_form(
             step_id="devices",
-            data_schema=_device_selection_schema(self._devices, default_ids),
+            data_schema=_device_group_mode_schema(self._devices, default_ids),
+            errors=errors,
+        )
+
+    async def async_step_custom_devices(
+        self, user_input: Optional[dict] = None
+    ) -> FlowResult:
+        """Select individual devices for categories marked as custom."""
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            self._pending_selected_ids = _merge_custom_selection(
+                self._selection_base_ids,
+                user_input,
+                self._devices,
+                self._custom_group_keys,
+            )
+            if self._pending_selected_ids:
+                return await self._create_entry()
+            errors["base"] = "no_devices_selected"
+        return self.async_show_form(
+            step_id="custom_devices",
+            data_schema=_custom_device_schema(
+                self._devices,
+                self._custom_group_keys,
+                self._selection_defaults,
+            ),
             errors=errors,
         )
 
@@ -473,6 +563,9 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         # 用私有字段保存工厂参数，兼容新旧版本。
         self._config_entry = config_entry
         self._devices: list[dict] = []
+        self._selection_defaults: set[str] = set()
+        self._selection_base_ids: list[str] = []
+        self._custom_group_keys: set[str] = set()
 
     async def async_step_init(self, user_input=None):
         """选项菜单：重新登录 / 选择设备 / 锁用户映射 / 传输模式。"""
@@ -695,13 +788,12 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "no_devices"
 
         if user_input is not None:
-            available = {str(d["device_id"]) for d in self._devices}
-            requested = set(merge_grouped_selection(user_input, self._devices))
-            selected = [
-                str(d["device_id"])
-                for d in self._devices
-                if str(d["device_id"]) in requested & available
-            ]
+            self._selection_base_ids, self._custom_group_keys = _selection_plan(
+                user_input, self._devices
+            )
+            if self._custom_group_keys:
+                return await self.async_step_custom_devices()
+            selected = list(self._selection_base_ids)
             if not selected:
                 errors["base"] = "no_devices_selected"
             else:
@@ -716,8 +808,35 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
             self._config_entry.options,
             [str(d["device_id"]) for d in self._devices],
         )
+        self._selection_defaults = set(current)
         return self.async_show_form(
             step_id="devices",
-            data_schema=_device_selection_schema(self._devices, set(current)),
+            data_schema=_device_group_mode_schema(self._devices, set(current)),
+            errors=errors,
+        )
+
+    async def async_step_custom_devices(self, user_input=None):
+        """Select individual devices for categories marked as custom."""
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            selected = _merge_custom_selection(
+                self._selection_base_ids,
+                user_input,
+                self._devices,
+                self._custom_group_keys,
+            )
+            if selected:
+                options = dict(self._config_entry.options)
+                options[CONF_SELECTED_DEVICE_IDS] = selected
+                return self.async_create_entry(title="", data=options)
+            errors["base"] = "no_devices_selected"
+        return self.async_show_form(
+            step_id="custom_devices",
+            data_schema=_custom_device_schema(
+                self._devices,
+                self._custom_group_keys,
+                self._selection_defaults,
+            ),
             errors=errors,
         )

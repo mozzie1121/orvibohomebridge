@@ -36,6 +36,18 @@
                     "device_group_other": "其他"
                 }
             },
+            "custom_devices": {
+                "title": "自定义选择设备",
+                "description": "仅显示上一页选择了“自定义选择”的设备类别。",
+                "data": {
+                    "custom_device_group_lights": "灯光",
+                    "custom_device_group_covers": "窗帘",
+                    "custom_device_group_climate": "空调",
+                    "custom_device_group_sensors": "传感器",
+                    "custom_device_group_locks": "门锁",
+                    "custom_device_group_other": "其他"
+                }
+            },
             "area": {
                 "title": "指定设备区域",
                 "description": "为 {device} 选择区域（第 {position}/{total} 台）。智家365中的房间为 {room}。留空不设区域。",
@@ -118,6 +130,18 @@
                     "device_group_other": "其他"
                 }
             },
+            "custom_devices": {
+                "title": "自定义选择设备",
+                "description": "仅显示上一页选择了“自定义选择”的设备类别。",
+                "data": {
+                    "custom_device_group_lights": "灯光",
+                    "custom_device_group_covers": "窗帘",
+                    "custom_device_group_climate": "空调",
+                    "custom_device_group_sensors": "传感器",
+                    "custom_device_group_locks": "门锁",
+                    "custom_device_group_other": "其他"
+                }
+            },
             "area": {
                 "title": "指定设备区域",
                 "description": "为 {device} 选择区域（第 {position}/{total} 台）。欧瑞博中的房间为 {room}。",
@@ -139,6 +163,13 @@
         }
     },
     "selector": {
+        "device_group_mode": {
+            "options": {
+                "all": "全部接入",
+                "none": "不接入",
+                "custom": "自定义选择"
+            }
+        },
         "transport_mode": {
             "options": {
                 "auto": "LAN 与云端结合（默认，LAN 优先并自动回退）",
