@@ -118,6 +118,13 @@ def _load_config_flow():
             get_device_profile=lambda device: None,
             is_hidden_category=lambda category: False,
         ),
+        f"{package_name}.device_selection": _module(
+            f"{package_name}.device_selection",
+            device_selection_groups=lambda devices: (),
+            merge_grouped_selection=lambda user_input, devices: list(
+                user_input.get("selected_device_ids", [])
+            ),
+        ),
         f"{package_name}.lock_status": _module(
             f"{package_name}.lock_status",
             format_lock_user_names=lambda value: "",

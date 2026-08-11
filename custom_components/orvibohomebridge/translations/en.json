@@ -27,7 +27,13 @@
                 "title": "Select Devices",
                 "description": "Only checked devices will be added to Home Assistant.",
                 "data": {
-                    "selected_device_ids": "Devices"
+                    "selected_device_ids": "Devices",
+                    "device_group_lights": "Lights",
+                    "device_group_covers": "Covers",
+                    "device_group_climate": "Climate",
+                    "device_group_sensors": "Sensors",
+                    "device_group_locks": "Locks",
+                    "device_group_other": "Other"
                 }
             },
             "area": {
@@ -103,7 +109,13 @@
                 "title": "Select Devices",
                 "description": "Only checked devices will be added to Home Assistant.",
                 "data": {
-                    "selected_device_ids": "Devices"
+                    "selected_device_ids": "Devices",
+                    "device_group_lights": "Lights",
+                    "device_group_covers": "Covers",
+                    "device_group_climate": "Climate",
+                    "device_group_sensors": "Sensors",
+                    "device_group_locks": "Locks",
+                    "device_group_other": "Other"
                 }
             },
             "area": {

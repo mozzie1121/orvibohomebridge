@@ -34,6 +34,7 @@ from .device_types import (
     get_device_profile,
     is_hidden_category,
 )
+from .device_selection import device_selection_groups, merge_grouped_selection
 from .lock_status import format_lock_user_names, parse_lock_user_names
 from .capabilities import TransportMode
 from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
@@ -73,6 +74,44 @@ def _device_option_label(device: dict) -> str:
     if profile.category == DeviceCategory.UNKNOWN:
         return f"{label}（未识别，暂未支持）"
     return label
+
+
+def _device_selection_schema(
+    devices: list[dict], selected_ids: set[str]
+) -> vol.Schema:
+    """Build one multi-select list for each broad device category."""
+
+    fields: dict[object, object] = {}
+    for group in device_selection_groups(devices):
+        ids = set(group.device_ids)
+        selected_in_group = [
+            device_id for device_id in group.device_ids if device_id in selected_ids
+        ]
+        all_selected = bool(ids) and ids.issubset(selected_ids)
+        default = [group.all_value] if all_selected else selected_in_group
+        options = [
+            selector.SelectOptionDict(
+                value=group.all_value,
+                label=f"全部{group.label}",
+            ),
+            *[
+                selector.SelectOptionDict(
+                    value=str(device["device_id"]),
+                    label=_device_option_label(device),
+                )
+                for device in group.devices
+            ],
+        ]
+        fields[vol.Optional(group.field, default=default)] = (
+            selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=options,
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            )
+        )
+    return vol.Schema(fields)
 
 
 async def _fetch_devices(
@@ -310,9 +349,9 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not self._devices:
                 errors["base"] = "no_devices"
 
-        if user_input is not None and CONF_SELECTED_DEVICE_IDS in user_input:
+        if user_input is not None:
             available = {str(d["device_id"]) for d in self._devices}
-            requested = {str(item) for item in user_input[CONF_SELECTED_DEVICE_IDS]}
+            requested = set(merge_grouped_selection(user_input, self._devices))
             self._pending_selected_ids = [
                 str(d["device_id"])
                 for d in self._devices
@@ -323,29 +362,10 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 return await self._create_entry()
 
-        options = [
-            selector.SelectOptionDict(
-                value=str(d["device_id"]),
-                label=_device_option_label(d),
-            )
-            for d in self._devices
-        ]
-        default_ids = [str(d["device_id"]) for d in self._devices]
+        default_ids = {str(d["device_id"]) for d in self._devices}
         return self.async_show_form(
             step_id="devices",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SELECTED_DEVICE_IDS, default=default_ids
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=options,
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.LIST,
-                        )
-                    )
-                }
-            ),
+            data_schema=_device_selection_schema(self._devices, default_ids),
             errors=errors,
         )
 
@@ -676,9 +696,7 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             available = {str(d["device_id"]) for d in self._devices}
-            requested = {
-                str(item) for item in user_input.get(CONF_SELECTED_DEVICE_IDS, [])
-            }
+            requested = set(merge_grouped_selection(user_input, self._devices))
             selected = [
                 str(d["device_id"])
                 for d in self._devices
@@ -694,31 +712,12 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
                     data=options,
                 )
 
-        options = [
-            selector.SelectOptionDict(
-                value=str(d["device_id"]),
-                label=_device_option_label(d),
-            )
-            for d in self._devices
-        ]
         current = selected_device_ids(
             self._config_entry.options,
             [str(d["device_id"]) for d in self._devices],
         )
         return self.async_show_form(
             step_id="devices",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SELECTED_DEVICE_IDS, default=sorted(current)
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=options,
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.LIST,
-                        )
-                    )
-                }
-            ),
+            data_schema=_device_selection_schema(self._devices, set(current)),
             errors=errors,
         )

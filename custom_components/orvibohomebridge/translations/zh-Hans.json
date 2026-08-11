@@ -27,7 +27,13 @@
                 "title": "选择设备",
                 "description": "只有勾选的设备才会添加到 Home Assistant。不勾选后续无法使用。",
                 "data": {
-                    "selected_device_ids": "设备"
+                    "selected_device_ids": "设备",
+                    "device_group_lights": "灯光",
+                    "device_group_covers": "窗帘",
+                    "device_group_climate": "空调",
+                    "device_group_sensors": "传感器",
+                    "device_group_locks": "门锁",
+                    "device_group_other": "其他"
                 }
             },
             "area": {
@@ -103,7 +109,13 @@
                 "title": "选择设备",
                 "description": "只有勾选的设备才会添加到 Home Assistant。",
                 "data": {
-                    "selected_device_ids": "设备"
+                    "selected_device_ids": "设备",
+                    "device_group_lights": "灯光",
+                    "device_group_covers": "窗帘",
+                    "device_group_climate": "空调",
+                    "device_group_sensors": "传感器",
+                    "device_group_locks": "门锁",
+                    "device_group_other": "其他"
                 }
             },
             "area": {
