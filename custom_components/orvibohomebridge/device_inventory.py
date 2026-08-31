@@ -102,13 +102,13 @@ class DeviceInventory:
                 continue
 
             self.devices[device_id] = device
-            fresh = self._cloud_record_fresh(device)
-            state = self._initial_state(device)
+            seed_values = self._cloud_values_allowed(device, category)
+            state = self._initial_state(device, seed_values=seed_values)
             parser = get_state_parser(category)
-            # 值解析仅在云端记录新鲜时执行：陈旧记录的值不可信，
+            # 值解析仅当允许播种云端值时执行：陈旧记录的值不可信，
             # 否则刚被门控为 False 的 state 会被陈旧 value1 重新解析成 True
             # （nan_nan 场景：云端记录 8/24 说"开"，实际设备已关）。
-            if parser is not None and fresh:
+            if parser is not None and seed_values:
                 parser(
                     state,
                     {
@@ -152,6 +152,16 @@ class DeviceInventory:
             return False
         return (time.time() - online_time) <= CLOUD_RECORD_STALE_SECONDS
 
+    def _cloud_values_allowed(self, device: dict, category) -> bool:
+        """云端值字段是否允许合并/播种。
+
+        云端记录新鲜 → 允许；cloud_only 设备（晾衣机等，云端记录是唯一值来源）
+        → 即使陈旧也允许；其余（LAN 通道设备，如灯光/窗帘）陈旧记录不可信。
+        """
+        if category == DeviceCategory.CLOTHES_HORSE:
+            return True
+        return self._cloud_record_fresh(device)
+
     def merge_cloud(self, discovered: list[dict[str, Any]]) -> None:
         """Merge a periodic cloud snapshot without overwriting fresh SSL fields."""
         for device in discovered:
@@ -162,18 +172,20 @@ class DeviceInventory:
                 continue
 
             self.devices[device_id] = device
+            seed_values = self._cloud_values_allowed(device, category)
             if device_id not in self.states:
-                self.states[device_id] = self._periodic_initial_state(device)
+                self.states[device_id] = self._periodic_initial_state(
+                    device, seed_values=seed_values
+                )
 
             # 云端快照合并：
             # - 不再把云端 online 直接写进运行时 "online"（readtable 的 online 可能陈旧，
             #   会把"实际在线但长时间无推送"的设备误判为离线）。改为独立字段
             #   cloud_online / cloud_online_time，由 coordinator 按记录新鲜度决定可用性。
             # - online 缺失保持 None，不强制写 False（未知 ≠ 离线）。
-            # - 值字段（state/position/brightness/color_temp 等）仅在云端记录新鲜时合并：
-            #   陈旧记录（设备走 LAN 推送、云端长期未更新）不覆盖运行时真实状态，
-            #   避免"实际已关"的设备被陈旧的云端快照重新显示为"开"。
-            fresh = self._cloud_record_fresh(device)
+            # - 值字段（state/position/brightness/color_temp 等）仅允许播种云端值时合并：
+            #   陈旧记录且非 cloud_only（设备走 LAN 推送、云端长期未更新）不覆盖运行时
+            #   真实状态，避免"实际已关"的设备被陈旧的云端快照重新显示为"开"。
             cloud_state = {
                 field: device[field]
                 for field in (
@@ -186,7 +198,7 @@ class DeviceInventory:
                 )
                 if field in device and device[field] is not None
             }
-            if not fresh:
+            if not seed_values:
                 cloud_state.clear()
             cloud_online = device.get("online")
             cloud_online_time = device.get("online_time")
@@ -212,7 +224,7 @@ class DeviceInventory:
                 # StateStore guard 保证 30s 内新的 SSL 值不被覆盖。
                 # 仅当云端记录新鲜时才用快照值（陈旧记录的值不可信，
                 # 避免把"实际已解锁"的门锁重新显示成"上锁"）。
-                if not fresh:
+                if not seed_values:
                     continue
                 lock_state: dict[str, Any] = {}
                 parser = get_state_parser(category)
@@ -238,7 +250,9 @@ class DeviceInventory:
         self.state_store.remove(device_id)
         self._on_removed(device_id)
 
-    def _initial_state(self, device: dict[str, Any]) -> dict[str, Any]:
+    def _initial_state(
+        self, device: dict[str, Any], *, seed_values: bool = True
+    ) -> dict[str, Any]:
         online = device.get("online", False)
         if isinstance(online, str):
             online = online.strip().lower() in ("online", "1", "true", "yes")
@@ -259,10 +273,11 @@ class DeviceInventory:
             "raw_value3": device.get("value3"),
             "raw_value4": device.get("value4"),
         }
-        if not self._cloud_record_fresh(device):
-            # 云端记录陈旧：不播种云端值字段（state/position/brightness...），
-            # 开关状态默认关，等真实推送/控制纠正；避免陈旧快照把"实际已关"
-            # 的设备显示成"开"（如重启后 nan_nan 回显 on）。
+        if not seed_values:
+            # 云端记录陈旧且设备非 cloud_only：不播种云端值字段
+            # （state/position/brightness...），开关状态默认关，等真实推送/控制
+            # 纠正；避免陈旧快照把"实际已关"的设备显示成"开"（nan_nan 场景）。
+            # cloud_only 设备（晾衣机/门锁）豁免：云端记录是其唯一值来源。
             state["state"] = False
             state["position"] = None
             state["brightness"] = None
@@ -270,7 +285,9 @@ class DeviceInventory:
             state["properties"] = {}
         return state
 
-    def _periodic_initial_state(self, device: dict[str, Any]) -> dict[str, Any]:
+    def _periodic_initial_state(
+        self, device: dict[str, Any], *, seed_values: bool = True
+    ) -> dict[str, Any]:
         state = {
             "state": device.get("state", False),
             "online": device.get("online", False),
@@ -279,7 +296,7 @@ class DeviceInventory:
             "color_temp": device.get("color_temp"),
             "properties": dict(device.get("properties") or {}),
         }
-        if not self._cloud_record_fresh(device):
+        if not seed_values:
             state["state"] = False
             state["position"] = None
             state["brightness"] = None

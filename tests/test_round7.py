@@ -142,6 +142,7 @@ class CloudValueFreshnessTests(unittest.TestCase):
         class DeviceCategory:
             UNKNOWN = "unknown"
             DOOR_LOCK = "door_lock"
+            CLOTHES_HORSE = "clothes_horse"
 
         class StateStore:
             def __init__(self, states):
@@ -232,9 +233,23 @@ class CloudValueFreshnessTests(unittest.TestCase):
                 "state": True,  # 云端陈旧值：实际设备已关
                 "online": True,
                 "online_time": int(time.time()) - 30 * 24 * 3600,
-            }
+            },
+            seed_values=False,
         )
         self.assertIs(state["state"], False)
+
+    def test_cloud_only_stale_record_still_seeds_values(self) -> None:
+        """晾衣机（cloud_only）：云端记录是唯一值来源，陈旧也允许播种。"""
+        inv = self.make_inventory()
+        self.assertTrue(
+            inv._cloud_values_allowed(
+                {
+                    "device_id": "rack",
+                    "online_time": int(time.time()) - 30 * 24 * 3600,
+                },
+                self.di.DeviceCategory.CLOTHES_HORSE,
+            )
+        )
 
 
 if __name__ == "__main__":
