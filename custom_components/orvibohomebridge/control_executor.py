@@ -67,6 +67,22 @@ class ControlExecutor:
             return None
         return await client._wait_for_control_response(device_id)
 
+    @staticmethod
+    def _response_has_state(response: dict | None) -> bool:
+        """控制回显是否携带可用的状态字段（properties 或 value1~4 任一非空）。
+
+        只有携带状态的回显才可替代乐观更新；裸回执/无回显仍需乐观更新兜底，
+        否则控制后状态会停在旧值。
+        """
+        if not isinstance(response, dict):
+            return False
+        if response.get("properties"):
+            return True
+        return any(
+            response.get(key) is not None
+            for key in ("value1", "value2", "value3", "value4")
+        )
+
     def apply_optimistic(
         self, device_id: str, values: Mapping[str, Any]
     ) -> None:
@@ -217,7 +233,7 @@ class ControlExecutor:
         )
         if result:
             response = await self._wait_if_ssl(device_id, scope)
-            if not response:
+            if not self._response_has_state(response):
                 optimistic = {"state": True}
                 if brightness is not None:
                     optimistic["brightness"] = brightness
@@ -240,7 +256,9 @@ class ControlExecutor:
             device_id, device.get("uid", ""), route
         )
         if result:
-            if not await self._wait_if_ssl(device_id, scope):
+            if not self._response_has_state(
+                await self._wait_if_ssl(device_id, scope)
+            ):
                 self.apply_optimistic(device_id, {"state": False})
             self._on_updated()
         return result
@@ -304,13 +322,12 @@ class ControlExecutor:
             )
         if result:
             response = await self._wait_if_ssl(device_id, selected_scope)
-            if response:
-                actual = response.get("value1")
-                if isinstance(actual, (int, float)) and 0 <= actual <= 100:
-                    state = self.states.setdefault(device_id, {})
-                    state["position"] = actual
-                    state["state"] = actual > 0
-            else:
+            actual = response.get("value1") if isinstance(response, dict) else None
+            if isinstance(actual, (int, float)) and 0 <= actual <= 100:
+                state = self.states.setdefault(device_id, {})
+                state["position"] = actual
+                state["state"] = actual > 0
+            elif not self._response_has_state(response):
                 self.apply_optimistic(
                     device_id, {"position": position, "state": position > 0}
                 )

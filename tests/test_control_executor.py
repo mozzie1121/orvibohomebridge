@@ -118,6 +118,30 @@ class ControlExecutorTests(unittest.TestCase):
         self.assertIs(states["device"].get("state"), False)  # 乐观状态未被写入
         self.assertEqual(updates, [])
 
+    def test_turn_on_skips_optimistic_when_echo_has_state(self) -> None:
+        """P0-3: 控制回显携带状态 → 由回显真实状态驱动，不再写乐观值。"""
+        executor, ssl, states, _ = self.make_executor(
+            {"device_type_raw": 1, "uid": "uid"},
+            response={"value1": 1, "value2": 80},
+        )
+
+        result = asyncio.run(executor.turn_on("device"))
+
+        self.assertTrue(result)
+        self.assertNotIn("state", states["device"])  # 乐观状态未被写入
+
+    def test_turn_on_applies_optimistic_when_echo_has_no_state(self) -> None:
+        """P0-3: 裸回执（无状态字段）仍需要乐观更新兜底，避免状态停在旧值。"""
+        executor, ssl, states, _ = self.make_executor(
+            {"device_type_raw": 1, "uid": "uid"},
+            response={"serial": 12345},  # 裸回执
+        )
+
+        result = asyncio.run(executor.turn_on("device"))
+
+        self.assertTrue(result)
+        self.assertTrue(states["device"].get("state"))  # 乐观兜底生效
+
     def test_turn_off_no_optimistic_when_send_fails(self) -> None:
         devices = {"device": {"device_type_raw": 1, "uid": "uid"}}
         states = {"device": {"state": True}}

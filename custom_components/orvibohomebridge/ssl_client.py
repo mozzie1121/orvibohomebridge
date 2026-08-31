@@ -1076,11 +1076,23 @@ class SSLClient:
         if self._pending_requests.resolve(f"control:{dev_id}", data):
             _LOGGER.debug(f"[控制响应匹配] device={dev_id} 收到控制响应，唤醒等待")
 
-        # 控制回显（respByAcc=false 且非主动事件）才过滤；主动推送
-        # （门铃/开锁事件、锁状态等）必须继续处理，否则事件永远到不了实体。
+        # 控制回显（respByAcc=false 且非主动事件）：不再直接丢弃（P0-3）。
+        # - 携带状态字段（properties/value1-4）→ 并入状态管线，用真实回显更新实体，
+        #   避免"控制后状态完全依赖设备再发一条推送"；
+        # - 裸回执（无状态字段）→ 仅作为控制确认（等待者已在上方 resolve），不写状态。
         if data.get("respByAcc") is False and not isinstance(data.get("event"), dict):
-            _LOGGER.debug(f"[SSL过滤] respByAcc=false，跳过处理: deviceId={data.get('deviceId')}")
-            return
+            has_state = bool(data.get("properties")) or any(
+                data.get(key) is not None
+                for key in ("value1", "value2", "value3", "value4")
+            )
+            if not has_state:
+                _LOGGER.debug(
+                    f"[SSL] 控制回显无状态字段，仅回执确认: deviceId={data.get('deviceId')}"
+                )
+                return
+            _LOGGER.debug(
+                f"[SSL] 控制回显携带状态，并入状态管线: deviceId={data.get('deviceId')}"
+            )
         
         uid = data.get("uid", "")
         
