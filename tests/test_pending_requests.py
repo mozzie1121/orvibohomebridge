@@ -48,6 +48,21 @@ class PendingRequestsTests(unittest.IsolatedAsyncioTestCase):
         pending.cancel_all()
         self.assertIsNone(await future)
 
+    async def test_cancel_unblocks_single_waiter_and_frees_key(self) -> None:
+        pending = self.module.PendingRequests()
+        future = pending.register("temp_authorization")
+        pending.cancel("temp_authorization", future)
+        self.assertIsNone(await future)
+        # 发送失败清理后，后续请求可以重新注册（不再 "already pending"）
+        future2 = pending.register("temp_authorization")
+        self.assertIsNotNone(future2)
+
+    async def test_cancel_without_future_uses_registry(self) -> None:
+        pending = self.module.PendingRequests()
+        pending.register("cos_auth")
+        pending.cancel("cos_auth")
+        self.assertIsNone(pending.get("cos_auth"))
+
     async def test_replace_unblocks_previous_control_waiter(self) -> None:
         pending = self.module.PendingRequests()
         first = pending.register("control:device-1")

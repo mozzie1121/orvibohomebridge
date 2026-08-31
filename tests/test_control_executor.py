@@ -49,6 +49,18 @@ class FakeSsl:
         return self.response
 
 
+class FakeSslFailing(FakeSsl):
+    """模拟发送失败（P0-2：send_control_* 返回真实发送结果）。"""
+
+    async def send_control_light(self, *args, **kwargs):
+        self.calls.append(("light", args, kwargs))
+        return False
+
+    async def send_control_cover(self, *args, **kwargs):
+        self.calls.append(("cover", args, kwargs))
+        return False
+
+
 class ControlExecutorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -82,6 +94,51 @@ class ControlExecutorTests(unittest.TestCase):
         self.assertEqual(ssl.calls[0][0], "light")
         self.assertTrue(states["device"]["state"])
         self.assertTrue(updates)
+
+    def test_turn_on_no_optimistic_when_send_fails(self) -> None:
+        """P0-2: 发送失败时不得写乐观状态，turn_on 返回 False。"""
+        devices = {"device": {"device_type_raw": 1, "uid": "uid"}}
+        states = {"device": {"state": False}}
+        updates = []
+        ssl = FakeSslFailing()
+        store = self.module.StateStore(states)
+        executor = self.module.ControlExecutor(
+            devices,
+            states,
+            store,
+            lambda: ssl,
+            lambda: object(),
+            states.get,
+            lambda: updates.append(dict(states["device"])),
+        )
+
+        result = asyncio.run(executor.turn_on("device"))
+
+        self.assertFalse(result)
+        self.assertIs(states["device"].get("state"), False)  # 乐观状态未被写入
+        self.assertEqual(updates, [])
+
+    def test_turn_off_no_optimistic_when_send_fails(self) -> None:
+        devices = {"device": {"device_type_raw": 1, "uid": "uid"}}
+        states = {"device": {"state": True}}
+        updates = []
+        ssl = FakeSslFailing()
+        store = self.module.StateStore(states)
+        executor = self.module.ControlExecutor(
+            devices,
+            states,
+            store,
+            lambda: ssl,
+            lambda: object(),
+            states.get,
+            lambda: updates.append(dict(states["device"])),
+        )
+
+        result = asyncio.run(executor.turn_off("device"))
+
+        self.assertFalse(result)
+        self.assertIs(states["device"].get("state"), True)
+        self.assertEqual(updates, [])
 
     def test_cover_uses_confirmed_position_when_response_arrives(self) -> None:
         executor, _, states, _ = self.make_executor(

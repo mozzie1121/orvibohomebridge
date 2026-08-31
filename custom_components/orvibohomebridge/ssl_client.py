@@ -269,7 +269,12 @@ class SSLClient:
                 await asyncio.sleep(self.retry_interval * (retry + 1))
         return False
 
-    async def _send_packet(self, data: dict, key: bytes):
+    async def _send_packet(self, data: dict, key: bytes) -> bool:
+        """发送一个协议包，返回是否真正写入了传输层。
+
+        之前该函数吞掉异常且不返回结果，导致所有 send_control_* 无条件
+        return True（"假成功"）。现在失败返回 False，调用方不再写乐观状态。
+        """
         control_key = None
         try:
             device_id = str(data.get("deviceId") or "")
@@ -289,17 +294,20 @@ class SSLClient:
                 payload=data
             )
             if not self.writer:
+                _LOGGER.debug("发送失败：SSL 连接未建立，触发重连（本次包丢弃）")
                 await self._reconnect()
-                return
+                return False
 
             await self.transport.write(ciphertext)
             _LOGGER.debug(f"发送数据包 cmd={data.get('cmd')}, deviceId={data.get('deviceId')}")
+            return True
         except Exception as e:
             if control_key is not None:
                 self._pending_requests.resolve(control_key, None)
             _LOGGER.error("发送数据包失败: %s", e)
             if "lost" in str(e) or "close" in str(e):
                 await self._reconnect()
+            return False
 
     async def _send_hello(self):
         payload = HomemateJsonData.ssl_get_session()
@@ -351,8 +359,7 @@ class SSLClient:
             state=state
         )
         _LOGGER.debug(f"下发开关控制 {device_id} state={state} payload={payload}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_cct_light_onoff(self, device_id: str, device_uid: str, state: bool):
         """色温灯开关控制（set property 格式，适用于 statusType=503）"""
@@ -367,8 +374,7 @@ class SSLClient:
             state=state
         )
         _LOGGER.debug(f"下发色温灯开关 {device_id} state={state}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_cct_light_brightness(self, device_id: str, device_uid: str, brightness_percent: int):
         """色温灯亮度控制（set property 格式，适用于 statusType=503）"""
@@ -383,8 +389,7 @@ class SSLClient:
             brightness_percent=brightness_percent
         )
         _LOGGER.debug(f"下发色温灯亮度 {device_id} {brightness_percent}%")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_cct_light_colortemp(self, device_id: str, device_uid: str, colortemp_k: int):
         """色温灯色温控制（set property 格式，适用于 statusType=503）"""
@@ -399,16 +404,14 @@ class SSLClient:
             colortemp_k=colortemp_k
         )
         _LOGGER.debug(f"下发色温灯色温 {device_id} {colortemp_k}K")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def _send_property_control(self, payload: dict) -> bool:
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
             _LOGGER.debug("会话密钥无效，无法下发")
             return False
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_floor_heating_power(self, device_id: str, device_uid: str, state: bool):
         return await self._send_property_control(
@@ -458,8 +461,7 @@ class SSLClient:
             brightness_percent=brightness_percent
         )
         _LOGGER.debug(f"下发可调光灯亮度 {device_id} brightness={brightness_percent}%")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_zigbee_dimmable_light_onoff(self, device_id: str, device_uid: str, state: bool, brightness: int = 255):
         """Zigbee调光灯开关控制（on/off 格式，适用于 deviceType=0, subDeviceType=-2）"""
@@ -475,8 +477,7 @@ class SSLClient:
             brightness=brightness
         )
         _LOGGER.debug(f"下发Zigbee调光灯开关 {device_id} state={state} brightness={brightness}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_zigbee_dimmable_light_brightness(self, device_id: str, device_uid: str, brightness_255: int):
         """Zigbee调光灯亮度控制（set property 格式，适用于 deviceType=0, subDeviceType=-2）"""
@@ -491,8 +492,7 @@ class SSLClient:
             brightness_255=brightness_255
         )
         _LOGGER.debug(f"下发Zigbee调光灯亮度 {device_id} brightness={brightness_255}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_fast_move_dim_color_light_onoff(self, device_id: str, device_uid: str, state: bool, brightness: int = 0, colortemp_mired: int = 0):
         """Fast Move调光调色灯开关控制（on/off 格式，适用于 statusType=2, subDeviceType=6）"""
@@ -509,8 +509,7 @@ class SSLClient:
             colortemp_mired=colortemp_mired
         )
         _LOGGER.debug(f"下发Fast Move调光调色灯开关 {device_id} state={state}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_fast_move_dim_color_light_brightness(self, device_id: str, device_uid: str, brightness: int, colortemp_mired: int = 0):
         """Fast Move调光调色灯亮度控制（fast move to level 格式，适用于 statusType=2, subDeviceType=6）"""
@@ -526,8 +525,7 @@ class SSLClient:
             colortemp_mired=colortemp_mired
         )
         _LOGGER.debug(f"下发Fast Move调光调色灯亮度 {device_id} brightness={brightness}, colortemp={colortemp_mired}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_fast_move_dim_color_light_colortemp(self, device_id: str, device_uid: str, brightness: int, colortemp_mired: int):
         """Fast Move调光调色灯色温控制（fast color temperature 格式，适用于 statusType=2, subDeviceType=6）"""
@@ -543,8 +541,7 @@ class SSLClient:
             colortemp_mired=colortemp_mired
         )
         _LOGGER.debug(f"下发Fast Move调光调色灯色温 {device_id} brightness={brightness}, colortemp={colortemp_mired}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_light(self, device_id: str, device_uid: str, state: bool, brightness: int = 0, colortemp_mired: int = 0):
         await self.connect_and_login()
@@ -560,8 +557,7 @@ class SSLClient:
             colortemp_mired=colortemp_mired
         )
         _LOGGER.debug(f"下发灯光控制 {device_id} state={state} bri={brightness} ct_mired={colortemp_mired}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_light_brightness(self, device_id: str, device_uid: str, brightness: int):
         await self.connect_and_login()
@@ -575,8 +571,7 @@ class SSLClient:
             brightness=brightness
         )
         _LOGGER.debug(f"下发亮度 {device_id} value={brightness}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_light_colortemp(self, device_id: str, device_uid: str, colortemp_k: int, brightness: int = 0):
         await self.connect_and_login()
@@ -591,8 +586,7 @@ class SSLClient:
             brightness=brightness
         )
         _LOGGER.debug(f"下发色温 {device_id} {colortemp_k}K bri={brightness}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_light_bri_ct(self, device_id: str, device_uid: str, brightness: Optional[int], color_temp_k: Optional[int], power: Optional[bool] = None):
         """一次性下发亮度+色温 复合cmd=15指令"""
@@ -613,8 +607,7 @@ class SSLClient:
             power=power
         )
         _LOGGER.debug(f"复合调光下发 device={device_id} power={power} bri={brightness} ct={color_temp_k}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_cover(self, device_id: str, device_uid: str, position: int, stop_value2: int = 0):
         await self.connect_and_login()
@@ -628,8 +621,7 @@ class SSLClient:
             position=position,
             stop_value2=stop_value2,
         )
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def _send_legacy_floor_heating(
         self,
@@ -652,8 +644,7 @@ class SSLClient:
             value1=value1,
             value2=value2,
         )
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_control_legacy_floor_heating_power(
         self,
@@ -698,8 +689,7 @@ class SSLClient:
             value1=value1
         )
         _LOGGER.debug(f"下发新风系统控制 {device_id} value1={value1}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_clothes_horse_control(self, device_id: str, device_uid: str, ctrl_field: str, ctrl_value: str):
         """发送晾衣架控制命令(cmd=98)。
@@ -720,8 +710,7 @@ class SSLClient:
             ctrl_value=ctrl_value,
         )
         _LOGGER.debug(f"下发晾衣架控制 {device_id} {ctrl_field}={ctrl_value}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_clothes_horse_query(self, device_id: str):
         """发送晾衣架状态查询命令(cmd=100)。"""
@@ -731,8 +720,7 @@ class SSLClient:
             return False
         payload = HomemateJsonData.ssl_clothes_horse_query(device_id=device_id)
         _LOGGER.debug(f"查询晾衣架状态 {device_id}")
-        await self._send_packet(payload, self.session_key)
-        return True
+        return await self._send_packet(payload, self.session_key)
 
     async def send_cos_auth(
         self,
@@ -763,7 +751,10 @@ class SSLClient:
             return None
         try:
             _LOGGER.debug("发送 COS 授权请求 device=%s", device_id)
-            await self._send_packet(payload, self.session_key)
+            if not await self._send_packet(payload, self.session_key):
+                _LOGGER.error("COS 授权请求发送失败 device=%s", device_id)
+                self._pending_requests.cancel("cos_auth", future)
+                return None
             result = await self._pending_requests.wait("cos_auth", future, timeout)
             if result is None:
                 _LOGGER.debug("等待 COS 授权响应超时")
@@ -820,7 +811,10 @@ class SSLClient:
         except RuntimeError:
             _LOGGER.debug("已有临时密码请求正在等待响应")
             return None
-        await self._send_packet(payload, self.session_key)
+        if not await self._send_packet(payload, self.session_key):
+            _LOGGER.error("临时密码下发发送失败 device=%s", device_id)
+            self._pending_requests.cancel("temp_authorization", future)
+            return None
         return await self._wait_temp_response(future, timeout)
 
     async def delete_authorization(
@@ -846,7 +840,10 @@ class SSLClient:
         except RuntimeError:
             _LOGGER.debug("已有临时密码请求正在等待响应")
             return None
-        await self._send_packet(payload, self.session_key)
+        if not await self._send_packet(payload, self.session_key):
+            _LOGGER.error("删除授权发送失败 device=%s", device_id)
+            self._pending_requests.cancel("temp_authorization", future)
+            return None
         return await self._wait_temp_response(future, timeout)
 
     async def _wait_for_control_response(self, device_id: str, timeout: float | None = None) -> dict | None:
@@ -885,7 +882,10 @@ class SSLClient:
                     break
                 if self.session_key and self.session_key != DEFAULT_KEY.encode("utf-8"):
                     payload = HomemateJsonData.ssl_heartbeat()
-                    await self._send_packet(payload, self.session_key)
+                    sent = await self._send_packet(payload, self.session_key)
+                    if not sent:
+                        # _send_packet 不再抛异常，失败以 False 返回，必须计入失败次数
+                        raise ConnectionError("heartbeat send returned failure")
                     self._heartbeat_failures = 0  # 成功发送重置计数
                     _LOGGER.debug("发送心跳包")
             except asyncio.CancelledError:

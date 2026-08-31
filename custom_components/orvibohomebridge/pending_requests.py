@@ -56,3 +56,12 @@ class PendingRequests:
             if not future.done():
                 future.set_result(None)
         self._futures.clear()
+
+    def cancel(self, key: str, future: asyncio.Future | None = None) -> None:
+        """取消单个未完成请求并移除注册（发送失败时避免等待器悬挂/阻塞后续请求）。"""
+        if future is None:
+            future = self._futures.get(key)
+        if future is not None and not future.done():
+            future.set_result(None)
+        if self._futures.get(key) is future:
+            self._futures.pop(key, None)
