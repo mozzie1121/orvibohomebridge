@@ -59,6 +59,28 @@ class FakeTransport:
         self.connected = False
 
 
+class _BackgroundTask:
+    def cancel(self):
+        return None
+
+    def done(self):
+        return True
+
+
+class _FakeHass:
+    def __init__(self):
+        self.tasks = []
+
+    def async_create_background_task(self, coro, *, name):
+        del name
+        coro.close()
+        return _BackgroundTask()
+
+    def async_create_task(self, coro):
+        coro.close()
+        return _BackgroundTask()
+
+
 class HeartbeatDetectionTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -125,6 +147,44 @@ class HeartbeatDetectionTests(unittest.IsolatedAsyncioTestCase):
         finally:
             loop_task.cancel()
             resolver_task.cancel()
+
+
+    async def test_reconnect_after_first_login_triggers_resync(self) -> None:
+        """Round 5: 首次登录不触发重同步；之后每次登录成功触发 on_reconnected。"""
+        from unittest.mock import AsyncMock
+
+        transport = FakeTransport()
+        transport.connected = False
+        calls = []
+        client = self.mod.SSLClient(
+            _FakeHass(),
+            "cloud.example",
+            10002,
+            "user",
+            "A" * 32,
+            "family-1",
+            lambda _sid: None,
+            lambda _did, _raw: None,
+            on_reconnected=lambda: calls.append("resync"),
+        )
+        client.transport = transport
+        client.session_key = b"k" * 16
+
+        async def fake_connect():
+            client.transport.connected = True
+            return True
+
+        client._connect = fake_connect
+        client._send_hello = AsyncMock()
+        client._send_login = AsyncMock(return_value=True)
+
+        await client.connect_and_login(hello_wait=0.01)
+        self.assertEqual(calls, [])  # 首次登录：不触发
+
+        # 模拟断线后再重连
+        client.transport.connected = False
+        await client.connect_and_login(hello_wait=0.01)
+        self.assertEqual(calls, ["resync"])  # 重连：触发全量重同步
 
 
 if __name__ == "__main__":

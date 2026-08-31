@@ -36,6 +36,7 @@ class SSLClient:
         family_id: str,
         on_session_id_obtained: Callable[[str], None],
         on_status_update: Callable[[str, dict], None],
+        on_reconnected: Optional[Callable[[], None]] = None,
         heartbeat_interval: int = 120,
         retry_interval: int = 5
     ):
@@ -48,6 +49,7 @@ class SSLClient:
 
         self.on_session_id_obtained = on_session_id_obtained
         self.on_status_update = on_status_update
+        self.on_reconnected = on_reconnected
         self.heartbeat_interval = heartbeat_interval
         self.retry_interval = retry_interval
 
@@ -69,6 +71,8 @@ class SSLClient:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_failures: int = 0
         self.HEARTBEAT_MAX_FAILURES = 2
+        # 是否已完成过首次登录：此后每次登录成功都视为"重连"，触发 on_reconnected
+        self._has_logged_in_once: bool = False
 
         self._pending_requests = PendingRequests()
         # 控制响应超时（秒）
@@ -266,6 +270,12 @@ class SSLClient:
                             self._heartbeat_loop(),
                             name="orvibohomebridge_heartbeat"
                         )
+                        # 重连成功（非首次）后通知协调器做全量状态重同步：
+                        # 实测服务端重登后不主动推送设备列表，断线期间的增量推送
+                        # 会永久丢失，必须客户端主动重拉。
+                        if self._has_logged_in_once and self.on_reconnected is not None:
+                            self.on_reconnected()
+                        self._has_logged_in_once = True
                         return True
                     else:
                         _LOGGER.error("SSL登录失败，断开连接等待重试")

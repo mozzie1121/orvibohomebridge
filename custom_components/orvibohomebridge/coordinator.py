@@ -603,6 +603,24 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         except Exception as error:  # noqa: BLE001
             _LOGGER.error("SSL 后台重连失败: %s", error)
 
+    def _on_ssl_reconnected(self) -> None:
+        """SSL 重连成功：主动触发一次云端全量状态同步，补回断线期间的丢失推送。"""
+        _LOGGER.info("SSL 云推送已重连，触发全量状态重同步")
+        self.hass.async_create_task(self._resync_device_states())
+
+    async def _resync_device_states(self) -> None:
+        """拉取一次 readtable 全量状态并合并（CLOUD 源，字段级 guard 防回滚）。"""
+        try:
+            device_status_data = await self.https_client.fetch_device_status()
+            if device_status_data:
+                devices = self.https_client.parse_device_status_list(
+                    device_status_data
+                )
+                self.inventory.merge_cloud(devices)
+                self.async_set_updated_data(self.device_states)
+        except Exception as error:  # noqa: BLE001
+            _LOGGER.debug("SSL 重连后的状态重同步失败: %s", error)
+
     async def _init_ssl_client(self):
         if self.ssl_client is not None:
             return
@@ -626,6 +644,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             family_id=self.https_client.family_id,
             on_status_update=self.status_dispatcher.dispatch,
             on_session_id_obtained=on_session_id_obtained,
+            on_reconnected=self._on_ssl_reconnected,
         )
         self.lock_media.configure(
             self.ssl_client,
