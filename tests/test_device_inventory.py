@@ -6,6 +6,7 @@ import asyncio
 import importlib
 from pathlib import Path
 import sys
+import time
 import types
 import unittest
 
@@ -131,6 +132,7 @@ class DeviceInventoryTests(unittest.TestCase):
                     "device_type_raw": 522,
                     "sub_device_type": 463,
                     "online": True,
+                    "online_time": int(time.time()),  # 新鲜记录（门锁走 SSL 推送）
                     "properties": {
                         "doorLock": {"doorState": "on", "lockState": "on"}
                     },

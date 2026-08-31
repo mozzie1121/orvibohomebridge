@@ -102,9 +102,13 @@ class DeviceInventory:
                 continue
 
             self.devices[device_id] = device
+            fresh = self._cloud_record_fresh(device)
             state = self._initial_state(device)
             parser = get_state_parser(category)
-            if parser is not None:
+            # 值解析仅在云端记录新鲜时执行：陈旧记录的值不可信，
+            # 否则刚被门控为 False 的 state 会被陈旧 value1 重新解析成 True
+            # （nan_nan 场景：云端记录 8/24 说"开"，实际设备已关）。
+            if parser is not None and fresh:
                 parser(
                     state,
                     {
@@ -206,6 +210,10 @@ class DeviceInventory:
                 # 门锁为 cloud_only：周期云端快照需覆盖门磁/锁状态字段，
                 # 仅靠 SSL 推送维护会在推送丢失/重启后残留旧值。
                 # StateStore guard 保证 30s 内新的 SSL 值不被覆盖。
+                # 仅当云端记录新鲜时才用快照值（陈旧记录的值不可信，
+                # 避免把"实际已解锁"的门锁重新显示成"上锁"）。
+                if not fresh:
+                    continue
                 lock_state: dict[str, Any] = {}
                 parser = get_state_parser(category)
                 if parser is not None:
