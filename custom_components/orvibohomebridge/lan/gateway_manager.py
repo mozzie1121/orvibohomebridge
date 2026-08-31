@@ -28,6 +28,7 @@ class _GatewayRecord:
     cloud_host: str
     active_host: str
     connection: GatewayConnection | None = None
+    miss_count: int = 0  # 连续未出现在云快照中的轮数（容忍瞬时缺失）
 
 
 class GatewayManager:
@@ -80,6 +81,7 @@ class GatewayManager:
             if record is None:
                 self._records[uid] = _GatewayRecord(host, host)
                 continue
+            record.miss_count = 0  # 出现在快照中：重置缺失计数
             old_cloud = record.cloud_host
             record.cloud_host = host
             if record.active_host == old_cloud:
@@ -103,6 +105,11 @@ class GatewayManager:
             record = self._record(uid)
             return await self._reconnect_locked(uid, record, record.connection)
 
+    # 网关在云端快照中连续缺失的容忍轮数：单次 readtable 未返回某网关
+    # 可能是瞬时现象（分页/缓存），立即删记录会断开 LAN 推送且发现循环
+    # 只基于现存记录、永不重建，导致 LAN 通道永久中断（最长 30 分钟）。
+    GATEWAY_MISS_TOLERANCE = 3
+
     async def async_update_cloud_gateways(
         self,
         gateways: Mapping[str, str],
@@ -113,6 +120,12 @@ class GatewayManager:
         trusted_uids = {uid for uid, host in gateways.items() if uid and self._private_host(host)}
         self.update_cloud_gateways(gateways)
         for uid in set(self._records) - trusted_uids:
+            record = self._records.get(uid)
+            if record is None:
+                continue
+            record.miss_count += 1
+            if record.miss_count < self.GATEWAY_MISS_TOLERANCE:
+                continue
             async with self._lock(uid):
                 record = self._records.pop(uid, None)
                 connection = record.connection if record is not None else None

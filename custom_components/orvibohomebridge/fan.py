@@ -67,12 +67,8 @@ class OrviboVentilationFan(CoordinatorEntity, FanEntity):
 
     @property
     def available(self) -> bool:
-        if not self.coordinator.device_states:
-            return False
-        device_state = self.coordinator.device_states.get(self._device_id, {})
-        if not device_state:
-            return False
-        return device_state.get('online', True)
+        state = self.coordinator.get_device_state(self._device_id)
+        return state.get("online", False) if state else False
 
     @property
     def is_on(self) -> bool:

@@ -25,6 +25,22 @@ from .selection import selected_device_ids
 _LOGGER = logging.getLogger(__name__)
 
 
+class OrviboBinarySensorBase(CoordinatorEntity, BinarySensorEntity):
+    """统一可用性语义：与 light/cover/switch 一致，读 per-device online。
+
+    此前 binary_sensor 未覆盖 available，走 CoordinatorEntity 默认的
+    last_update_success —— 一次瞬时云轮询失败会让全部二元传感器不可用
+    （最长 30 分钟），与 sensor/light 等的 per-device 语义不一致。
+    """
+
+    _attr_has_entity_name = True
+
+    @property
+    def available(self) -> bool:
+        state = self.coordinator.get_device_state(self._device_id)
+        return state.get("online", False) if state else False
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -58,7 +74,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class OrviboMotionSensor(CoordinatorEntity, BinarySensorEntity):
+class OrviboMotionSensor(OrviboBinarySensorBase):
     """人体传感器（deviceType=26）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
@@ -86,7 +102,7 @@ class OrviboMotionSensor(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class OrviboDoorWindowSensor(CoordinatorEntity, BinarySensorEntity):
+class OrviboDoorWindowSensor(OrviboBinarySensorBase):
     """门窗传感器（deviceType=46）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
@@ -114,7 +130,7 @@ class OrviboDoorWindowSensor(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class OrviboDoorLockDoorSensor(CoordinatorEntity, BinarySensorEntity):
+class OrviboDoorLockDoorSensor(OrviboBinarySensorBase):
     """智能门锁 - 门磁状态（deviceType=522）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
@@ -142,7 +158,7 @@ class OrviboDoorLockDoorSensor(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class OrviboSmokeSensor(CoordinatorEntity, BinarySensorEntity):
+class OrviboSmokeSensor(OrviboBinarySensorBase):
     """烟雾传感器（deviceType=27）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
@@ -170,7 +186,7 @@ class OrviboSmokeSensor(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class OrviboEmergencyButton(CoordinatorEntity, BinarySensorEntity):
+class OrviboEmergencyButton(OrviboBinarySensorBase):
     """紧急按钮（deviceType=56）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
@@ -198,7 +214,7 @@ class OrviboEmergencyButton(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class OrviboWaterLeakSensor(CoordinatorEntity, BinarySensorEntity):
+class OrviboWaterLeakSensor(OrviboBinarySensorBase):
     """水浸探测器（deviceType=54）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
@@ -226,7 +242,7 @@ class OrviboWaterLeakSensor(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class OrviboGasSensor(CoordinatorEntity, BinarySensorEntity):
+class OrviboGasSensor(OrviboBinarySensorBase):
     """可燃气体探测器（deviceType=25）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
@@ -254,7 +270,7 @@ class OrviboGasSensor(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class OrviboDoorLockDoorbellSensor(CoordinatorEntity, BinarySensorEntity):
+class OrviboDoorLockDoorbellSensor(OrviboBinarySensorBase):
     """智能门锁 - 门铃事件（deviceType=522）。"""
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
