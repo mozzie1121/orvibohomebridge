@@ -73,6 +73,13 @@ class SSLClient:
         self._pending_requests = PendingRequests()
         # 控制响应超时（秒）
         self._control_response_timeout: float = 3.0
+        # 心跳回包等待超时（秒）：服务器对 cmd=32 心跳有回包（实测确认），
+        # 改请求-响应式心跳后，无回包即视为连接假死。
+        self.heartbeat_response_timeout: float = 15.0
+        # 监听循环读超时（秒）：半开连接上 readexactly 不再无限阻塞。
+        self.read_timeout: float = 300.0
+        # 当前在途心跳回包（一次只有一个）
+        self._heartbeat_pending: Optional[asyncio.Future] = None
         # 登录等待机制
         self._login_event: Optional[asyncio.Event] = None
         self._login_result: bool = False
@@ -873,7 +880,11 @@ class SSLClient:
         return result
 
     async def _heartbeat_loop(self):
-        """心跳保活循环，每隔 heartbeat_interval 秒发送一次心跳包。"""
+        """心跳保活循环：请求-响应式（发送 cmd=32 并等待服务端回包）。
+
+        半开/黑洞连接上写缓冲会"成功"但永远收不到回包，因此必须等回包确认；
+        连续 HEARTBEAT_MAX_FAILURES 次无回包即关闭传输触发重连。
+        """
         _LOGGER.debug("心跳保活循环启动，间隔%d秒", self.heartbeat_interval)
         while self.connected:
             try:
@@ -886,8 +897,18 @@ class SSLClient:
                     if not sent:
                         # _send_packet 不再抛异常，失败以 False 返回，必须计入失败次数
                         raise ConnectionError("heartbeat send returned failure")
-                    self._heartbeat_failures = 0  # 成功发送重置计数
-                    _LOGGER.debug("发送心跳包")
+                    future: asyncio.Future = asyncio.get_running_loop().create_future()
+                    self._heartbeat_pending = future
+                    try:
+                        await asyncio.wait_for(
+                            future, timeout=self.heartbeat_response_timeout
+                        )
+                        self._heartbeat_failures = 0  # 收到回包重置计数
+                        _LOGGER.debug("心跳回包确认")
+                    except asyncio.TimeoutError:
+                        raise ConnectionError("heartbeat response timeout")
+                    finally:
+                        self._heartbeat_pending = None
             except asyncio.CancelledError:
                 _LOGGER.debug("心跳任务被取消，退出循环")
                 return
@@ -895,10 +916,17 @@ class SSLClient:
                 _LOGGER.error(f"心跳发送异常: {str(e)}")
                 self._heartbeat_failures += 1
                 if self._heartbeat_failures >= self.HEARTBEAT_MAX_FAILURES:
-                    _LOGGER.error(f"连续{self._heartbeat_failures}次心跳失败，触发重连")
+                    _LOGGER.error(
+                        f"连续{self._heartbeat_failures}次心跳失败，关闭连接触发重连"
+                    )
                     self._heartbeat_failures = 0
                     self.connected = False
-                    return  # 退出心跳，_listen_loop 会处理重连
+                    # 关闭传输以解除监听循环的阻塞读，_listen_loop 随即进入重连循环
+                    try:
+                        await self.transport.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return
                 await asyncio.sleep(1)
         _LOGGER.debug("心跳保活循环结束")
 
@@ -906,12 +934,18 @@ class SSLClient:
         _LOGGER.debug("SSL后台监听循环启动")
         while True:
             try:
-                header_data = await self.transport.readexactly(42)
+                # 读超时：半开/黑洞连接不再无限阻塞，超时即断开走重连
+                header_data = await asyncio.wait_for(
+                    self.transport.readexactly(42), timeout=self.read_timeout
+                )
                 if not header_data:
                     await asyncio.sleep(1)
                     continue
                 length = HomematePacket.parse_length(header_data)
-                ciphertext = await self.transport.readexactly(length - 42)
+                ciphertext = await asyncio.wait_for(
+                    self.transport.readexactly(length - 42),
+                    timeout=self.read_timeout,
+                )
                 if self.session_key is None:
                     self.session_key = DEFAULT_KEY.encode("utf-8")
                 try:
@@ -953,6 +987,10 @@ class SSLClient:
                     if not self._pending_requests.resolve("temp_authorization", data):
                         _LOGGER.debug("收到未期待的 cmd=%s 响应", cmd)
                 elif cmd in (CMD_HEARTBEAT, CMD_HANDSHAKE):
+                    if cmd == CMD_HEARTBEAT:
+                        pending = self._heartbeat_pending
+                        if pending is not None and not pending.done():
+                            pending.set_result(True)
                     continue
                 else:
                     _LOGGER.debug(f"未知cmd包: {data}")
@@ -976,8 +1014,9 @@ class SSLClient:
                 await asyncio.sleep(1)
         _LOGGER.debug("SSL监听循环结束，开始重连循环...")
         reconnect_count = 0
-        max_reconnect = 5
-        while not self._closed and reconnect_count < max_reconnect:
+        # 无限重连（指数退避封顶 60s）：不再"5 次失败后永久退出"，
+        # 云推送通道不能因一次长时间断网就永久死亡直到重载集成。
+        while not self._closed:
             if self.reader is None:
                 _LOGGER.debug("reader 已丢失，放弃重连")
                 return
@@ -987,14 +1026,17 @@ class SSLClient:
                 return  # _reconnect 成功后 connect_and_login 已启动了新的 _listen_loop
             except ConnectionError:
                 reconnect_count += 1
-                backoff = min(self.retry_interval * (2 ** (reconnect_count - 1)), 60)
-                _LOGGER.debug(f"SSL重连失败（{reconnect_count}/{max_reconnect}），{backoff}秒后重试...")
+                backoff = min(
+                    self.retry_interval * (2 ** min(reconnect_count - 1, 4)), 60
+                )
+                _LOGGER.warning(
+                    "SSL重连失败（第%d次），%d秒后重试...", reconnect_count, backoff
+                )
                 await asyncio.sleep(backoff)
             except asyncio.CancelledError:
                 _LOGGER.debug("重连任务被取消")
                 return
-        if reconnect_count >= max_reconnect:
-            _LOGGER.warning(f"SSL重连已达上限 {max_reconnect} 次，停止重连")
+        _LOGGER.debug("SSL重连循环结束（_closed）")
 
     async def _handle_hello(self, data: dict):
         key = data.get("key")

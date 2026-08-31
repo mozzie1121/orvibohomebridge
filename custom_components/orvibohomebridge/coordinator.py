@@ -578,9 +578,30 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 await self.gateway_manager.async_update_cloud_gateways(
                     self.https_client.gateway_ips
                 )
+            # SSL 通道看门狗：云推送连接意外死亡（心跳失败/重连中断）时，
+            # 由周期轮询兜底拉起，避免推送通道永久离线直到用户重载。
+            if (
+                self.ssl_client is not None
+                and not self.ssl_client.connected
+            ):
+                self.hass.async_create_task(self._ensure_ssl_connected())
             return self.device_states
         except Exception as e:
             raise UpdateFailed(f"更新失败: {str(e)}") from e
+
+    async def _ensure_ssl_connected(self) -> None:
+        """后台确保 SSL 云推送连接在线（看门狗）。"""
+        if self.ssl_client is None or self.ssl_client.connected:
+            return
+        _LOGGER.warning("检测到 SSL 云推送连接未就绪，后台尝试重连")
+        try:
+            await asyncio.wait_for(
+                self.ssl_client.connect_and_login(), timeout=30
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.error("SSL 后台重连超时")
+        except Exception as error:  # noqa: BLE001
+            _LOGGER.error("SSL 后台重连失败: %s", error)
 
     async def _init_ssl_client(self):
         if self.ssl_client is not None:
