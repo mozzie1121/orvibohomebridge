@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .base import StatePatch
+from .base import StatePatch, to_int
 
 
 def _subdevice_type(raw_status: Mapping[str, Any]) -> Any:
@@ -67,8 +67,8 @@ def parse_dim_color_light(
 
     color_temp = raw_status.get("value3")
     if color_temp is not None:
-        color_temp = int(color_temp)
-        if 150 <= color_temp <= 400:
+        color_temp = to_int(color_temp)
+        if color_temp is not None and 150 <= color_temp <= 400:
             color_temp = 1_000_000 // color_temp
     else:
         color_temp = props.get("colortemp")
@@ -118,18 +118,22 @@ def parse_fast_move_dim_color_light(
     color_temp = raw_status.get("value3")
 
     if value1 is not None:
-        updates["state"] = int(value1) == 0
+        v1 = to_int(value1)
+        if v1 is not None:
+            updates["state"] = v1 == 0
 
     if brightness is not None:
-        brightness = min(255, max(0, int(brightness)))
-        updates["brightness"] = brightness
-        if brightness == 0:
-            updates["state"] = False
+        bri = to_int(brightness)
+        if bri is not None:
+            brightness = min(255, max(0, bri))
+            updates["brightness"] = brightness
+            if brightness == 0:
+                updates["state"] = False
 
     if color_temp is not None:
-        color_temp = int(color_temp)
-        if 150 <= color_temp <= 400:
-            updates["color_temp"] = min(6000, max(2700, 1_000_000 // color_temp))
+        ct = to_int(color_temp)
+        if ct is not None and 150 <= ct <= 400:
+            updates["color_temp"] = min(6000, max(2700, 1_000_000 // ct))
 
     return StatePatch(updates)
 
@@ -154,10 +158,12 @@ def parse_dimmable_light(
 
     brightness = _property_brightness(props)
     if brightness is not None:
-        brightness = min(100, max(0, int(brightness)))
-        updates["brightness"] = brightness
-        if brightness == 0:
-            updates["state"] = False
+        bri = to_int(brightness)
+        if bri is not None:
+            brightness = min(100, max(0, bri))
+            updates["brightness"] = brightness
+            if brightness == 0:
+                updates["state"] = False
     return StatePatch(updates)
 
 
@@ -171,13 +177,17 @@ def parse_zigbee_dimmable_light(
     brightness = raw_status.get("value2")
 
     if value1 is not None:
-        sub_device_type = _subdevice_type(raw_status)
-        updates["state"] = int(value1) == (0 if sub_device_type == -2 else 1)
+        v1 = to_int(value1)
+        if v1 is not None:
+            sub_device_type = _subdevice_type(raw_status)
+            updates["state"] = v1 == (0 if sub_device_type == -2 else 1)
     if brightness is not None:
-        brightness = min(255, max(0, int(brightness)))
-        updates["brightness"] = brightness
-        if brightness == 0:
-            updates["state"] = False
+        bri = to_int(brightness)
+        if bri is not None:
+            brightness = min(255, max(0, bri))
+            updates["brightness"] = brightness
+            if brightness == 0:
+                updates["state"] = False
     return StatePatch(updates)
 
 
@@ -191,7 +201,9 @@ def parse_cct_light(
     color_temp = props.get("colorTemp", {})
     color_temp = color_temp.get("value") if isinstance(color_temp, dict) else color_temp
     if color_temp is not None:
-        updates["color_temp"] = min(6500, max(2000, int(color_temp)))
+        ct = to_int(color_temp)
+        if ct is not None:
+            updates["color_temp"] = min(6500, max(2000, ct))
     return StatePatch(updates)
 
 
@@ -205,8 +217,12 @@ def parse_switch(
     if isinstance(onoff_obj, dict) and onoff_obj.get("status"):
         state = onoff_obj.get("status") == "on"
     elif raw_status.get("value1") is not None:
-        sub_device_type = _subdevice_type(raw_status)
-        state = int(raw_status["value1"]) == (0 if sub_device_type == -2 else 1)
+        v1 = to_int(raw_status["value1"])
+        if v1 is not None:
+            sub_device_type = _subdevice_type(raw_status)
+            state = v1 == (0 if sub_device_type == -2 else 1)
+        else:
+            state = False
     else:
         state = False
     return StatePatch({"state": state})

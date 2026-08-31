@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .base import StatePatch
+from .base import StatePatch, to_int
 
 
 def parse_curtain(
@@ -42,10 +42,14 @@ def parse_dream_curtain(
 
     updates: dict[str, Any] = {}
     if "percent" in curtain:
-        position = max(0, min(100, int(curtain["percent"])))
-        updates.update({"position": position, "state": position > 0})
+        position = to_int(curtain["percent"])
+        if position is not None:
+            position = max(0, min(100, position))
+            updates.update({"position": position, "state": position > 0})
     if "angle" in curtain:
-        updates["angle"] = max(0, min(180, int(curtain["angle"])))
+        angle = to_int(curtain["angle"])
+        if angle is not None:
+            updates["angle"] = max(0, min(180, angle))
     if "action" in curtain:
         updates["cover_action"] = str(curtain["action"])
     return StatePatch(updates)

@@ -226,12 +226,29 @@ class StatusUpdateDispatcher:
 
     @staticmethod
     def _apply_generic(state: dict[str, Any], raw_status: dict[str, Any]) -> None:
+        """Generic fallback：只写推送中明确携带的字段。
+
+        缺失字段不映射成"真实状态"（此前 onoff/state 缺失会写成 False、brightness
+        双缺失会写成 None 清掉旧值——把"未知"当成了"关"）。
+        """
         props = raw_status.get("properties", {})
         onoff = props.get("onoff", {})
         if isinstance(onoff, dict) and onoff.get("status"):
             state["state"] = onoff.get("status") == "on"
-        else:
-            state["state"] = raw_status.get("state", False)
-        state["brightness"] = raw_status.get("value2", props.get("brightness"))
-        state["color_temp"] = raw_status.get("value3", props.get("colortemp"))
-        state["position"] = raw_status.get("value1", props.get("percent"))
+        elif raw_status.get("state") is not None:
+            state["state"] = raw_status.get("state")
+        brightness = raw_status.get("value2")
+        if brightness is None and isinstance(props, dict):
+            brightness = props.get("brightness")
+        if brightness is not None:
+            state["brightness"] = brightness
+        color_temp = raw_status.get("value3")
+        if color_temp is None and isinstance(props, dict):
+            color_temp = props.get("colortemp")
+        if color_temp is not None:
+            state["color_temp"] = color_temp
+        position = raw_status.get("value1")
+        if position is None and isinstance(props, dict):
+            position = props.get("percent")
+        if position is not None:
+            state["position"] = position

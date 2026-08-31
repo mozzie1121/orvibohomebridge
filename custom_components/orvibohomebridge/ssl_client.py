@@ -1090,9 +1090,15 @@ class SSLClient:
             status_info["color_temp"] = props.get("colortemp", props.get("value3"))
             # 窗帘
             status_info["position"] = props.get("percent")
-            # 在线状态
+            # 在线状态：仅显式 online/1/true → 在线，显式 0/false/offline → 离线；
+            # 空/未知字段不写 online（避免把"未知"判为离线，与协议解析层语义一致）
             online = dev_data.get("online", "")
-            status_info["online"] = online.strip().lower() in ("online", "1", "true")
+            if isinstance(online, str):
+                online = online.strip().lower()
+            if online in ("1", "true", "online", "connected"):
+                status_info["online"] = True
+            elif online in ("0", "false", "offline", "disconnected"):
+                status_info["online"] = False
             self.on_status_update(dev_id, status_info)
 
     async def _handle_device_status_report(self, data: dict):

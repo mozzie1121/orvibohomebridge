@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .base import StatePatch
+from .base import StatePatch, to_int
 
 
 def parse_fan_coil_ac(
@@ -19,40 +19,44 @@ def parse_fan_coil_ac(
     value4 = raw_status.get("value4")
 
     if value1 is not None:
-        value1 = int(value1)
-        updates.update({"state": value1 == 0, "value1": value1})
+        value1 = to_int(value1)
+        if value1 is not None:
+            updates.update({"state": value1 == 0, "value1": value1})
     if value2 is not None:
-        value2 = int(value2)
-        mode = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
-        updates.update(
-            {
-                "ac_mode": mode.get(value2, f"unknown({value2})"),
-                "ac_mode_raw": value2,
-                "value2": value2,
-            }
-        )
+        value2 = to_int(value2)
+        if value2 is not None:
+            mode = {2: "dehumidify", 3: "cool", 4: "heat", 7: "fan_only"}
+            updates.update(
+                {
+                    "ac_mode": mode.get(value2, f"unknown({value2})"),
+                    "ac_mode_raw": value2,
+                    "value2": value2,
+                }
+            )
     if value3 is not None:
-        value3 = int(value3)
-        speed = {1: "low", 2: "medium", 3: "high"}
-        updates.update(
-            {
-                "fan_speed": speed.get(value3, f"unknown({value3})"),
-                "fan_speed_raw": value3,
-                "value3": value3,
-            }
-        )
+        value3 = to_int(value3)
+        if value3 is not None:
+            speed = {1: "low", 2: "medium", 3: "high"}
+            updates.update(
+                {
+                    "fan_speed": speed.get(value3, f"unknown({value3})"),
+                    "fan_speed_raw": value3,
+                    "value3": value3,
+                }
+            )
     if value4 is not None:
-        value4 = int(value4)
-        target_temp = (value4 >> 16) / 100.0
-        current_temp = (value4 & 0xFFFF) / 100.0
-        updates.update(
-            {
-                "value4": value4,
-                "temperature": target_temp,
-                "target_temperature": target_temp,
-                "current_temperature": current_temp,
-            }
-        )
+        value4 = to_int(value4)
+        if value4 is not None:
+            target_temp = (value4 >> 16) / 100.0
+            current_temp = (value4 & 0xFFFF) / 100.0
+            updates.update(
+                {
+                    "value4": value4,
+                    "temperature": target_temp,
+                    "target_temperature": target_temp,
+                    "current_temperature": current_temp,
+                }
+            )
     return StatePatch(updates)
 
 
@@ -65,11 +69,12 @@ def parse_ventilation(
     updates: dict[str, Any] = {}
     value1 = raw_status.get("value1")
     if value1 is not None:
-        value1 = int(value1)
-        value_state = {0: ("慢", True), 50: ("停", False), 100: ("快", True)}
-        if value1 in value_state:
-            updates["fan_speed"], updates["state"] = value_state[value1]
-        updates["value1"] = value1
+        value1 = to_int(value1)
+        if value1 is not None:
+            value_state = {0: ("慢", True), 50: ("停", False), 100: ("快", True)}
+            if value1 in value_state:
+                updates["fan_speed"], updates["state"] = value_state[value1]
+            updates["value1"] = value1
 
     fan_control = props.get("fanControl", {}) if isinstance(props, dict) else {}
     if isinstance(fan_control, dict):

@@ -14,6 +14,18 @@ from .selection import selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _to_int(value: object) -> Optional[int]:
+    """安全整数转换：dict/list/非数字返回 None，避免属性抛异常把实体打成 unavailable。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -148,8 +160,8 @@ class OrviboLight(CoordinatorEntity, LightEntity):
         state = self.coordinator.get_device_state(self._device_id)
         if state and state.get("state", False):
             brightness = state.get("brightness")
+            brightness = _to_int(brightness)
             if brightness is not None:
-                brightness = int(brightness)
                 if self._brightness_is_percent:
                     # type=503 亮度范围 0-100，转换为 HA 的 0-255
                     return min(int(brightness * 255 / 100), 255)
@@ -161,7 +173,7 @@ class OrviboLight(CoordinatorEntity, LightEntity):
     def color_temp(self) -> Optional[int]:
         state = self.coordinator.get_device_state(self._device_id)
         if state and state.get("state", False):
-            color_temp = state.get("color_temp")
+            color_temp = _to_int(state.get("color_temp"))
             if color_temp is not None and color_temp > 0:
                 # state 中 color_temp 单位为 Kelvin，HA 需要 mireds
                 return int(1000000 / color_temp)
@@ -171,7 +183,7 @@ class OrviboLight(CoordinatorEntity, LightEntity):
     def color_temp_kelvin(self) -> Optional[int]:
         state = self.coordinator.get_device_state(self._device_id)
         if state and state.get("state", False):
-            color_temp = state.get("color_temp")
+            color_temp = _to_int(state.get("color_temp"))
             if color_temp is not None and color_temp > 0:
                 return int(color_temp)
         return None
@@ -223,10 +235,11 @@ class OrviboLight(CoordinatorEntity, LightEntity):
             else:
                 device_brightness = brightness_value
             _LOGGER.info(f"同时设置亮度和色温: brightness={device_brightness}, color_temp={color_temp_k}K")
-            # ssl_control_light_brightness 使用 order="on" 已经开灯，无需再调用 async_turn_on
-            # 否则 async_turn_on 不带参数会下发 value2=0/value3=0 覆盖刚设置的亮度
-            await self.coordinator.async_set_brightness(self._device_id, device_brightness)
-            await self.coordinator.async_set_color_temp(self._device_id, color_temp_k)
+            # 亮色温合并为单条复合指令（send_light_bri_ct），
+            # 避免两步连发导致控制响应错配/覆盖（P2-M1/M4）
+            await self.coordinator.async_set_light_param(
+                self._device_id, device_brightness, color_temp_k
+            )
         elif brightness is not None:
             brightness_value = min(int(brightness), 255)
             if brightness_value == 0:

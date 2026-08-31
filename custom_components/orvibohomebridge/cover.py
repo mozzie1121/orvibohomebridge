@@ -63,13 +63,21 @@ class OrviboCover(CoordinatorEntity, CoverEntity):
             self._attr_device_class = CoverDeviceClass.CURTAIN
 
     @property
-    def current_cover_position(self) -> int:
+    def current_cover_position(self) -> Optional[int]:
         state = self.coordinator.get_device_state(self._device_id)
-        return state.get("position", 0) if state else 0
+        position = state.get("position") if state else None
+        if position is None:
+            return None  # 未知位置：不臆断
+        try:
+            return int(position)
+        except (TypeError, ValueError):
+            return None
 
     @property
-    def is_closed(self) -> bool:
+    def is_closed(self) -> Optional[bool]:
         position = self.current_cover_position
+        if position is None:
+            return None  # 未知位置：不显示为"打开"
         return position == 0
 
     @property
