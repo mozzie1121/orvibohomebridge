@@ -148,11 +148,15 @@ class DeviceInventory:
             if device_id not in self.states:
                 self.states[device_id] = self._periodic_initial_state(device)
 
+            # 云端快照合并：
+            # - 不再把云端 online 直接写进运行时 "online"（readtable 的 online 可能陈旧，
+            #   会把"实际在线但长时间无推送"的设备误判为离线）。改为独立字段
+            #   cloud_online / cloud_online_time，由 coordinator 按记录新鲜度决定可用性。
+            # - online 缺失保持 None，不强制写 False（未知 ≠ 离线）。
             cloud_state = {
                 field: device[field]
                 for field in (
                     "state",
-                    "online",
                     "position",
                     "brightness",
                     "color_temp",
@@ -161,6 +165,12 @@ class DeviceInventory:
                 )
                 if field in device and device[field] is not None
             }
+            cloud_online = device.get("online")
+            cloud_online_time = device.get("online_time")
+            if cloud_online is not None:
+                cloud_state["cloud_online"] = bool(cloud_online)
+            if cloud_online_time is not None:
+                cloud_state["cloud_online_time"] = cloud_online_time
             status = device.get("status", {})
             if isinstance(status, dict):
                 cloud_state.update(status)

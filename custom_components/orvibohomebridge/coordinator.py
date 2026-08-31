@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import secrets
+import time
 from datetime import timedelta
 from typing import Dict, Any, Optional
 from homeassistant.core import HomeAssistant
@@ -88,8 +89,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         # 调试信息：记录最近收到的原始状态推送（仅内存，日志/诊断均脱敏）
         self._cmd42_log: list[dict] = []
         self._redaction_salt = secrets.token_bytes(32)
-        self._last_update_time: Dict[str, float] = {}  # 设备最后更新时间戳
-        self.OFFLINE_TIMEOUT = 600  # 设备离线超时秒数
+        self._last_update_time: Dict[str, float] = {}  # 设备最后实时推送时间戳
+        self.OFFLINE_TIMEOUT = 600  # 实时推送"新鲜"窗口（秒）
+        # 云端 deviceStatus 记录的可信窗口：超过该时长未更新的 online 视为陈旧，
+        # 不据此判离线（LAN 通道推送的设备云端记录可能长期不刷新）。
+        self.CLOUD_RECORD_STALE_SECONDS = 7200
 
         super().__init__(
             hass,
@@ -1049,13 +1053,41 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         state = self.device_states.get(device_id)
         if state is None:
             return None
-        # 检查离线超时：最后更新超过 OFFLINE_TIMEOUT 秒则标记为离线
-        last_time = self._last_update_time.get(device_id)
-        if last_time is not None:
-            elapsed = __import__("time").time() - last_time
-            if elapsed > self.OFFLINE_TIMEOUT and state.get("online", False):
-                state["online"] = False
+        online = self._derive_online(device_id, state)
+        if online != state.get("online", False):
+            derived = dict(state)
+            derived["online"] = online
+            return derived
         return state
+
+    def _derive_online(self, device_id: str, state: dict) -> bool:
+        """正向证据判定可用性：不因"推送安静"而判离线。
+
+        - 实时推送新鲜（OFFLINE_TIMEOUT 内）→ 在线；
+        - 所属 LAN 网关会话活跃 → 在线（Zigbee 设备静默是常态，网关可达即视为设备可达）；
+        - 否则云端 deviceStatus 记录新鲜（updateTimeSec 在 CLOUD_RECORD_STALE_SECONDS 内）
+          → 以云端 online 为准（云端明确 0 才离线）；
+        - 否则（无任何新鲜证据）→ 保持最后已知在线状态，不臆断离线。
+        """
+        now = time.time()
+        last_push = self._last_update_time.get(device_id)
+        push_fresh = (
+            last_push is not None and (now - last_push) <= self.OFFLINE_TIMEOUT
+        )
+        if push_fresh:
+            return True
+        if self.lan_gateway_connected(device_id):
+            return True
+        cloud_online = state.get("cloud_online")
+        cloud_time = state.get("cloud_online_time")
+        cloud_fresh = (
+            cloud_online is not None
+            and isinstance(cloud_time, (int, float))
+            and (now - cloud_time) <= self.CLOUD_RECORD_STALE_SECONDS
+        )
+        if cloud_fresh:
+            return bool(cloud_online)
+        return bool(state.get("online", False))
 
     async def async_cleanup(self):
         self._lan_closed = True

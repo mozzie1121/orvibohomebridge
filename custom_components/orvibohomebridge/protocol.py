@@ -42,7 +42,8 @@ class OrviboDevice:
     sub_device_type: str         # subDeviceType (字符串)
     room: str                    # 房间名（从 roomId 映射）
     parent_uid: str              # 网关 parentId
-    online: bool | None          # 在线状态
+    online: bool | None          # 在线状态（None = 云端未提供）
+    online_time: int | None = None  # deviceStatus 行 updateTimeSec（云端记录时间）
     cloud_uid: str = ""          # uid（硬件 UID，与 deviceId 不同）
     value1: int | None = None
     value2: int | None = None
@@ -248,6 +249,7 @@ def parse_readtable_devices(
     # --- 设备状态映射（deviceStatus[]）---
     raw_statuses = data.get("deviceStatus", [])
     online_by_device: dict[str, bool | None] = {}
+    online_time_by_device: dict[str, int | None] = {}
     values_by_device: dict[str, tuple[int | None, ...]] = {}
     if isinstance(raw_statuses, list):
         for item in raw_statuses:
@@ -256,6 +258,9 @@ def parse_readtable_devices(
             device_id = _first_text(item, ("deviceId", "deviceID"))
             if device_id:
                 online_by_device[device_id] = _parse_online(item.get("online"))
+                online_time_by_device[device_id] = _safe_int(
+                    item.get("updateTimeSec") or item.get("updateTime")
+                )
                 values: list[int | None] = []
                 for key in ("value1", "value2", "value3", "value4"):
                     try:
@@ -331,6 +336,7 @@ def parse_readtable_devices(
                 ("parentUid", "parentId", "parentID", "gatewayUid", "hubUid"),
             ),
             online=online,
+            online_time=online_time_by_device.get(device_id),
             cloud_uid=_first_text(item, ("uid",)),
             value1=values[0],
             value2=values[1],
@@ -539,7 +545,8 @@ def device_to_dict(device: OrviboDevice) -> dict[str, Any]:
         "ui_model": device.ui_model,
         "room_id": "",
         "room_name": device.room,
-        "online": device.online or False,
+        "online": device.online,  # None = 云端未提供，由上层决定（避免把"未知"写成离线）
+        "online_time": device.online_time,
         "state": _initial_state,
         "position": device.value1 if device.value1 is not None else 0,
         "brightness": device.value2,
