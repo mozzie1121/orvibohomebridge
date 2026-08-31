@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, MutableMapping
 
 from .device_types import DeviceCategory, classify_device, is_hidden_category
 from .lock_status import normalize_battery_properties
 from .parsers import get_state_parser
 from .state_store import StateSource, StateStore
+from .const import CLOUD_RECORD_STALE_SECONDS
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -135,6 +137,17 @@ class DeviceInventory:
                 )
             self.states[device_id] = state
 
+    def _cloud_record_fresh(self, device: dict) -> bool:
+        """云端 deviceStatus 记录是否新鲜（updateTimeSec 在可信窗口内）。
+
+        陈旧记录说明设备近期没有通过云端上报（LAN 通道推送的设备常见），
+        其值字段不可信，不应覆盖运行时状态（否则会把"实际已关"显示成"开"）。
+        """
+        online_time = device.get("online_time")
+        if not isinstance(online_time, (int, float)):
+            return False
+        return (time.time() - online_time) <= CLOUD_RECORD_STALE_SECONDS
+
     def merge_cloud(self, discovered: list[dict[str, Any]]) -> None:
         """Merge a periodic cloud snapshot without overwriting fresh SSL fields."""
         for device in discovered:
@@ -153,6 +166,10 @@ class DeviceInventory:
             #   会把"实际在线但长时间无推送"的设备误判为离线）。改为独立字段
             #   cloud_online / cloud_online_time，由 coordinator 按记录新鲜度决定可用性。
             # - online 缺失保持 None，不强制写 False（未知 ≠ 离线）。
+            # - 值字段（state/position/brightness/color_temp 等）仅在云端记录新鲜时合并：
+            #   陈旧记录（设备走 LAN 推送、云端长期未更新）不覆盖运行时真实状态，
+            #   避免"实际已关"的设备被陈旧的云端快照重新显示为"开"。
+            fresh = self._cloud_record_fresh(device)
             cloud_state = {
                 field: device[field]
                 for field in (
@@ -165,6 +182,8 @@ class DeviceInventory:
                 )
                 if field in device and device[field] is not None
             }
+            if not fresh:
+                cloud_state.clear()
             cloud_online = device.get("online")
             cloud_online_time = device.get("online_time")
             if cloud_online is not None:
@@ -211,12 +230,11 @@ class DeviceInventory:
         self.state_store.remove(device_id)
         self._on_removed(device_id)
 
-    @staticmethod
-    def _initial_state(device: dict[str, Any]) -> dict[str, Any]:
+    def _initial_state(self, device: dict[str, Any]) -> dict[str, Any]:
         online = device.get("online", False)
         if isinstance(online, str):
             online = online.strip().lower() in ("online", "1", "true", "yes")
-        return {
+        state = {
             "state": device.get("state", False),
             "online": bool(online),
             "position": device.get("position", 0),
@@ -233,10 +251,19 @@ class DeviceInventory:
             "raw_value3": device.get("value3"),
             "raw_value4": device.get("value4"),
         }
+        if not self._cloud_record_fresh(device):
+            # 云端记录陈旧：不播种云端值字段（state/position/brightness...），
+            # 开关状态默认关，等真实推送/控制纠正；避免陈旧快照把"实际已关"
+            # 的设备显示成"开"（如重启后 nan_nan 回显 on）。
+            state["state"] = False
+            state["position"] = None
+            state["brightness"] = None
+            state["color_temp"] = None
+            state["properties"] = {}
+        return state
 
-    @staticmethod
-    def _periodic_initial_state(device: dict[str, Any]) -> dict[str, Any]:
-        return {
+    def _periodic_initial_state(self, device: dict[str, Any]) -> dict[str, Any]:
+        state = {
             "state": device.get("state", False),
             "online": device.get("online", False),
             "position": device.get("position", 0),
@@ -244,6 +271,13 @@ class DeviceInventory:
             "color_temp": device.get("color_temp"),
             "properties": dict(device.get("properties") or {}),
         }
+        if not self._cloud_record_fresh(device):
+            state["state"] = False
+            state["position"] = None
+            state["brightness"] = None
+            state["color_temp"] = None
+            state["properties"] = {}
+        return state
 
     @staticmethod
     def _battery_state(device: dict[str, Any]) -> dict[str, Any]:

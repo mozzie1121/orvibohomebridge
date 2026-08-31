@@ -268,6 +268,7 @@ def _load_coordinator():
         SSL_PORT=10002,
         UPDATE_INTERVAL=timedelta(minutes=30),
         DEFAULT_KEY="test-key",
+        CLOUD_RECORD_STALE_SECONDS=7200,
     )
     _module(f"{package_name}.lock_status", normalize_battery_properties=lambda _p: {})
     return importlib.import_module(f"{package_name}.coordinator")

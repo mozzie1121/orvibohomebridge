@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 import sys
+import time
 import types
 import unittest
 
@@ -126,6 +127,114 @@ class GenericFallbackTests(unittest.TestCase):
         )
         self.assertIs(state["state"], True)
         self.assertEqual(state["position"], 50)
+
+
+class CloudValueFreshnessTests(unittest.TestCase):
+    """Round 8: 云端值字段仅在记录新鲜时覆盖运行时状态。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        package_name = "orvibohomebridge_p2_di"
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(COMPONENT_PATH)]
+        sys.modules[package_name] = package
+
+        class DeviceCategory:
+            UNKNOWN = "unknown"
+            DOOR_LOCK = "door_lock"
+
+        class StateStore:
+            def __init__(self, states):
+                self.states = states
+
+            def merge(self, device_id, values, source, *, force=False):
+                self.states.setdefault(device_id, {}).update(values)
+
+        _module(
+            f"{package_name}.device_types",
+            DeviceCategory=DeviceCategory,
+            classify_device=lambda _d: DeviceCategory.UNKNOWN,
+            is_hidden_category=lambda _c: False,
+        )
+        _module(
+            f"{package_name}.lock_status",
+            normalize_battery_properties=lambda _p: {},
+        )
+        _module(f"{package_name}.parsers", get_state_parser=lambda _c: None)
+        class StateSource:
+            CLOUD = 20
+            SSL = 30
+            LAN = 40
+            OPTIMISTIC = 10
+
+        _module(
+            f"{package_name}.state_store",
+            StateSource=StateSource,
+            StateStore=StateStore,
+        )
+        _module(
+            f"{package_name}.const",
+            CLOUD_RECORD_STALE_SECONDS=7200,
+        )
+        cls.di = importlib.import_module(f"{package_name}.device_inventory")
+
+    def make_inventory(self, states=None):
+        return self.di.DeviceInventory(
+            None,
+            {},
+            states if states is not None else {},
+            self.di.StateStore(states if states is not None else {}),
+            lambda _d: None,
+        )
+
+    def test_stale_cloud_record_does_not_overwrite_runtime_state(self) -> None:
+        """陈旧记录（updateTimeSec 很久前）不覆盖运行时 state（修复重启后回显陈旧"开"）。"""
+        states = {"dev-1": {"state": False, "position": 0}}
+        inv = self.make_inventory(states)
+        inv.merge_cloud(
+            [
+                {
+                    "device_id": "dev-1",
+                    "state": True,
+                    "position": 100,
+                    "online": True,
+                    "online_time": int(time.time()) - 30 * 24 * 3600,  # 30 天前
+                }
+            ]
+        )
+        self.assertIs(states["dev-1"]["state"], False)  # 未被陈旧快照覆盖成 True
+        self.assertEqual(states["dev-1"]["position"], 0)
+        self.assertTrue(states["dev-1"]["cloud_online"])  # online 元数据仍记录
+
+    def test_fresh_cloud_record_merges_values(self) -> None:
+        states = {"dev-2": {"state": False}}
+        inv = self.make_inventory(states)
+        inv.merge_cloud(
+            [
+                {
+                    "device_id": "dev-2",
+                    "state": True,
+                    "position": 50,
+                    "online": True,
+                    "online_time": int(time.time()) - 60,
+                }
+            ]
+        )
+        self.assertIs(states["dev-2"]["state"], True)
+        self.assertEqual(states["dev-2"]["position"], 50)
+
+    def test_initial_state_stale_record_seeds_off(self) -> None:
+        """重启播种：陈旧记录不把 state 播种成云端值（nan_nan 场景）。"""
+        inv = self.make_inventory()
+        state = inv._initial_state(
+            {
+                "device_id": "dev-3",
+                "state": True,  # 云端陈旧值：实际设备已关
+                "online": True,
+                "online_time": int(time.time()) - 30 * 24 * 3600,
+            }
+        )
+        self.assertIs(state["state"], False)
 
 
 if __name__ == "__main__":

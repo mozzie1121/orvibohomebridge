@@ -234,6 +234,7 @@ def _load_coordinator_module():
         SSL_PORT=10002,
         UPDATE_INTERVAL=timedelta(minutes=30),
         DEFAULT_KEY="test-key",
+        CLOUD_RECORD_STALE_SECONDS=7200,
     )
 
     loaded = importlib.import_module(f"{package_name}.coordinator")

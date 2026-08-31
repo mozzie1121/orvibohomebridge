@@ -9,6 +9,11 @@ MAX_POLL_INTERVAL_MINUTES = 1440
 UPDATE_INTERVAL = timedelta(minutes=DEFAULT_POLL_INTERVAL_MINUTES)
 SSL_MAX_RECONNECT_ATTEMPTS = 3
 
+# 云端 deviceStatus 记录的可信窗口：超过该时长未更新的 online/值字段视为陈旧，
+# 不据此覆盖运行状态（LAN 通道推送的设备云端记录可能长期不刷新，
+# 用陈旧快照覆盖会把"实际已关"的设备显示成"开"）。
+CLOUD_RECORD_STALE_SECONDS = 7200
+
 CMD_HELLO = 0
 CMD_LOGIN = 2
 CMD_CONTROL = 15

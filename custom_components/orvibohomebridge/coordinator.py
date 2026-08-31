@@ -34,6 +34,7 @@ from .const import (
     SSL_PORT,
     UPDATE_INTERVAL,
     DEFAULT_KEY,
+    CLOUD_RECORD_STALE_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.OFFLINE_TIMEOUT = 600  # 实时推送"新鲜"窗口（秒）
         # 云端 deviceStatus 记录的可信窗口：超过该时长未更新的 online 视为陈旧，
         # 不据此判离线（LAN 通道推送的设备云端记录可能长期不刷新）。
-        self.CLOUD_RECORD_STALE_SECONDS = 7200
+        self.CLOUD_RECORD_STALE_SECONDS = CLOUD_RECORD_STALE_SECONDS
 
         super().__init__(
             hass,
