@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.6.0] - 2026-08-31
+
+### Added
+
+- 配置流：设备选择按类别分组、分阶段选择（staged category selection），中英文翻译补全。
+- 明暗两套品牌资源（brand icons/logos）。
+- 传输路由与运行时模式加固：`LAN_ONLY` 模式、设备传输路径诊断传感器
+  （`configured_mode` / `lan_control_supported` / `cloud_control_supported` /
+  `cloud_only` / `gateway_connected` / `last_control_transport`）。
+
+### Fixed
+
+- **可用性误判**（成片 unavailable / 时间长了陆续变灰 / #11 / #12）：
+  - 可用性改为正向证据模型（实时推送新鲜 / LAN 网关在线 / 云端记录新鲜），
+    `get_device_state` 纯函数化，不再"600 秒无推送即判离线"；
+  - 云端记录增加 `cloud_online` / `cloud_online_time` 元数据，按 `updateTimeSec`
+    新鲜度判定，陈旧记录不再把在线设备判离线或覆盖真实状态（nan_nan 场景）。
+- **控制链路**：
+  - `_send_packet` 返回真实发送结果，`send_control_*` 不再无条件"假成功"；
+    发送失败不写乐观状态（顺带修复 LAN→SSL 降级失效）；
+  - 控制回显携带状态时并入状态管线（不再丢弃），回显无状态才乐观兜底；
+  - 亮度+色温合并单条复合指令（避免两步连发响应错配）。
+- **SSL 通道**：
+  - 请求-响应式心跳 + 读超时，半开/黑洞连接不再"假死"；
+  - 重连循环无限重试（指数退避封顶 60s），不再 5 次失败后永久退出；
+  - 重连成功后主动全量重同步（实测服务端重登后不推送设备列表）；
+  - 协调器轮询增加 SSL 看门狗。
+- **平台语义统一**：binary_sensor / fan 可用性与 light/cover/switch 一致。
+- **健壮性**：解析器与实体属性 `int()` 全面保护（`to_int`）、`_apply_generic`
+  缺失字段不再映射成"关"、cover 未知位置不显示为"开"、网关记录缺失容错
+  （连续 3 轮才清理，不再单次快照断 LAN）。
+- **云端值新鲜度门控**：云端快照仅在记录新鲜（或 cloud_only 设备）时覆盖
+  运行时状态，消除陈旧快照把"实际已关"显示成"开"（含门锁/晾衣机例外处理）。
+
+### Security
+
+- 保留 v0.5.0 的 LAN 推送校验、日志脱敏；控制发送失败不再伪装成功。
+
 ## [0.5.0] - 2026-08-05
 
 ### Added
