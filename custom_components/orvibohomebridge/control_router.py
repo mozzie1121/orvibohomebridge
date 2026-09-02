@@ -49,6 +49,8 @@ def power_route(
             {"brightness": current_brightness or 255},
         )
 
+    if category == DeviceCategory.BACH_SWITCH:
+        return ControlRoute("ssl", "send_control_switch", (is_on,))
     if category in (DeviceCategory.MONO_LIGHT, DeviceCategory.DIMMABLE_LIGHT):
         return ControlRoute("ssl", "send_control_switch", (is_on,))
 

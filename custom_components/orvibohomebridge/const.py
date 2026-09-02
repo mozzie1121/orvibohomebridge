@@ -100,6 +100,8 @@ DEVICE_TYPE_MAP = {
     81: DEVICE_TYPE_CLIMATE,        # FAN_COIL_AC (同 type=36)
     112: DEVICE_TYPE_CLIMATE,       # 旧协议地暖控制面板（orb_floorheat）
     43: DEVICE_TYPE_SWITCH,         # COCO智能插线板
+    500: DEVICE_TYPE_LIGHT,         # MixSwitch 灯光通道
+    518: DEVICE_TYPE_SWITCH,        # BACH 开关通道
 }
 
 CLASS_ID_MAP = {
