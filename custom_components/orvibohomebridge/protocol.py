@@ -574,6 +574,7 @@ def _infer_ha_device_type(device: OrviboDevice) -> str:
     _DEVICE_TYPE_MAP_INLINE = {
         1: "light", 34: "cover", 35: "cover", 36: "climate", 38: "light",
         43: "switch",  # COCO智能插线板
+        500: "light", 518: "switch",
         46: "sensor", 52: "clothes_horse",
         25: "sensor", 26: "sensor", 27: "sensor", 56: "sensor",
         54: "sensor", 501: "light", 502: "light",
