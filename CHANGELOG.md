@@ -27,8 +27,15 @@
     `binary_sensor`。`climate` 与 `fan` 目前 schema 接受、设备可识别、状态可
     解析，但尚未实现自定义实体（跳过并记录 warning，不会落到内置实体）。
   - 文档：`docs/custom-devices/`（总览、字段全表、各平台示例、配方、排查、
-    何时需要提 PR）。
+    何时需要提 PR、**怎么拿到写 profile 需要的参数**）。
   - 内置模板：`custom_components/orvibohomebridge/custom_devices/example_demo_light.yaml`。
+  - **参数获取工具**：`tools/generate_device_profile.py` + `tools/profile_skeleton.py`。
+    用户不必手抄原始报文：`--list` 列出所有设备及其 `match` 字段并标出哪些已被
+    内置支持，`--listen` 期间在 App/物理开关上操作设备即抓到真实 `cmd=42` 推送，
+    然后生成可直接使用的 profile 骨架（自动填 `match`、按观察到的路径填 `state`、
+    按平台给 `control` 骨架、附一份"必须真机确认"的清单）。
+    工具只读（不发送控制命令、不改仓库文件），`--from-json/--observations` 支持
+    离线复现，`--match minimal|full|type` 控制匹配条件松紧。
 
 ### Fixed
 

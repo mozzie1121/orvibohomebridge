@@ -17,7 +17,8 @@
 <HA config>/orvibohomebridge/devices/my-plug.yaml
 ```
 
-内容（把 `device_type` 换成你自己设备的原始类型，从诊断信息里查，见第 4 步）：
+内容（`device_type` 等参数怎么拿到，见 [06-finding-parameters.md](06-finding-parameters.md)；
+也可以直接用 `tools/generate_device_profile.py` 自动生成骨架）：
 
 ```yaml
 profile_version: 1
@@ -117,6 +118,7 @@ hardware_verified: true
 | [03-recipes.md](03-recipes.md) | 常见范式配方（属性型开关、0-255/mired 灯、只读传感器、窗帘、乐观状态……）与做不到的配方 |
 | [04-troubleshooting.md](04-troubleshooting.md) | 分步排查、日志关键字对照、诊断信息位置、已知限制 |
 | [05-custom-vs-upstream.md](05-custom-vs-upstream.md) | 配置够用 vs 必须提 PR，以及从 profile 到 PR 的路径 |
+| [06-finding-parameters.md](06-finding-parameters.md) | **`device_type`、状态路径、控制语义这些参数从哪来**：骨架生成器用法、手工查法、哪些必须真机确认 |
 
 完整字段模板可以直接看随集成发布的
 `custom_components/orvibohomebridge/custom_devices/example_demo_light.yaml`（它是模板，匹配 `device_type: 9901`，**不会命中任何真实设备**）。
