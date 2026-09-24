@@ -6,7 +6,10 @@
 |---|---|---|
 | `match`：`device_type` / `sub_device_type` / `class_id` / `ui_model` / `model` | 云端 readtable 一条记录 | ✅ 脚本直接填好 |
 | `state` 的 `from:` 路径（`properties.onoff.status`、`value2`…） | 状态推送（`cmd=42`）或快照 | ✅ 脚本能列出**实际出现过**的路径 |
-| 单位与方向：亮度量纲、色温单位、开关 active-low/high | 真机操作 + 观察数值变化 | ⚠️ **只能给猜测 + 待确认清单** |
+| `control` 的命令语义（`order` / `value1..4` / `properties`） | **拿不到**——App 单向下发，两条通道都加密 | ❌ 必须实证验证，见 [07-reverse-engineering-control.md](07-reverse-engineering-control.md) |
+
+> ⚠️ **最重要的一点**：本页的工具**只能**给你 `match` 和 `state`。生成文件里的 `control:` 是**按同协议族猜的占位骨架**，不是从你的设备上抓来的。改 `hardware_verified: true` 之前，务必先按
+> [07-reverse-engineering-control.md](07-reverse-engineering-control.md) 用实证探针确认命令真的生效。
 
 第三类是重点：**没有任何工具能从一份数据里推断出 active-low**。`value1 = 0` 可能是"开"也可能是"关"，取决于设备。所以工具只负责把你不用猜的部分填好，剩下明确的列出来让你验证——不会假装全自动，也不会替你写 `hardware_verified: true`。
 
@@ -130,6 +133,7 @@ python tools/generate_device_profile.py --from-json readtable.json --device 客�
 
 ## 相关页面
 
+- **控制命令怎么逆向（必读）**：[07-reverse-engineering-control.md](07-reverse-engineering-control.md)
 - 字段含义与取值范围：[01-schema.md](01-schema.md)
 - 各平台必填字段与完整示例：[02-platforms.md](02-platforms.md)
 - 抄现成配方：[03-recipes.md](03-recipes.md)

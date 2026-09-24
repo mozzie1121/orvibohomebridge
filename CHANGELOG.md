@@ -36,6 +36,17 @@
     按平台给 `control` 骨架、附一份"必须真机确认"的清单）。
     工具只读（不发送控制命令、不改仓库文件），`--from-json/--observations` 支持
     离线复现，`--match minimal|full|type` 控制匹配条件松紧。
+  - **控制命令实证探针**：`tools/probe_device_control.py` + `tools/control_probe.py`。
+    云端长连接与网关 TCP 都是 AES 加密（会话密钥握手后才得到），App 自身双向
+    TLS 且固定证书，因此**控制命令无法被动嗅探**——`readtable` 与状态推送也给不了
+    `control`。本工具把"只发不等结果"补成闭环：发一条候选 → 读该设备的状态推送
+    → 判定 `verified`/`ineffective`/`inconclusive`（服务端 ACK 不算证据）。
+    自动枚举 on/off 两种极性、`set property` 属性报文、亮度两种量纲、色温
+    mired/Kelvin、位置型；`--payloads` 可灌入反编译 App 得到的真实帧再验证；
+    风险设备（门锁/晾衣机/窗帘）强制二次确认；`--observe-only` 先验推送链路。
+    验证通过的 `control` 块可直接替换进 profile。
+  - 文档：`docs/custom-devices/07-reverse-engineering-control.md`（控制逆向全流程），
+    并在 06 与 README 中明确标注"`control` 是占位骨架、启用前必须实证验证"。
 
 ### Fixed
 
