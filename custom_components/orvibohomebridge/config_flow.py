@@ -42,6 +42,32 @@ from .protocol import password_hash
 
 _LOGGER = logging.getLogger(__name__)
 
+#: 选项流程字段名（保持与 const.CONF_RELOAD_PROFILES 一致）
+CONF_RELOAD_PROFILES = "reload_custom_profiles"
+
+
+def _custom_profile_summary(registry) -> str:
+    """Render the loaded custom-device profiles for the options form."""
+
+    lines: list[str] = []
+    profiles = registry.profiles
+    if not profiles:
+        lines.append("当前没有加载任何自定义设备 profile。")
+    else:
+        lines.append(f"已加载 {len(profiles)} 个 profile：")
+        for profile in profiles:
+            matched = registry.match_counts.get(profile.profile_id, 0)
+            state = "已验证" if profile.hardware_verified else "仅登记（不下发控制）"
+            lines.append(
+                f"- `{profile.profile_id}`（{profile.display_name}）"
+                f"平台={profile.platform}，命中设备 {matched} 台，{state}"
+            )
+    if registry.errors:
+        lines.append("")
+        lines.append(f"有 {len(registry.errors)} 个文件未能加载：")
+        lines.extend(f"- {error}" for error in registry.errors)
+    return "\n".join(lines)
+
 
 def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
     try:
@@ -578,7 +604,51 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
             "reauth",
             "devices",
             "lock_users",
+            "custom_profiles",
         ],
+        )
+
+    async def async_step_custom_profiles(self, user_input=None):
+        """查看并重新加载用户自定义设备 profile。"""
+
+        # 延迟导入：config_flow 的其它路径不应因为自定义设备模块而增加依赖
+        from .custom_devices import load_custom_profiles
+
+        registry = load_custom_profiles(self.hass)
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if user_input.get(CONF_RELOAD_PROFILES):
+                try:
+                    self.hass.config_entries.async_schedule_reload(
+                        self._config_entry.entry_id
+                    )
+                    return self.async_create_entry(
+                        title="", data=dict(self._config_entry.options)
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("自定义设备 profile 重载失败")
+                    errors["base"] = "profile_reload_failed"
+            return self.async_create_entry(
+                title="", data=dict(self._config_entry.options)
+            )
+
+        summary = _custom_profile_summary(registry)
+        return self.async_show_form(
+            step_id="custom_profiles",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_RELOAD_PROFILES, default=False): bool,
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "summary": summary,
+                "directories": "\n".join(
+                    f"- `{path}`" for path in registry.directories
+                )
+                or "-",
+            },
         )
 
     async def async_step_transport_mode(self, user_input=None):

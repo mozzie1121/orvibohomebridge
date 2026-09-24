@@ -267,6 +267,9 @@ class ControlExecutor:
         device = self._controllable_device(device_id, "窗帘")
         if device is None:
             return False
+        custom = self._custom_route(device, "position", position=position)
+        if custom is not None:
+            return await self._execute_confirmed_route(device_id, device, custom)
         client, selected_scope = self._transport(device_id)
         if client is None:
             return False
@@ -338,6 +341,9 @@ class ControlExecutor:
         device = self._controllable_device(device_id, "窗帘")
         if device is None:
             return False
+        custom = self._custom_route(device, "stop")
+        if custom is not None:
+            return await self._execute_confirmed_route(device_id, device, custom)
         category = classify_device(device)
         client, scope = self._transport(device_id)
         if client is None:
@@ -464,10 +470,33 @@ class ControlExecutor:
         brightness: int | None,
         color_temp_k: int | None,
     ) -> bool:
-        device = self.devices.get(device_id)
+        device = self._controllable_device(device_id, "灯光参数")
         if device is None:
-            _LOGGER.error("找不到设备 %s", device_id)
             return False
+
+        # Custom profiles declare brightness and color temperature as separate
+        # verified commands; there is no generic "combined" envelope for them.
+        custom_routes = []
+        if brightness is not None:
+            route = self._custom_route(device, "brightness", brightness=brightness)
+            if route is not None:
+                custom_routes.append(route)
+        if color_temp_k is not None:
+            route = self._custom_route(
+                device,
+                "color_temp",
+                color_temp=color_temp_k,
+                brightness=brightness,
+            )
+            if route is not None:
+                custom_routes.append(route)
+        if custom_routes:
+            results = [
+                await self._execute_confirmed_route(device_id, device, route)
+                for route in custom_routes
+            ]
+            return all(results)
+
         result, _scope = await self._send_selected(
             device_id,
             "send_light_bri_ct",
@@ -477,6 +506,24 @@ class ControlExecutor:
             color_temp_k,
         )
         return result
+
+    def _custom_route(
+        self,
+        device: Mapping[str, Any],
+        action: str,
+        **values: Any,
+    ):
+        """Compile a custom-device action, or None for built-in devices.
+
+        Undeclared actions on a custom device raise ``ControlNotDeclared`` so the
+        caller surfaces a clear error instead of borrowing a built-in command.
+        """
+
+        from .control_router import custom_route_for_device
+
+        return custom_route_for_device(
+            device, action, self._get_state(device.get("device_id", "")) or {}, **values
+        )
 
     async def ventilation_state_update(self, device_id: str, value1: int) -> bool:
         device = self._connected_device(device_id)

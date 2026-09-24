@@ -492,6 +492,15 @@ orvibohomebridge/
 [贡献指南：新增设备支持](CONTRIBUTING.md)，其中说明了架构接入点、真机证据、
 脱敏要求和测试清单。
 
+### 不支持的设备？可以先试自定义 profile
+
+不能被内置识别的设备**不一定要改代码**：本集成支持声明式**自定义设备 profile**，
+只要设备能被发现，把匹配条件、状态映射和控制命令写进一个 YAML 文件即可生效。
+
+- 快速上手：[docs/custom-devices/README.md](docs/custom-devices/README.md)
+- 字段全表：[docs/custom-devices/01-schema.md](docs/custom-devices/01-schema.md)
+- 何时配置够用、何时必须提 PR：[docs/custom-devices/05-custom-vs-upstream.md](docs/custom-devices/05-custom-vs-upstream.md)
+
 ## 📄 许可证
 
 MIT License

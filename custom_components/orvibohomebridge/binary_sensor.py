@@ -19,6 +19,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import OrviboMeshCoordinator
+from .custom_devices import profile_for_device
 from .device_types import DeviceCategory, classify_device
 from .selection import selected_device_ids
 
@@ -54,6 +55,14 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         if device_id not in selected_ids:
             continue
+        custom_profile = profile_for_device(device)
+        if custom_profile is not None:
+            field_name = _custom_binary_field(custom_profile)
+            if field_name is not None:
+                entities.append(
+                    OrviboCustomBinarySensor(coordinator, device, custom_profile, field_name)
+                )
+            continue
         category = classify_device(device)
         if category == DeviceCategory.MOTION_SENSOR:
             entities.append(OrviboMotionSensor(coordinator, device))
@@ -72,6 +81,74 @@ async def async_setup_entry(
             entities.append(OrviboGasSensor(coordinator, device))
 
     async_add_entities(entities)
+
+
+#: Custom-profile state fields exposed as binary sensors, in priority order.
+_CUSTOM_BINARY_FIELDS: tuple[tuple[str, object, str], ...] = (
+    ("state", None, "状态"),
+    ("position", None, "位置"),
+)
+
+
+def _custom_binary_field(profile: object) -> Optional[str]:
+    """Pick the declared boolean-ish field to expose as a binary sensor."""
+
+    for field_name, _device_class, _label in _CUSTOM_BINARY_FIELDS:
+        if field_name in profile.state_specs:
+            return field_name
+    return None
+
+
+class OrviboCustomBinarySensor(OrviboBinarySensorBase):
+    """Binary sensor backed by a declared custom-device profile field."""
+
+    def __init__(
+        self,
+        coordinator: OrviboMeshCoordinator,
+        device: dict,
+        profile: object,
+        field_name: str,
+    ):
+        super().__init__(coordinator)
+        self._device = device
+        self._profile = profile
+        self._device_id = device.get("device_id", "")
+        self._field = field_name
+        self._attr_unique_id = (
+            f"orvibohomebridge_custom_binary_{field_name}_{self._device_id}"
+        )
+        for candidate, device_class, label in _CUSTOM_BINARY_FIELDS:
+            if candidate == field_name:
+                self._attr_name = label
+                if device_class is not None:
+                    self._attr_device_class = device_class
+                break
+
+    @property
+    def is_on(self) -> Optional[bool]:
+        state = self.coordinator.get_device_state(self._device_id)
+        if not state:
+            return False
+        value = state.get(self._field)
+        if self._field == "position":
+            # Mirrors the built-in cover semantics: 0 means closed.
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return None
+            return value > 0
+        return bool(value)
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", self._device_id),
+            "manufacturer": MANUFACTURER,
+            "model": self._device.get("model")
+            or f"自定义设备/{self._profile.profile_id}",
+            "sw_version": "1.0",
+        }
 
 
 class OrviboMotionSensor(OrviboBinarySensorBase):

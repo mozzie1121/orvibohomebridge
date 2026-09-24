@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, MutableMapping
 
 from .device_types import DeviceCategory, classify_device, is_hidden_category
+from .custom_devices import state_defaults_for as custom_state_defaults
 from .lock_status import normalize_battery_properties
 from .parsers import get_state_parser
 from .state_store import StateSource, StateStore
@@ -104,6 +105,8 @@ class DeviceInventory:
             self.devices[device_id] = device
             seed_values = self._cloud_values_allowed(device, category)
             state = self._initial_state(device, seed_values=seed_values)
+            # 自定义设备 profile 可在 state_defaults 里补初始字段（如 online）
+            state.update(custom_state_defaults(device))
             parser = get_state_parser(category)
             # 值解析仅当允许播种云端值时执行：陈旧记录的值不可信，
             # 否则刚被门控为 False 的 state 会被陈旧 value1 重新解析成 True

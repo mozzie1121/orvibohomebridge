@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_SWITCH, DEVICE_TYPE_CLOTHES_HORSE
 from .coordinator import OrviboMeshCoordinator
+from .custom_devices import profile_for_device
 from .selection import selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,7 +28,10 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         if device_id not in selected_ids:
             continue
-        if device.get("device_type") == DEVICE_TYPE_SWITCH:
+        custom_profile = profile_for_device(device)
+        if custom_profile is not None:
+            entities.append(OrviboCustomSwitch(coordinator, device, custom_profile))
+        elif device.get("device_type") == DEVICE_TYPE_SWITCH:
             entities.append(OrviboSwitch(coordinator, device))
         elif device.get("device_type") == DEVICE_TYPE_CLOTHES_HORSE:
             # 晾衣架：主开关 / 消毒 / 风干 / 热干
@@ -37,6 +41,51 @@ async def async_setup_entry(
             entities.append(OrviboClothesHorseSwitch(coordinator, device, "heat_drying", "热干", "mdi:heat-wave"))
 
     async_add_entities(entities)
+
+
+class OrviboCustomSwitch(CoordinatorEntity, SwitchEntity):
+    """Switch entity driven by a user custom-device profile."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: OrviboMeshCoordinator,
+        device: dict,
+        profile: object,
+    ):
+        super().__init__(coordinator)
+        self._device = device
+        self._profile = profile
+        self._device_id = device["device_id"]
+        self._attr_unique_id = f"orvibohomebridge_custom_switch_{self._device_id}"
+        self._attr_name = device.get("device_name", self._device_id)
+
+    @property
+    def is_on(self) -> bool:
+        state = self.coordinator.get_device_state(self._device_id)
+        return bool(state.get("state", False)) if state else False
+
+    @property
+    def available(self) -> bool:
+        state = self.coordinator.get_device_state(self._device_id)
+        return bool(state.get("online", False)) if state else False
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", self._device_id),
+            "manufacturer": MANUFACTURER,
+            "model": self._device.get("model") or f"自定义设备/{self._profile.profile_id}",
+            "sw_version": "1.0",
+        }
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.async_turn_on(self._device_id)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_turn_off(self._device_id)
 
 
 class OrviboSwitch(CoordinatorEntity, SwitchEntity):

@@ -61,6 +61,33 @@ class LanControlAdapter:
         )
         return status_ok
 
+    async def send_control_envelope(
+        self,
+        device_id: str,
+        device_uid: str,
+        order: str,
+        value1: int = 0,
+        value2: int = 0,
+        value3: int = 0,
+        value4: int = 0,
+        properties: dict | None = None,
+    ) -> bool:
+        """网关转发自定义设备 profile 声明的命令封包（与 SSL 同名同参）。"""
+
+        return await self._send(
+            HomemateJsonData.ssl_control_envelope(
+                self._username,
+                device_id,
+                device_uid,
+                order,
+                value1,
+                value2,
+                value3,
+                value4,
+                properties,
+            )
+        )
+
     async def send_control_switch(
         self, device_id: str, device_uid: str, state: bool
     ) -> bool:

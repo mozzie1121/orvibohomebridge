@@ -529,7 +529,7 @@ def device_to_dict(device: OrviboDevice) -> dict[str, Any]:
     这样 coordinator 和数据平台层无需改动。
     """
     _initial_state = _infer_initial_state(device)
-    return {
+    result = {
         "device_id": device.uid,
         "device_name": device.name,
         "device_type": _infer_ha_device_type(device),
@@ -563,6 +563,20 @@ def device_to_dict(device: OrviboDevice) -> dict[str, Any]:
         "value3": device.value3,
         "value4": device.value4,
     }
+    return _apply_custom_platform(result)
+
+
+def _apply_custom_platform(device: dict[str, Any]) -> dict[str, Any]:
+    """Let a user custom-device profile override the built-in platform mapping."""
+
+    try:
+        from .custom_devices import apply_platform
+
+        return apply_platform(
+            device, builtin_platform=device.get("device_type")
+        )
+    except Exception:  # noqa: BLE001 - profile must never break discovery
+        return device
 
 
 def _infer_ha_device_type(device: OrviboDevice) -> str:

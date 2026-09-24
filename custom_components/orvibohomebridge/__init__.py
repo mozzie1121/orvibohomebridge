@@ -33,6 +33,7 @@ from .const import (
     MAX_POLL_INTERVAL_MINUTES,
 )
 from .capabilities import TransportMode
+from .custom_devices import load_custom_profiles
 from .protocol import migrate_password_credentials
 from .models import AccountCredentials
 from .cloud import cloud_for_region
@@ -118,6 +119,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     username = entry.data[CONF_USERNAME]
     password_hash = entry.data[CONF_PASSWORD_HASH]
     family_id = entry.data.get(CONF_FAMILY_ID)
+
+    # 自定义设备 profile 必须在设备发现之前加载：分类、平台映射、能力解析
+    # 都在 readtable 归一化阶段就会查这张表。
+    custom_registry = load_custom_profiles(hass)
+    if custom_registry.errors:
+        _LOGGER.error(
+            "有 %s 个自定义设备 profile 未加载，详见上方日志（不影响内置设备）",
+            len(custom_registry.errors),
+        )
 
     options = entry.options
     try:

@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_CLIMATE
 from .coordinator import OrviboMeshCoordinator
+from .custom_devices import profile_for_device
 from .selection import selected_device_ids
 from .device_types import DeviceCategory, classify_device
 
@@ -53,6 +54,14 @@ async def async_setup_entry(
     entities = []
     for device_id, device in coordinator.devices.items():
         if device_id not in selected_ids:
+            continue
+        if profile_for_device(device) is not None:
+            # 自定义设备：本平台还没有对应的自定义实体类，绝不能落到内置
+            # 空调/地暖实体上（那会用内置 AC 语义下发未经 profile 声明的命令）。
+            _LOGGER.warning(
+                "自定义设备 %s 声明了 climate 平台，但该平台尚未实现自定义实体，已跳过",
+                device.get("device_name", device_id),
+            )
             continue
         if device.get("device_type") == DEVICE_TYPE_CLIMATE:
             if classify_device(device) in {

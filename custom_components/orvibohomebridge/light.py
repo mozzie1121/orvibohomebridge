@@ -9,10 +9,18 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_LIGHT, DEVICE_TYPE_CLOTHES_HORSE
 from .coordinator import OrviboMeshCoordinator
+from .custom_devices import profile_for_device
 from .device_types import classify_device, DeviceCategory
 from .selection import selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Capabilities a custom light profile may declare, mapped to HA color modes.
+_CUSTOM_COLOR_MODES = (
+    ("onoff", ColorMode.ONOFF),
+    ("brightness", ColorMode.BRIGHTNESS),
+    ("color_temp", ColorMode.COLOR_TEMP),
+)
 
 
 def _to_int(value: object) -> Optional[int]:
@@ -39,12 +47,131 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         if device_id not in selected_ids:
             continue
-        if device.get("device_type") == DEVICE_TYPE_LIGHT:
+        custom_profile = profile_for_device(device)
+        if custom_profile is not None:
+            entities.append(OrviboCustomLight(coordinator, device, custom_profile))
+        elif device.get("device_type") == DEVICE_TYPE_LIGHT:
             entities.append(OrviboLight(coordinator, device))
         elif device.get("device_type") == DEVICE_TYPE_CLOTHES_HORSE:
             entities.append(OrviboClothesHorseLight(coordinator, device))
 
     async_add_entities(entities)
+
+
+class OrviboCustomLight(CoordinatorEntity, LightEntity):
+    """Light entity driven entirely by a user custom-device profile.
+
+    Supported color modes, brightness unit and color-temperature range come from
+    the profile, so nothing is inferred from a ``deviceType`` the integration
+    does not actually know.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: OrviboMeshCoordinator,
+        device: dict,
+        profile: object,
+    ):
+        super().__init__(coordinator)
+        self._device = device
+        self._profile = profile
+        self._device_id = device["device_id"]
+        self._attr_unique_id = f"orvibohomebridge_custom_light_{self._device_id}"
+        self._attr_name = device.get("device_name", self._device_id)
+
+        capabilities = set(profile.capabilities)
+        color_modes: list[ColorMode] = []
+        for capability, color_mode in _CUSTOM_COLOR_MODES:
+            if capability in capabilities:
+                color_modes.append(color_mode)
+        if not color_modes:
+            color_modes = [ColorMode.ONOFF]
+
+        self._attr_supported_color_modes = set(color_modes)
+        if ColorMode.COLOR_TEMP in color_modes:
+            self._attr_color_mode = ColorMode.COLOR_TEMP
+            low, high = profile.constraints.get("color_temp_range", (2700, 6500))
+            self._attr_min_color_temp_kelvin = int(low)
+            self._attr_max_color_temp_kelvin = int(high)
+        elif ColorMode.BRIGHTNESS in color_modes:
+            self._attr_color_mode = ColorMode.BRIGHTNESS
+        else:
+            self._attr_color_mode = ColorMode.ONOFF
+
+        _LOGGER.info(
+            "创建自定义设备灯光实体: %s profile=%s modes=%s",
+            self._attr_name,
+            profile.profile_id,
+            sorted(mode.value for mode in self._attr_supported_color_modes),
+        )
+
+    @property
+    def is_on(self) -> bool:
+        state = self.coordinator.get_device_state(self._device_id)
+        return bool(state.get("state", False)) if state else False
+
+    @property
+    def available(self) -> bool:
+        state = self.coordinator.get_device_state(self._device_id)
+        return bool(state.get("online", False)) if state else False
+
+    @property
+    def brightness(self) -> Optional[int]:
+        state = self.coordinator.get_device_state(self._device_id)
+        if not state or not state.get("state", False):
+            return None
+        value = _to_int(state.get("brightness"))
+        if value is None:
+            return None
+        return min(max(value, 0), 255)
+
+    @property
+    def color_temp_kelvin(self) -> Optional[int]:
+        state = self.coordinator.get_device_state(self._device_id)
+        if not state or not state.get("state", False):
+            return None
+        value = _to_int(state.get("color_temp"))
+        return value if value and value > 0 else None
+
+    @property
+    def color_temp(self) -> Optional[int]:
+        kelvin = self.color_temp_kelvin
+        return int(1000000 / kelvin) if kelvin else None
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", self._device_id),
+            "manufacturer": MANUFACTURER,
+            "model": self._device.get("model") or f"自定义设备/{self._profile.profile_id}",
+            "sw_version": "1.0",
+        }
+
+    async def async_turn_on(self, **kwargs) -> None:
+        brightness = kwargs.get("brightness")
+        color_temp_kelvin = kwargs.get("color_temp_kelvin")
+        color_temp_mired = kwargs.get("color_temp")
+
+        color_temp_k = None
+        if color_temp_kelvin is not None:
+            color_temp_k = int(color_temp_kelvin)
+        elif color_temp_mired is not None and color_temp_mired > 0:
+            color_temp_k = int(1000000 / color_temp_mired)
+
+        if brightness is not None or color_temp_k is not None:
+            await self.coordinator.async_set_light_param(
+                self._device_id,
+                int(brightness) if brightness is not None else None,
+                color_temp_k,
+            )
+        else:
+            await self.coordinator.async_turn_on(self._device_id)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_turn_off(self._device_id)
 
 
 class OrviboLight(CoordinatorEntity, LightEntity):

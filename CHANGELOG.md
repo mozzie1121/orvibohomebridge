@@ -1,5 +1,45 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **自定义设备 Profile**：不支持的设备现在无需改代码，只要把声明式
+  YAML/JSON profile 放进 `<HA config>/orvibohomebridge/devices/` 或
+  `custom_components/orvibohomebridge/custom_devices/` 即可支持：
+  - 声明匹配规则（`device_type` / `sub_device_type` / `class_id` /
+    `status_type` / `ui_model` / `model` / `class_name` / `product_name` /
+    `property_present` / `property_equals`，支持 `re:` 正则与 `priority`）后，
+    设备会按其声明的 HA 平台创建实体（light / switch / cover / sensor /
+    binary_sensor / climate / fan）；
+  - 声明式状态映射（`from` 路径、`map`、`scale`、`clamp`、mired↔Kelvin、
+    `true_values`/`false_values`）编译为与内置解析器相同的 `StateParser`；
+  - 声明式控制（`on`/`off`/`brightness`/`color_temp`/`position`/`stop`）
+    编译为 `ControlRoute`，复用已验证命令族（`on`/`off`/`set property`/
+    `move to level`/`fast move to level`/`fast color temperature`/
+    `open`/`stop`），LAN 与云端同名同参下发；
+  - 安全边界：`hardware_verified` 未置位时只登记不下发控制；命中已被内置
+    识别的设备默认不生效（需显式 `override: true`）；未声明的动作会报错
+    拒绝，不会静默借用内置命令；
+  - 选项流程新增「自定义设备 Profile」页（查看已加载 profile、命中设备数与
+    加载错误，并可重载）；诊断信息输出 `custom_device_profiles` 段。
+  - 已实现自定义实体的平台：`light` / `switch` / `cover` / `sensor` /
+    `binary_sensor`。`climate` 与 `fan` 目前 schema 接受、设备可识别、状态可
+    解析，但尚未实现自定义实体（跳过并记录 warning，不会落到内置实体）。
+  - 文档：`docs/custom-devices/`（总览、字段全表、各平台示例、配方、排查、
+    何时需要提 PR）。
+  - 内置模板：`custom_components/orvibohomebridge/custom_devices/example_demo_light.yaml`。
+
+### Fixed
+
+- 无（本版本未修复内置设备行为）。
+
+### Notes
+
+- 自定义设备实现期间顺带修掉两处新代码缺陷：`map:` 目标值为布尔/字符串时会
+  被数值化丢弃；显式声明的 `optimistic: {state: false}` 会被隐式默认覆盖。
+  两者都只影响新功能，未改变内置设备行为。
+
 ## [0.6.0] - 2026-08-31
 
 ### Added

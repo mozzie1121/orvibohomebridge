@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_FAN
 from .coordinator import OrviboMeshCoordinator
+from .custom_devices import profile_for_device
 from .device_types import classify_device, DeviceCategory
 from .selection import selected_device_ids
 
@@ -27,6 +28,13 @@ async def async_setup_entry(
     entities = []
     for device_id, device in coordinator.devices.items():
         if device_id not in selected_ids:
+            continue
+        if profile_for_device(device) is not None:
+            # 自定义设备：fan 平台尚未实现自定义实体，跳过而不是落到内置新风实体。
+            _LOGGER.warning(
+                "自定义设备 %s 声明了 fan 平台，但该平台尚未实现自定义实体，已跳过",
+                device.get("device_name", device_id),
+            )
             continue
         category = classify_device(device)
         if category == DeviceCategory.VENTILATION_SYSTEM:

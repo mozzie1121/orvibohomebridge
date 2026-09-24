@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
 from .const import DOMAIN
+from .custom_devices import registry as custom_registry
 from .device_types import get_device_profile
 from .redact import redact_packet
 
@@ -40,6 +41,11 @@ async def async_get_config_entry_diagnostics(
             "category": profile.category.value,
             "hardware_verified": profile.hardware_verified,
             "registration_only": profile.registration_only,
+            "custom_profile": (
+                profile.custom_profile.profile_id
+                if getattr(profile, "custom_profile", None) is not None
+                else None
+            ),
             "uid": dev.get("uid"),
             "online": dev.get("online"),
         }
@@ -60,11 +66,18 @@ async def async_get_config_entry_diagnostics(
             "raw": redact_packet(entry_.get("raw", {}), salt, strict=False),
         })
 
+    report = custom_registry()
     info = {
         "device_count": len(devices_raw),
         "devices": redact_packet(devices_raw, salt, strict=False),
         "states": redact_packet(states_raw, salt, strict=False),
         "recent_cmd42_push": cmd42_entries,
+        # 自定义设备 profile 状态：加载了哪些、命中了多少设备、哪些文件失败
+        "custom_device_profiles": {
+            "directories": [str(path) for path in report.directories],
+            "loaded": report.diagnostics(),
+            "errors": list(report.errors),
+        },
     }
     return info
 

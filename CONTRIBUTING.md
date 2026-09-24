@@ -4,6 +4,10 @@
 
 本项目只把经过真机验证的型号写入 README 支持列表。根据字段猜测出的协议可以作为实验性实现提交，但不能标记为“真机验证通过”。
 
+新设备不一定需要改代码：如果它只需要一组新的匹配条件加上状态/控制声明（复用已验证的 `order`），可以先写**声明式自定义设备 profile**，放进 `<HA config>/orvibohomebridge/devices/` 就能生效，无需 PR 也无需等待版本更新。判断标准与边界见
+[docs/custom-devices/05-custom-vs-upstream.md](docs/custom-devices/05-custom-vs-upstream.md)；
+一旦需要新 `cmd`、新传输通道、新状态字段或新实体类型，仍然要走下面的代码流程。
+
 ## 开始之前
 
 请从最新 `main` 创建独立分支，不要直接向 `main` 提交：

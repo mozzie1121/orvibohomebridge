@@ -79,7 +79,15 @@
                     "reauth": "重新登录",
                     "devices": "选择设备",
                     "lock_users": "锁用户映射",
-                    "transport_mode": "传输模式"
+                    "transport_mode": "传输模式",
+                    "custom_profiles": "自定义设备 Profile"
+                }
+            },
+            "custom_profiles": {
+                "title": "自定义设备 Profile",
+                "description": "把声明式 profile 文件放进下面任一目录，即可支持本集成原本不支持的设备：\n\n{directories}\n\n{summary}",
+                "data": {
+                    "reload_custom_profiles": "重新加载 profile 并重载集成"
                 }
             },
             "transport_mode": {
@@ -156,7 +164,8 @@
             "no_devices_selected": "请至少勾选一台设备",
             "cannot_connect": "无法连接欧瑞博云",
             "no_devices": "该家庭中没有发现设备",
-            "lan_credentials_required": "请输入独立的 MixPad 用户名和密码"
+            "lan_credentials_required": "请输入独立的 MixPad 用户名和密码",
+            "profile_reload_failed": "profile 重载失败，请检查日志"
         },
         "abort": {
             "reauth_successful": "重新登录成功，现有设备和实体设置已保留"
