@@ -368,7 +368,6 @@ _CLASS_ID_MAP: Dict[int, DeviceCategory] = {
 HIDDEN_CATEGORIES: set = {
     DeviceCategory.MIXPAD_GATEWAY,      # deviceTypeId=114
     DeviceCategory.MIX_SWITCH,          # deviceTypeId=135/136/137/143
-    DeviceCategory.WIFI_CAMERA,         # deviceTypeId=14
     DeviceCategory.SMART_REMOTE,        # deviceTypeId=150
     DeviceCategory.MIXPAD_4WAY_BASE,    # deviceTypeId=511
 }
