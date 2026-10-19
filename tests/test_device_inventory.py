@@ -122,6 +122,51 @@ class DeviceInventoryTests(unittest.TestCase):
         self.assertTrue(states["light"]["online"])
         self.assertEqual(states["light"]["value1"], 1)
 
+    def test_environmental_snapshot_initialize_and_refresh(self) -> None:
+        for method in ("initialize", "merge_cloud"):
+            with self.subTest(method=method):
+                inventory, _, states, _ = self.make_inventory()
+                readings = [
+                    {"device_id": "temperature", "device_type_raw": 22,
+                     "value1": 2290, "value2": 0, "value4": 45},
+                    {"device_id": "humidity", "device_type_raw": 23,
+                     "value1": 0, "value2": 6012, "value4": 45},
+                ]
+                for reading in readings:
+                    reading.update(online_time=time.time(), properties={})
+                getattr(inventory, method)(readings)
+                self.assertEqual(states["temperature"]["temperature"], 22.9)
+                self.assertEqual(states["humidity"]["humidity"], 60.12)
+                self.assertIsNone(states["humidity"].get("temperature"))
+                self.assertIsNone(states["temperature"].get("humidity"))
+                self.assertEqual(states["temperature"]["battery"], 45)
+                self.assertEqual(states["humidity"]["battery"], 45)
+                readings[0]["value1"] = 2400
+                inventory.merge_cloud(readings)
+                self.assertEqual(states["temperature"]["temperature"], 24.0)
+
+    def test_environmental_stale_snapshot_does_not_seed_or_overwrite(self) -> None:
+        inventory, _, states, _ = self.make_inventory()
+        reading = {"device_id": "temperature", "device_type_raw": 22,
+                   "online_time": 1, "value1": 2290, "value4": 45}
+        inventory.initialize([reading])
+        self.assertIsNone(states["temperature"].get("temperature"))
+        states["temperature"]["temperature"] = 25.0
+        inventory.merge_cloud([reading])
+        self.assertEqual(states["temperature"]["temperature"], 25.0)
+
+    def test_environmental_cloud_snapshot_respects_lan_priority(self) -> None:
+        inventory, _, states, _ = self.make_inventory()
+        inventory.state_store.merge(
+            "temperature", {"temperature": 25.0}, self.module.StateSource.LAN
+        )
+        inventory.merge_cloud([
+            {"device_id": "temperature", "device_type_raw": 22,
+             "online_time": time.time(), "value1": 2290, "value4": 45}
+        ])
+        self.assertEqual(states["temperature"]["temperature"], 25.0)
+        self.assertEqual(states["temperature"]["battery"], 45)
+
     def test_merge_cloud_refreshes_door_lock_state(self) -> None:
         inventory, _devices, states, _removed = self.make_inventory()
 

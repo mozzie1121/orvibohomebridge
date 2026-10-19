@@ -118,6 +118,7 @@ class DeviceInventory:
                 parser(
                     state,
                     {
+                        "statusType": device.get("device_type_raw"),
                         "properties": device.get("properties", {}),
                         "value1": device.get("value1"),
                         "value2": device.get("value2"),
@@ -218,6 +219,19 @@ class DeviceInventory:
             status = device.get("status", {})
             if isinstance(status, dict):
                 cloud_state.update(status)
+            if seed_values and device.get("device_type_raw") in (22, 23):
+                parser = get_state_parser(category)
+                if parser is not None:
+                    parser(
+                        self.states[device_id],
+                        {
+                            "statusType": device["device_type_raw"],
+                            "properties": device.get("properties", {}),
+                            "value1": device.get("value1"),
+                            "value2": device.get("value2"),
+                            "value4": device.get("value4"),
+                        },
+                    ).apply_to(cloud_state)
             if cloud_state:
                 self.state_store.merge(
                     device_id, cloud_state, StateSource.CLOUD
