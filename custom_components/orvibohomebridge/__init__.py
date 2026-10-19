@@ -125,7 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     # 自定义设备 profile 必须在设备发现之前加载：分类、平台映射、能力解析
     # 都在 readtable 归一化阶段就会查这张表。
-    custom_registry = load_custom_profiles(hass)
+    custom_registry = await hass.async_add_executor_job(load_custom_profiles, hass)
     if custom_registry.errors:
         _LOGGER.error(
             "有 %s 个自定义设备 profile 未加载，详见上方日志（不影响内置设备）",
@@ -260,11 +260,21 @@ async def _async_assign_areas(hass: HomeAssistant, entry: ConfigEntry):
         area = area_registry.async_get_area_by_name(room_name)
         if area is None:
             area = area_registry.async_create(room_name)
-        device_entry = device_registry.async_get_device(
-            identifiers={(DOMAIN, device_id)}
-        )
+        device_entry = _async_get_device_entry(device_registry, device_id)
         if device_entry is not None and device_entry.area_id != area.id:
             device_registry.async_update_device(device_entry.id, area_id=area.id)
+
+
+
+def _async_get_device_entry(device_registry, device_id: str):
+    """按标识符取设备：HA 2026 起 async_get_device 已弃用。"""
+    getter = getattr(device_registry, "async_get_device_by_identifier", None)
+    if getter is not None:
+        try:
+            return getter(DOMAIN, device_id)
+        except TypeError:
+            pass
+    return device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
 
 
 async def _apply_device_areas(hass: HomeAssistant, entry: ConfigEntry):
