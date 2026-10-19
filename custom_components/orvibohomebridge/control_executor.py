@@ -497,6 +497,29 @@ class ControlExecutor:
             ]
             return all(results)
 
+        # deviceType=503 系列（CCT_LIGHT / CCT_LIGHT_STRIP：灯带、色温筒灯等）
+        # 只认 set property 报文，legacy 复合报文（order="on" + value1..4）会被
+        # 设备静默丢弃且无任何回执。这里拆成两条已验证的 set property 指令下发。
+        # 见 issue #19。
+        if classify_device(device) in (
+            DeviceCategory.CCT_LIGHT,
+            DeviceCategory.CCT_LIGHT_STRIP,
+        ):
+            results: list[bool] = []
+            if brightness is not None:
+                results.append(await self.set_brightness(device_id, brightness))
+            if color_temp_k is not None:
+                results.append(await self.set_color_temp(device_id, color_temp_k))
+            if not results or not all(results):
+                _LOGGER.warning(
+                    "设备 %s 使用 set property 设置亮度/色温失败（brightness=%s, color_temp_k=%s）",
+                    device_id,
+                    brightness,
+                    color_temp_k,
+                )
+                return False
+            return True
+
         result, _scope = await self._send_selected(
             device_id,
             "send_light_bri_ct",

@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock
 
 COMPONENT_PATH = Path(__file__).parents[1] / "custom_components" / "orvibohomebridge"
 
@@ -94,6 +95,44 @@ class ControlExecutorTests(unittest.TestCase):
         self.assertEqual(ssl.calls[0][0], "light")
         self.assertTrue(states["device"]["state"])
         self.assertTrue(updates)
+
+
+    def _force_cct_device(self, executor) -> None:
+        """Treat the fake device as a controllable 503 CCT light for this test."""
+        device = executor.devices["device"]
+        executor._controllable_device = lambda *args, **kwargs: device
+        original = self.module.classify_device
+        self.addCleanup(setattr, self.module, "classify_device", original)
+        self.module.classify_device = lambda dev: self.module.DeviceCategory.CCT_LIGHT
+
+    def test_set_light_param_cct_uses_set_property_routes(self) -> None:
+        """issue #19：deviceType=503 只认 set property，不能走 legacy 复合报文。"""
+        executor, ssl, _states, _updates = self.make_executor(
+            {"device_type_raw": 503, "uid": "uid"}
+        )
+        self._force_cct_device(executor)
+        executor.set_brightness = AsyncMock(return_value=True)
+        executor.set_color_temp = AsyncMock(return_value=True)
+
+        result = asyncio.run(executor.set_light_param("device", 50, 3800))
+
+        self.assertTrue(result)
+        executor.set_brightness.assert_awaited_once_with("device", 50)
+        executor.set_color_temp.assert_awaited_once_with("device", 3800)
+        self.assertNotIn("send_light_bri_ct", [call[0] for call in ssl.calls])
+
+    def test_set_light_param_cct_reports_failure(self) -> None:
+        """issue #19：set property 失败时要返回 False 并留日志，不能静默成功。"""
+        executor, _ssl, _states, _updates = self.make_executor(
+            {"device_type_raw": 503, "uid": "uid"}
+        )
+        self._force_cct_device(executor)
+        executor.set_brightness = AsyncMock(return_value=True)
+        executor.set_color_temp = AsyncMock(return_value=False)
+
+        result = asyncio.run(executor.set_light_param("device", 50, 3800))
+
+        self.assertFalse(result)
 
     def test_turn_on_no_optimistic_when_send_fails(self) -> None:
         """P0-2: 发送失败时不得写乐观状态，turn_on 返回 False。"""
