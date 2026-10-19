@@ -195,6 +195,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
+    try:
+        manifest = json.loads((Path(__file__).with_name("manifest.json")).read_text())
+        version = manifest.get("version", "?")
+    except Exception:  # noqa: BLE001
+        version = "?"
+    camera_ids = [
+        device_id
+        for device_id, device in coordinator.devices.items()
+        if device.get("device_type_raw") in (14, 162)
+    ]
+    _LOGGER.info(
+        "ORVIBO HomeBridge v%s 启动：设备 %s 台，摄像头 %s 台%s",
+        version,
+        len(coordinator.devices),
+        len(camera_ids),
+        f" ({', '.join(camera_ids)})" if camera_ids else "",
+    )
     _LOGGER.info("Coordinator 已注册到 hass.data")
 
     # 历史记录自动清理：保留 7 天，每周执行；卸载时取消定时任务

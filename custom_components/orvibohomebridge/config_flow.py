@@ -235,10 +235,36 @@ async def _fetch_devices(
     finally:
         if client:
             await client.close()
-    return [
-        d for d in devices
-        if not is_hidden_category(classify_device(d))
+    hidden = [d for d in devices if is_hidden_category(classify_device(d))]
+    kept = [d for d in devices if d not in hidden]
+    if hidden:
+        _LOGGER.info(
+            "设备清单过滤: 解析=%s, 隐藏=%s (%s), 可用=%s",
+            len(devices),
+            len(hidden),
+            ", ".join(
+                f"{d.get('device_name') or d.get('device_id')}"
+                f"[type={d.get('device_type_raw')}]"
+                for d in hidden
+            ),
+            len(kept),
+        )
+    cameras = [
+        d for d in kept if classify_device(d).value in ("wifi_camera", "camera_nvr")
     ]
+    _LOGGER.info(
+        "设备清单: 总计=%s, 摄像头=%s%s",
+        len(kept),
+        len(cameras),
+        (
+            " -> " + ", ".join(
+                f"{d.get('device_name')}(type={d.get('device_type_raw')})"
+                for d in cameras
+            )
+        )
+        if cameras else "",
+    )
+    return kept
 
 
 async def _probe_ssl_credentials(
