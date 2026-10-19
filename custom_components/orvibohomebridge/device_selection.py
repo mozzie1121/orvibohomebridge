@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from typing import Any
 from .capabilities import capability_for
 from .device_types import DeviceCategory, classify_device
 from .selection import CONF_SELECTED_DEVICE_IDS
+
+_LOGGER = logging.getLogger(__name__)
 
 GROUP_FIELD_PREFIX = "device_group_"
 GROUP_ALL_VALUE_PREFIX = "__all__:"
@@ -77,11 +80,28 @@ def device_selection_groups(
     buckets: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for device in devices:
         buckets[infer_group(device)].append(device)
-    return tuple(
+    groups = tuple(
         DeviceSelectionGroup(key, label, tuple(buckets[key]))
         for key, label in GROUPS
         if buckets[key]
     )
+    if groups:
+        _LOGGER.info(
+            "设备选择分组: %s",
+            ", ".join(f"{g.label}({len(g.devices)})" for g in groups),
+        )
+        other = next((g for g in groups if g.key == "other"), None)
+        if other is not None:
+            _LOGGER.info(
+                "未归类设备(%s): %s",
+                len(other.devices),
+                ", ".join(
+                    f"{d.get('device_name') or d.get('device_id')}"
+                    f"[type={d.get('device_type_raw')},platform={d.get('device_type')}]"
+                    for d in other.devices[:10]
+                ),
+            )
+    return groups
 
 
 def merge_grouped_selection(
