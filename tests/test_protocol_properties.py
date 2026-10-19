@@ -95,3 +95,36 @@ def test_table_rows_and_row_update_time():
     assert {row["uid"] for row in rows} == {"a", "b"}
     assert protocol._row_update_time({"updateTimeSec": 1773567730}) == 1773567730000
     assert protocol._row_update_time({}) == 0
+
+
+def test_property_state_aliases_light():
+    flat = {"onoff.status": "on", "brightness.percent": 100, "colorTemp.value": 4000}
+    assert protocol.property_state_aliases(flat) == {
+        "state": True, "brightness": 100, "color_temp": 4000}
+
+
+def test_property_state_aliases_floor_heating():
+    aliases = protocol.property_state_aliases({
+        "onoff.status": "off",
+        "thermostat.targetTemp": 23.0,
+        "thermostat.localTemp": 24,
+        "thermostat.localHumidity": 43,
+    })
+    assert aliases["state"] is False
+    assert aliases["target_temperature"] == 23.0
+    assert aliases["current_temperature"] == 24
+    assert aliases["humidity"] == 43
+
+
+def test_apply_property_aliases_keeps_fresh_values():
+    state = {"state": False, "brightness": None,
+             "property_flat": {"onoff.status": "on", "brightness.percent": 55}}
+    out = protocol.apply_property_aliases(dict(state))
+    assert out["state"] is False
+    assert out["brightness"] == 55
+
+
+def test_property_state_aliases_ignores_unknown_shapes():
+    assert protocol.property_state_aliases({"onoff.status": "control"}) == {}
+    assert protocol.property_state_aliases({}) == {}
+    assert protocol.property_state_aliases(None) == {}

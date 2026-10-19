@@ -309,6 +309,69 @@ def _readtable_properties(
         properties = _merge_properties(properties, {key: value})
     return properties
 
+
+#: thing-model property -> flat state key the HA entities already read.
+PROPERTY_STATE_ALIASES: Final = {
+    "onoff.status": "state",
+    "brightness.percent": "brightness",
+    "colorTemp.value": "color_temp",
+    "thermostat.targetTemp": "target_temperature",
+    "thermostat.localTemp": "current_temperature",
+    "thermostat.localHumidity": "humidity",
+    "freshAirControler.runMode": "run_mode",
+    "fanControl.fanMode": "fan_mode",
+}
+
+_TRUE_TEXTS: Final = {"on", "open", "true", "1", "yes"}
+_FALSE_TEXTS: Final = {"off", "close", "closed", "false", "0", "no"}
+
+
+def property_state_aliases(property_flat: Mapping[str, Any]) -> dict[str, Any]:
+    """把 ``property_flat`` 的 ``server.property`` 折叠成实体读取的状态键。
+
+    只做语义映射，不做单位换算：色温仍是设备上报的数值，亮度仍是百分比。
+    无法解释的值直接跳过，交给原有 value1..N 解析兜底。
+    """
+    aliases: dict[str, Any] = {}
+    if not isinstance(property_flat, Mapping):
+        return aliases
+    for source, target in PROPERTY_STATE_ALIASES.items():
+        if source not in property_flat:
+            continue
+        raw = property_flat[source]
+        if target == "state":
+            if isinstance(raw, bool):
+                aliases[target] = raw
+            elif isinstance(raw, (int, float)):
+                aliases[target] = raw != 0
+            elif isinstance(raw, str):
+                text = raw.strip().lower()
+                if text in _TRUE_TEXTS:
+                    aliases[target] = True
+                elif text in _FALSE_TEXTS:
+                    aliases[target] = False
+            continue
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, (int, float)):
+            aliases[target] = raw
+        elif isinstance(raw, str):
+            try:
+                aliases[target] = float(raw) if "." in raw else int(raw)
+            except ValueError:
+                aliases[target] = raw
+    return aliases
+
+
+def apply_property_aliases(state: dict[str, Any]) -> dict[str, Any]:
+    """把属性别名写进状态字典（已有非空值不覆盖，保持 SSL 最新值优先）。"""
+    aliases = property_state_aliases(state.get("property_flat") or {})
+    for key, value in aliases.items():
+        if state.get(key) is None:
+            state[key] = value
+    return state
+
+
 def parse_families(payload: Mapping[str, Any]) -> tuple[OrviboFamily, ...]:
     """归一化家庭响应解析（兼容多种字段名）。"""
     raw: Any = payload.get("data", [])

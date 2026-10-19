@@ -30,6 +30,7 @@ from .temp_password_manager import TempPasswordManager
 from .device_inventory import DeviceInventory
 from .control_executor import ControlExecutor
 from .selection import cleaned_selection_options
+from .protocol import apply_property_aliases
 from .const import (
     DOMAIN,
     SSL_PORT,
@@ -1114,6 +1115,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         state = self.device_states.get(device_id)
         if state is None:
             return None
+        # 属性型设备（灯5 / MixPad 虚拟地暖等）把语义放在 deviceStatus.properties，
+        # 这里折叠成实体已有的状态键（state / brightness / color_temp / target_temperature …）。
+        aliased = apply_property_aliases(dict(state))
+        if aliased != state:
+            state = aliased
         online = self._derive_online(device_id, state)
         if online != state.get("online", False):
             derived = dict(state)
