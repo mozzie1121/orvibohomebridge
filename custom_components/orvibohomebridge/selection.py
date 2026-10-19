@@ -135,6 +135,8 @@ def _infer_group_fallback(device: Mapping[str, Any]) -> str:
         raw_type = int(raw)
     except (TypeError, ValueError):
         raw_type = -1
+    if raw_type in {14, 162}:
+        return "cameras"
     if raw_type == 522:
         return "locks"
     if raw_type in {34, 35}:

@@ -20,6 +20,7 @@ GROUPS: tuple[tuple[str, str], ...] = (
     ("climate", "空调"),
     ("sensors", "传感器"),
     ("locks", "门锁"),
+    ("cameras", "摄像头"),
     ("other", "其他"),
 )
 
@@ -49,8 +50,16 @@ def infer_group(device: Mapping[str, Any]) -> str:
     category = classify_device(device)
     if category == DeviceCategory.DOOR_LOCK:
         return "locks"
+    camera_categories = {
+        getattr(DeviceCategory, name, None)
+        for name in ("WIFI_CAMERA", "CAMERA_NVR")
+    }
+    if category in camera_categories - {None}:
+        return "cameras"
 
     platforms = capability_for(device).platforms
+    if "camera" in platforms:
+        return "cameras"
     if platforms & {"light", "switch"}:
         return "lights"
     if "cover" in platforms:

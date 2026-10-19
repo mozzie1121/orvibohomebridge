@@ -30,12 +30,16 @@ def _load_module():
     package.__path__ = [str(MODULE_PATH.parent)]
 
     class DeviceCategory(Enum):
+        WIFI_CAMERA = "wifi_camera"
+        CAMERA_NVR = "camera_nvr"
         DOOR_LOCK = "door_lock"
         OTHER = "other"
 
     def classify_device(device):
         return (
-            DeviceCategory.DOOR_LOCK
+            DeviceCategory.WIFI_CAMERA
+            if device.get("device_type_raw") == 14
+            else DeviceCategory.DOOR_LOCK
             if device.get("device_type_raw") == 522
             else DeviceCategory.OTHER
         )
