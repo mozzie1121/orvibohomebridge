@@ -38,7 +38,7 @@ from .protocol import migrate_password_credentials
 from .models import AccountCredentials
 from .cloud import cloud_for_region
 from .coordinator import OrviboMeshCoordinator
-from .selection import CONF_DEVICE_AREAS, selected_device_ids
+from .selection import CONF_DEVICE_AREAS, cleaned_selection_options, selected_device_ids
 from .service_handlers import async_register_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -168,6 +168,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         lan_credentials=lan_credentials,
         poll_interval=timedelta(minutes=poll_minutes),
     )
+    coordinator.attach_config_entry(entry)
 
     try:
         _LOGGER.info("开始设置 Orvibo Mesh...")
@@ -184,6 +185,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         updated_data = dict(entry.data)
         updated_data[CONF_CLOUD_REGION] = detected_region
         hass.config_entries.async_update_entry(entry, data=updated_data)
+
+    cleaned_options = cleaned_selection_options(entry.options, coordinator.devices)
+    if cleaned_options != dict(entry.options):
+        hass.config_entries.async_update_entry(entry, options=cleaned_options)
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
