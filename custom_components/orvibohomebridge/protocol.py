@@ -882,6 +882,15 @@ def parse_readtable_to_device_dicts(
     data = payload.get("data") if isinstance(payload, Mapping) else None
     if not isinstance(data, Mapping):
         return dicts
+    # CameraInfo.type 按硬件 UID（Device.uid）归属，不是 deviceId；
+    # camera_sdk_hint() 依赖它区分 danale(3-7) / meari(8-10)。
+    camera_types = parse_camera_types(data.get("cameraInfo"))
+    if camera_types:
+        for item in dicts:
+            uid = str(item.get("uid") or "")
+            if uid and item.get("camera_type") is None and uid in camera_types:
+                item["camera_type"] = camera_types[uid]
+
     statuses: dict[str, Mapping[str, Any]] = {}
     for row in _table_rows(data.get("deviceStatus")):
         device_id = _first_text(row, ("deviceId", "deviceID"))
