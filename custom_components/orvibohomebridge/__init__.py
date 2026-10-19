@@ -41,6 +41,8 @@ from .coordinator import OrviboMeshCoordinator
 from .selection import CONF_DEVICE_AREAS, cleaned_selection_options, selected_device_ids
 from .service_handlers import async_register_services
 from .meari_probe import async_cancel_video_probes
+from .frontend_resources import async_register_card_resources
+from .registry_sync import sync_selected_device_registries
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -203,6 +205,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     # 使用 async_forward_entry_setups 一次性加载所有平台
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # 前端卡片与注册表同步：失败只降级，不能影响集成加载
+    try:
+        await async_register_card_resources(hass)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("前端卡片注册失败（不影响加载）: %s", err)
+    try:
+        removed = sync_selected_device_registries(hass, entry, coordinator.devices)
+        if removed:
+            _LOGGER.info("已从注册表移除 %s 个未选设备", removed)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("注册表同步失败（不影响加载）: %s", err)
+
 
     async def _apply_after_refresh():
         """等待 coordinator 第一次刷新完成后再应用区域映射。"""
