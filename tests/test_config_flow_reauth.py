@@ -161,6 +161,7 @@ def _load_config_flow():
         ),
         f"{package_name}.selection": _module(
             f"{package_name}.selection",
+            CONF_SELECTED_DEVICE_GROUPS="selected_device_groups",
             CONF_SELECTED_DEVICE_IDS="selected_device_ids",
             selected_device_ids=lambda options, devices: set(devices),
         ),
@@ -248,7 +249,7 @@ class TestOptionsReauth(unittest.IsolatedAsyncioTestCase):
             {"device_id": "light-2", "group": "lights"},
             {"device_id": "sensor-1", "group": "sensors"},
         ]
-        selected, custom = self.module._selection_plan(
+        selected, custom, selected_groups = self.module._selection_plan(
             {
                 "device_group_lights": "all",
                 "device_group_sensors": "custom",
@@ -257,6 +258,7 @@ class TestOptionsReauth(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(selected, ["light-1", "light-2"])
         self.assertEqual(custom, {"sensors"})
+        self.assertEqual(selected_groups, ["lights"])
 
     def test_custom_step_merges_with_categories_selected_as_all(self):
         devices = [
