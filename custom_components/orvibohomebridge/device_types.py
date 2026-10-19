@@ -27,6 +27,7 @@ class DeviceCategory(Enum):
     BACH_SWITCH = "bach_switch"                        # deviceTypeId=518
     DOOR_LOCK = "door_lock"                            # deviceTypeId=522, classId=463
     WIFI_CAMERA = "wifi_camera"                        # deviceTypeId=14
+    CAMERA_NVR = "camera_nvr"                      # deviceTypeId=162
     LIGHT_VIRTUAL_GROUP = "light_virtual_group"        # deviceTypeId=10086
     DIM_COLOR_LIGHT = "dim_color_light"                # deviceTypeId=38
     LEGACY_LIGHT = "legacy_light"                      # deviceTypeId=102
@@ -154,6 +155,12 @@ _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
         label="WiFi 摄像机",
         description="deviceTypeId=14",
         capabilities=("camera",),
+    ),
+    DeviceCategory.CAMERA_NVR: CategoryInfo(
+        category=DeviceCategory.CAMERA_NVR,
+        label="摄像机 NVR",
+        description="deviceTypeId=162，Meari XTS/p2p2 在线通道提供实时画面",
+        capabilities=(),
     ),
     DeviceCategory.LIGHT_VIRTUAL_GROUP: CategoryInfo(
         category=DeviceCategory.LIGHT_VIRTUAL_GROUP,
@@ -321,6 +328,7 @@ _DEVICE_TYPE_MAP: Dict[int, DeviceCategory] = {
     522: DeviceCategory.DOOR_LOCK,
     45: DeviceCategory.MIXPAD_GATEWAY,  # Zigbee Mini Hub (Hub100)，隐藏
     14: DeviceCategory.WIFI_CAMERA,
+    162: DeviceCategory.CAMERA_NVR,
     10086: DeviceCategory.LIGHT_VIRTUAL_GROUP,
     38: DeviceCategory.DIM_COLOR_LIGHT,
     52: DeviceCategory.CLOTHES_HORSE,

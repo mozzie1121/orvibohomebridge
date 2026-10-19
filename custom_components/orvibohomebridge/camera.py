@@ -29,7 +29,7 @@ from .camera_metadata import camera_sdk_hint
 from .meari_live import LiveCameraBootstrap, LiveCameraDescription
 from .meari_stream import MeariVideoBridge, _finish_uninterrupted
 from .meari_hdd import DATA_KEY, async_query_hdd, validate_request
-from .coordinator import OrviboSmartControlCoordinator
+from .coordinator import OrviboMeshCoordinator
 from .device_types import DeviceCategory, classify_device
 from .selection import selected_device_ids
 
@@ -48,7 +48,7 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: OrviboSmartControlCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator: OrviboMeshCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     selected_ids = selected_device_ids(config_entry.options, coordinator.devices)
     entities = []
     for device_id, device in coordinator.devices.items():
@@ -89,7 +89,7 @@ class OrviboLockSnapshotCamera(CoordinatorEntity, Camera):
 
     _attr_icon = "mdi:cctv"
 
-    def __init__(self, coordinator: OrviboSmartControlCoordinator, device: dict[str, Any]):
+    def __init__(self, coordinator: OrviboMeshCoordinator, device: dict[str, Any]):
         super().__init__(coordinator)
         Camera.__init__(self)
         self._device = device
@@ -147,7 +147,7 @@ class OrviboLiveCamera(CoordinatorEntity, Camera):
     _attr_brand = "ORVIBO"
 
     def __init__(
-        self, coordinator: OrviboSmartControlCoordinator, device: dict[str, Any],
+        self, coordinator: OrviboMeshCoordinator, device: dict[str, Any],
         description: LiveCameraDescription, bootstrap: LiveCameraBootstrap,
         ffmpeg_binary: str,
     ) -> None:
