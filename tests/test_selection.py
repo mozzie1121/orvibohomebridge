@@ -37,6 +37,39 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(selection.device_is_selected(options, "light"))
         self.assertFalse(selection.device_is_selected(options, "curtain"))
 
+    def test_selected_group_includes_new_available_devices(self) -> None:
+        devices = {
+            "old-ac": {"device_id": "old-ac", "device_type_raw": 36},
+            "new-ac": {"device_id": "new-ac", "device_type_raw": 36},
+            "light": {"device_id": "light", "device_type_raw": 38},
+        }
+        options = {
+            selection.CONF_SELECTED_DEVICE_IDS: ["old-ac"],
+            selection.CONF_SELECTED_DEVICE_GROUPS: ["climate"],
+        }
+
+        self.assertEqual(
+            selection.selected_device_ids(options, devices),
+            {"old-ac", "new-ac"},
+        )
+
+    def test_cleaned_selection_options_removes_stale_ids_and_areas(self) -> None:
+        options = {
+            selection.CONF_SELECTED_DEVICE_IDS: ["light", "removed"],
+            selection.CONF_DEVICE_AREAS: {
+                "light": "living_room",
+                "removed": "old_room",
+            },
+        }
+
+        self.assertEqual(
+            selection.cleaned_selection_options(options, ["light"]),
+            {
+                selection.CONF_SELECTED_DEVICE_IDS: ["light"],
+                selection.CONF_DEVICE_AREAS: {"light": "living_room"},
+            },
+        )
+
     def test_empty_selection_adds_no_devices(self) -> None:
         options = {selection.CONF_SELECTED_DEVICE_IDS: []}
         self.assertEqual(selection.selected_device_ids(options, ["light"]), set())

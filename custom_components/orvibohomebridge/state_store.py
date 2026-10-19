@@ -75,6 +75,7 @@ class StateStore:
             self._revisions[(device_id, field)] = FieldRevision(source, timestamp)
 
     def remove(self, device_id: str) -> None:
+        self.states.pop(device_id, None)
         for key in tuple(self._revisions):
             if key[0] == device_id:
                 self._revisions.pop(key, None)

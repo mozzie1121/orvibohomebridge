@@ -123,6 +123,7 @@ CONF_LAN_USERNAME = "lan_username"
 CONF_LAN_PASSWORD = "lan_password"
 CONF_LAN_PASSWORD_HASH = "lan_password_hash"
 CONF_POLL_INTERVAL_MINUTES = "poll_interval_minutes"
+CONF_RELOAD_PROFILES = "reload_custom_profiles"  # 选项流程：重新加载自定义设备 profile
 CONF_AVAILABILITY_NOTIFICATIONS = "availability_notifications"
 CONF_NOTIFY_ONLINE = "notify_online"
 CONF_NOTIFY_OFFLINE = "notify_offline"

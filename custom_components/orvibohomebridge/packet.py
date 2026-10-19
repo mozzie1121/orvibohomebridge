@@ -160,6 +160,52 @@ class HomemateJsonData:
         return payload
 
     @classmethod
+    def ssl_control_envelope(
+        cls,
+        username: str,
+        device_id: str,
+        device_uid: str,
+        order: str,
+        value1: int | None = None,
+        value2: int | None = None,
+        value3: int | None = None,
+        value4: int | None = None,
+        properties: dict | None = None,
+    ):
+        """构造任意已验证 order 的 cmd=15 控制封包（供自定义设备 profile 复用）。
+
+        只接受 control_router 已验证过的 order 语义。调用方不得传入未验证的
+        order 字符串，否则等同于凭空发明协议。
+        """
+        serial = generate_serial()
+        uniSerial = generate_serial(use_time=True)
+        payload = {
+            "uid": device_uid,
+            "userName": username,
+            "deviceId": device_id,
+            "groupId": "",
+            "order": order,
+            "value1": value1 if value1 is not None else 0,
+            "value2": value2 if value2 is not None else 0,
+            "value3": value3 if value3 is not None else 0,
+            "value4": value4 if value4 is not None else 0,
+            "delayTime": 0,
+            "qualityOfService": 1,
+            "defaultResponse": 1,
+            "propertyResponse": 0,
+            "cmd": CMD_CONTROL,
+            "serial": serial,
+            "clientType": 1,
+            "uniSerial": uniSerial,
+            "serverRecord": False,
+            "ver": SOFTWARE_VER,
+            "debugInfo": DEBUG_INFO,
+        }
+        if properties:
+            payload["properties"] = dict(properties)
+        return payload
+
+    @classmethod
     def ssl_control_switch(cls, username: str, device_id: str, device_uid: str, state: bool):
         """开关控制（set property 格式，适用于 type=501/135/136 等）。"""
         serial = generate_serial()

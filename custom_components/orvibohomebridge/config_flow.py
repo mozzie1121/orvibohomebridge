@@ -37,10 +37,40 @@ from .device_types import (
 from .device_selection import device_selection_groups
 from .lock_status import format_lock_user_names, parse_lock_user_names
 from .capabilities import TransportMode
-from .selection import CONF_SELECTED_DEVICE_IDS, selected_device_ids
+from .selection import (
+    CONF_SELECTED_DEVICE_GROUPS,
+    CONF_SELECTED_DEVICE_IDS,
+    selected_device_ids,
+)
 from .protocol import password_hash
 
 _LOGGER = logging.getLogger(__name__)
+
+#: 选项流程字段名（保持与 const.CONF_RELOAD_PROFILES 一致）
+CONF_RELOAD_PROFILES = "reload_custom_profiles"
+
+
+def _custom_profile_summary(registry) -> str:
+    """Render the loaded custom-device profiles for the options form."""
+
+    lines: list[str] = []
+    profiles = registry.profiles
+    if not profiles:
+        lines.append("当前没有加载任何自定义设备 profile。")
+    else:
+        lines.append(f"已加载 {len(profiles)} 个 profile：")
+        for profile in profiles:
+            matched = registry.match_counts.get(profile.profile_id, 0)
+            state = "已验证" if profile.hardware_verified else "仅登记（不下发控制）"
+            lines.append(
+                f"- `{profile.profile_id}`（{profile.display_name}）"
+                f"平台={profile.platform}，命中设备 {matched} 台，{state}"
+            )
+    if registry.errors:
+        lines.append("")
+        lines.append(f"有 {len(registry.errors)} 个文件未能加载：")
+        lines.extend(f"- {error}" for error in registry.errors)
+    return "\n".join(lines)
 
 
 def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -144,18 +174,20 @@ def _custom_device_schema(
 
 def _selection_plan(
     user_input: dict, devices: list[dict]
-) -> tuple[list[str], set[str]]:
+) -> tuple[list[str], set[str], list[str]]:
     """Resolve all/none categories and return categories needing a detail step."""
 
     selected: list[str] = []
     custom: set[str] = set()
+    selected_groups: list[str] = []
     for group in device_selection_groups(devices):
         mode = str(user_input.get(group.field, DEVICE_GROUP_MODE_NONE))
         if mode == DEVICE_GROUP_MODE_ALL:
             selected.extend(group.device_ids)
+            selected_groups.append(group.key)
         elif mode == DEVICE_GROUP_MODE_CUSTOM:
             custom.add(group.key)
-    return selected, custom
+    return selected, custom, selected_groups
 
 
 def _merge_custom_selection(
@@ -294,6 +326,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selection_defaults: set[str] = set()
         self._selection_base_ids: list[str] = []
         self._custom_group_keys: set[str] = set()
+        self._selected_group_keys: list[str] = []
         self._cloud = CHINA_CLOUD
 
     async def async_step_user(
@@ -414,9 +447,11 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "no_devices"
 
         if user_input is not None:
-            self._selection_base_ids, self._custom_group_keys = _selection_plan(
-                user_input, self._devices
-            )
+            (
+                self._selection_base_ids,
+                self._custom_group_keys,
+                self._selected_group_keys,
+            ) = _selection_plan(user_input, self._devices)
             if self._custom_group_keys:
                 return await self.async_step_custom_devices()
             self._pending_selected_ids = list(self._selection_base_ids)
@@ -547,6 +582,7 @@ class OrviboMeshConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
             options={
                 CONF_SELECTED_DEVICE_IDS: self._pending_selected_ids,
+                CONF_SELECTED_DEVICE_GROUPS: self._selected_group_keys,
             },
         )
 
@@ -566,6 +602,7 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
         self._selection_defaults: set[str] = set()
         self._selection_base_ids: list[str] = []
         self._custom_group_keys: set[str] = set()
+        self._selected_group_keys: list[str] = []
 
     async def async_step_init(self, user_input=None):
         """选项菜单：重新登录 / 选择设备 / 锁用户映射 / 传输模式。"""
@@ -578,7 +615,51 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
             "reauth",
             "devices",
             "lock_users",
+            "custom_profiles",
         ],
+        )
+
+    async def async_step_custom_profiles(self, user_input=None):
+        """查看并重新加载用户自定义设备 profile。"""
+
+        # 延迟导入：config_flow 的其它路径不应因为自定义设备模块而增加依赖
+        from .custom_devices import load_custom_profiles
+
+        registry = load_custom_profiles(self.hass)
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if user_input.get(CONF_RELOAD_PROFILES):
+                try:
+                    self.hass.config_entries.async_schedule_reload(
+                        self._config_entry.entry_id
+                    )
+                    return self.async_create_entry(
+                        title="", data=dict(self._config_entry.options)
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("自定义设备 profile 重载失败")
+                    errors["base"] = "profile_reload_failed"
+            return self.async_create_entry(
+                title="", data=dict(self._config_entry.options)
+            )
+
+        summary = _custom_profile_summary(registry)
+        return self.async_show_form(
+            step_id="custom_profiles",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_RELOAD_PROFILES, default=False): bool,
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "summary": summary,
+                "directories": "\n".join(
+                    f"- `{path}`" for path in registry.directories
+                )
+                or "-",
+            },
         )
 
     async def async_step_transport_mode(self, user_input=None):
@@ -788,9 +869,11 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "no_devices"
 
         if user_input is not None:
-            self._selection_base_ids, self._custom_group_keys = _selection_plan(
-                user_input, self._devices
-            )
+            (
+                self._selection_base_ids,
+                self._custom_group_keys,
+                self._selected_group_keys,
+            ) = _selection_plan(user_input, self._devices)
             if self._custom_group_keys:
                 return await self.async_step_custom_devices()
             selected = list(self._selection_base_ids)
@@ -799,6 +882,7 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
             else:
                 options = dict(self._config_entry.options)
                 options[CONF_SELECTED_DEVICE_IDS] = selected
+                options[CONF_SELECTED_DEVICE_GROUPS] = self._selected_group_keys
                 return self.async_create_entry(
                     title="",
                     data=options,
@@ -829,6 +913,7 @@ class OrviboMeshOptionsFlow(config_entries.OptionsFlow):
             if selected:
                 options = dict(self._config_entry.options)
                 options[CONF_SELECTED_DEVICE_IDS] = selected
+                options[CONF_SELECTED_DEVICE_GROUPS] = self._selected_group_keys
                 return self.async_create_entry(title="", data=options)
             errors["base"] = "no_devices_selected"
         return self.async_show_form(

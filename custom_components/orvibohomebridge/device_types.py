@@ -69,6 +69,14 @@ class DeviceProfile:
     info: CategoryInfo
     hardware_verified: bool
     registration_only: bool
+    #: Set when the profile comes from a user custom-device file, so downstream
+    #: layers (capabilities / parsers / control) resolve it from that file
+    #: instead of the hard-coded tables.
+    custom_profile: Any = None
+
+    @property
+    def is_custom(self) -> bool:
+        return self.custom_profile is not None
 
 
 _CATEGORY_INFO: Dict[DeviceCategory, CategoryInfo] = {
@@ -397,6 +405,11 @@ def is_hidden_category(category: DeviceCategory) -> bool:
 
 def get_device_profile(device: Dict[str, Any]) -> DeviceProfile:
     """Resolve a device without granting control to unknown categories."""
+
+    custom = _resolve_custom_profile(device)
+    if custom is not None:
+        return custom
+
     category = classify_device(device)
     known_model = identify_known_device(device)
     if category in {DeviceCategory.UNKNOWN, DeviceCategory.OTHER} and known_model:
@@ -443,12 +456,72 @@ def classify_device(device: Dict[str, Any]) -> DeviceCategory:
     """根据 device dict 字段判定分类。
 
     优先级：
+    0. 用户自定义设备 profile（``override`` 可覆盖内置识别）
     1. deviceType 主映射（type=300 需根据 subType 进一步区分）
     2. 特殊组合：deviceType=0, subDeviceType=-2 为 Zigbee调光灯
     3. ui.model 兜底
     4. classId / subDeviceType 兜底
     5. 返回 UNKNOWN
     """
+    if not isinstance(device, dict):
+        return DeviceCategory.UNKNOWN
+
+    profile = _resolve_custom_profile(device)
+    if profile is not None:
+        return profile.category
+
+    return _classify_builtin(device)
+
+
+def is_builtin_recognised(device: Dict[str, Any]) -> bool:
+    """Whether the hard-coded taxonomy already recognises this device.
+
+    Used to decide if a custom profile may claim the device.  Built-in
+    recognition always wins unless the profile sets ``override: true``.
+    Accepts both the normalized device dict and a raw readtable record.
+    """
+
+    return _classify_builtin(_builtin_view(device)) not in {
+        DeviceCategory.UNKNOWN,
+        DeviceCategory.OTHER,
+    }
+
+
+def _resolve_custom_profile(device: Dict[str, Any]) -> Optional[DeviceProfile]:
+    """Resolve a device through a user custom-device profile, if one claims it."""
+
+    if not isinstance(device, dict):
+        return None
+    try:
+        from .custom_devices import resolve_custom_profile
+
+        return resolve_custom_profile(
+            device, builtin_recognised=is_builtin_recognised(device)
+        )
+    except Exception:  # noqa: BLE001 - a broken profile must never break setup
+        return None
+
+
+def _builtin_view(device: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept raw readtable field names as well as the normalized dict."""
+
+    if not isinstance(device, dict):
+        return {}
+    aliases = {
+        "device_type_raw": "deviceType",
+        "sub_device_type": "subDeviceType",
+        "class_id": "classId",
+    }
+    view = dict(device)
+    for normalized, raw in aliases.items():
+        if view.get(normalized) is None and device.get(raw) is not None:
+            view[normalized] = device.get(raw)
+    return view
+
+
+def _classify_builtin(device: Dict[str, Any]) -> DeviceCategory:
+    """Hard-coded classification, ignoring any custom profile."""
+
     if not isinstance(device, dict):
         return DeviceCategory.UNKNOWN
 
@@ -460,6 +533,15 @@ def classify_device(device: Dict[str, Any]) -> DeviceCategory:
         raw_sub_value = device.get("subDeviceType")
     device_type_raw = _safe_int(raw_type_value)
     sub_type = _safe_int(raw_sub_value)
+    return _classify_builtin_values(device, device_type_raw, sub_type)
+
+
+def _classify_builtin_values(
+    device: Dict[str, Any],
+    device_type_raw: Optional[int],
+    sub_type: Optional[int],
+) -> DeviceCategory:
+    """Body of the built-in classifier, shared with :func:`classify_device`."""
 
     # 真机 Profile 必须先于裸 deviceType 映射。
     if device_type_raw == 0:
@@ -521,7 +603,10 @@ def classify_device(device: Dict[str, Any]) -> DeviceCategory:
     if status_type == 2 and sub_type == 6:
         return DeviceCategory.FAST_MOVE_DIM_COLOR_LIGHT
 
-    ui_model = device.get("ui_model") or device.get("ui", {}).get("model") if isinstance(device.get("ui"), dict) else device.get("ui_model")
+    ui = device.get("ui")
+    ui_model = device.get("ui_model")
+    if not ui_model and isinstance(ui, dict):
+        ui_model = ui.get("model")
     if isinstance(ui_model, str) and ui_model in _UI_MODEL_MAP:
         return _UI_MODEL_MAP[ui_model]
 

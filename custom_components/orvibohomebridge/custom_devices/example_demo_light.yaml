@@ -1,0 +1,116 @@
+# 自定义设备 Profile 示例（不会自动生效）
+#
+# 这个文件演示了 profile 的完整字段。它使用一个几乎不可能出现在真实家庭里的
+# deviceType（9901），因此默认不会命中任何设备 —— 可以直接把它当作模板复制到
+# 你自己的 profile 里，复制后删掉本行注释并改成真实匹配条件即可。
+#
+# 文档：docs/custom-devices/README.md
+#
+# 放置目录（二选一）：
+#   <HA config>/orvibohomebridge/devices/*.yaml
+#   custom_components/orvibohomebridge/custom_devices/*.yaml
+#
+# 两个目录都会加载；同名 id 时**后加载者**要生效必须显式写 override: true，
+# 否则会以 "id 重复" 报错跳过（加载顺序：组件内 custom_devices/ 在前，
+# HA config 目录在后）。
+
+profile_version: 1
+
+# 唯一标识：只允许小写字母、数字、下划线、连字符
+id: example_demo_light
+display_name: 示例设备（请复制后修改）
+author: ""
+notes: |
+  这是模板示例，未在任何真机上验证，所以 hardware_verified 保持 false。
+  真机验证通过后再改成 true，否则集成只会登记设备、不会下发任何控制命令。
+
+# light / switch / cover / sensor / binary_sensor / climate / fan
+platform: light
+
+# 命中条件：列表内 OR，同一分支内 AND。全部条件都要能从设备字典里取到。
+match:
+  priority: 0
+  any_of:
+    - device_type: 9901
+      # sub_device_type: [12, 13]
+    # - ui_model: ["yourUiModel"]
+    # - model: ["re:^your_model_prefix"]
+
+# 命中已被内置分类识别的设备时，必须显式写 override: true 才会生效
+override: false
+
+# 声明能力；未声明的动作不会被路由，也不会在 HA 里暴露
+capabilities: [onoff, brightness, color_temp]
+
+# false：只登记 + 解析状态，不下发控制
+hardware_verified: false
+status_only: false
+
+# 控制通道；cloud_only: true 时强制只用 ssl
+channels: [lan, ssl]
+cloud_only: false
+
+# HA 侧取值范围（可选），影响灯实体的色温上下限
+constraints:
+  color_temp_range: [2700, 6500]
+
+# 状态解析：from 支持点号路径，会自动到 properties 里兜底查找
+state:
+  state:
+    from: [properties.onoff.status]
+    true_values: [on]
+    false_values: [off]
+  brightness:
+    from: [value2, properties.brightness.percent]
+    clamp: {min: 0, max: 255}
+  color_temp:
+    from: [value3, properties.colorTemp.value]
+    input_unit: mired   # 源数据是 mired，转成 HA 需要的 Kelvin
+    clamp: {min: 2700, max: 6500}
+
+# 控制指令：order 只能是已验证命令之一
+#
+# 注意 YAML 会把裸写的 on / off 当成布尔值，所以 set property 这类报文建议
+# 给字符串加引号，或依赖集成的归一化（onoff.status 下的布尔值会自动变回
+# "on"/"off"）。这里用引号显式写出最安全。
+control:
+  on:
+    order: on
+    value1: 0
+    value2: {param: brightness, default: 255}
+  off:
+    order: off
+    value1: 1
+  brightness:
+    order: fast move to level
+    value2: {param: brightness}
+  color_temp:
+    order: fast color temperature
+    value2: {param: brightness, default: 255}
+    value3: {param: color_temp, input_unit: kelvin}
+
+# set property 形式的报文示例（与上面的 value1/value2 形式二选一）：
+#
+#   control:
+#     on:
+#       order: set property
+#       properties: {onoff: {status: "on"}}
+#     off:
+#       order: set property
+#       properties: {onoff: {status: "off"}}
+
+# 无回包时的乐观状态（可选）；未声明时 on→state:true、off→state:false。
+# 这里用 param 引用本次下发的参数值，避免写死。
+optimistic:
+  on:
+    state: true
+    brightness: {param: brightness}
+  off:
+    state: false
+  brightness:
+    state: true
+    brightness: {param: brightness}
+
+# 可选：初始状态兜底
+state_defaults:
+  online: true

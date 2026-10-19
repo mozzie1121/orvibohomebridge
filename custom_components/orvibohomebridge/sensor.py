@@ -26,6 +26,7 @@ from .capabilities import (
     transport_path_for,
 )
 from .coordinator import OrviboMeshCoordinator
+from .custom_devices import profile_for_device
 from .device_types import DeviceCategory, classify_device
 from .selection import selected_device_ids
 
@@ -72,6 +73,15 @@ async def async_setup_entry(
             entities.append(OrviboDoorLockLithiumBatterySensor(coordinator, device))
             entities.append(OrviboDoorLockStateSensor(coordinator, device))
             entities.append(OrviboDoorLockUnlockSensor(coordinator, device))
+
+        # 自定义设备 profile：只创建它声明过的数值字段
+        custom_profile = profile_for_device(device)
+        if custom_profile is not None:
+            for field_name in _CUSTOM_SENSOR_FIELDS:
+                if field_name in custom_profile.state_specs:
+                    entities.append(
+                        OrviboCustomSensor(coordinator, device, custom_profile, field_name)
+                    )
 
     async_add_entities(entities)
 
@@ -216,6 +226,66 @@ class OrviboHumiditySensor(OrviboSensorBase):
             if hum is not None:
                 return float(hum)
         return None
+
+
+#: 自定义设备 profile 可声明的数值字段 → (实体名, device_class, 单位, state_class)
+_CUSTOM_SENSOR_FIELDS: dict[str, tuple[str, object, str | None, object]] = {
+    "temperature": ("温度", SensorDeviceClass.TEMPERATURE, "°C", SensorStateClass.MEASUREMENT),
+    "humidity": ("湿度", SensorDeviceClass.HUMIDITY, "%", SensorStateClass.MEASUREMENT),
+    "battery": ("电量", SensorDeviceClass.BATTERY, "%", SensorStateClass.MEASUREMENT),
+    "brightness": ("亮度", None, None, SensorStateClass.MEASUREMENT),
+    "position": ("位置", None, "%", SensorStateClass.MEASUREMENT),
+}
+
+
+class OrviboCustomSensor(OrviboSensorBase):
+    """One numeric sensor backed by a declared custom-device profile field."""
+
+    def __init__(
+        self,
+        coordinator: OrviboMeshCoordinator,
+        device: dict,
+        profile: object,
+        field_name: str,
+    ):
+        super().__init__(coordinator, device)
+        label, device_class, unit, state_class = _CUSTOM_SENSOR_FIELDS[field_name]
+        self._profile = profile
+        self._field = field_name
+        self._attr_unique_id = (
+            f"orvibohomebridge_custom_{field_name}_{self._device_id}"
+        )
+        self._attr_name = label
+        if device_class is not None:
+            self._attr_device_class = device_class
+        if state_class is not None:
+            self._attr_state_class = state_class
+        if unit is not None:
+            self._attr_native_unit_of_measurement = unit
+
+    @property
+    def native_value(self):
+        state = self.coordinator.get_device_state(self._device_id)
+        if not state:
+            return None
+        value = state.get(self._field)
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", self._device_id),
+            "manufacturer": MANUFACTURER,
+            "model": self._device.get("model")
+            or f"自定义设备/{self._profile.profile_id}",
+            "sw_version": "1.0",
+        }
 
 
 class OrviboBatterySensor(OrviboSensorBase):

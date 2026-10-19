@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_COVER, DEVICE_TYPE_CLOTHES_HORSE
 from .coordinator import OrviboMeshCoordinator
+from .custom_devices import profile_for_device
 from .selection import selected_device_ids
 from .device_types import DeviceCategory, classify_device
 
@@ -28,12 +29,96 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         if device_id not in selected_ids:
             continue
-        if device.get("device_type") == DEVICE_TYPE_COVER:
+        custom_profile = profile_for_device(device)
+        if custom_profile is not None:
+            entities.append(OrviboCustomCover(coordinator, device, custom_profile))
+        elif device.get("device_type") == DEVICE_TYPE_COVER:
             entities.append(OrviboCover(coordinator, device))
         elif device.get("device_type") == DEVICE_TYPE_CLOTHES_HORSE:
             entities.append(OrviboClothesHorseMotor(coordinator, device))
 
     async_add_entities(entities)
+
+
+class OrviboCustomCover(CoordinatorEntity, CoverEntity):
+    """Cover entity driven by a user custom-device profile.
+
+    Only the features the profile actually declares are advertised, so Home
+    Assistant never offers a control the profile cannot send.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: OrviboMeshCoordinator,
+        device: dict,
+        profile: object,
+    ):
+        super().__init__(coordinator)
+        self._device = device
+        self._profile = profile
+        self._device_id = device["device_id"]
+        self._attr_unique_id = f"orvibohomebridge_custom_cover_{self._device_id}"
+        self._attr_name = device.get("device_name", self._device_id)
+
+        actions = set(profile.control)
+        features = CoverEntityFeature(0)
+        if actions & {"open", "position", "on"}:
+            features |= CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
+        if "position" in actions:
+            features |= CoverEntityFeature.SET_POSITION
+        if "stop" in actions:
+            features |= CoverEntityFeature.STOP
+        self._attr_supported_features = features
+        self._attr_device_class = CoverDeviceClass.CURTAIN
+
+    @property
+    def current_cover_position(self) -> Optional[int]:
+        state = self.coordinator.get_device_state(self._device_id)
+        position = state.get("position") if state else None
+        if position is None:
+            return None
+        try:
+            return max(0, min(100, int(position)))
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def is_closed(self) -> Optional[bool]:
+        position = self.current_cover_position
+        if position is None:
+            return None
+        return position == 0
+
+    @property
+    def available(self) -> bool:
+        state = self.coordinator.get_device_state(self._device_id)
+        return bool(state.get("online", False)) if state else False
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", self._device_id),
+            "manufacturer": MANUFACTURER,
+            "model": self._device.get("model") or f"自定义设备/{self._profile.profile_id}",
+            "sw_version": "1.0",
+        }
+
+    async def async_open_cover(self, **kwargs) -> None:
+        await self.coordinator.async_set_cover_position(self._device_id, 100)
+
+    async def async_close_cover(self, **kwargs) -> None:
+        await self.coordinator.async_set_cover_position(self._device_id, 0)
+
+    async def async_stop_cover(self, **kwargs) -> None:
+        await self.coordinator.async_stop_cover(self._device_id)
+
+    async def async_set_cover_position(self, **kwargs) -> None:
+        await self.coordinator.async_set_cover_position(
+            self._device_id, int(kwargs.get("position", 0))
+        )
 
 
 class OrviboCover(CoordinatorEntity, CoverEntity):

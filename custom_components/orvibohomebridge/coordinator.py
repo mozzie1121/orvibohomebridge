@@ -29,6 +29,8 @@ from .lock_media_manager import LockMediaManager
 from .temp_password_manager import TempPasswordManager
 from .device_inventory import DeviceInventory
 from .control_executor import ControlExecutor
+from .selection import cleaned_selection_options
+from .protocol import apply_property_aliases
 from .const import (
     DOMAIN,
     SSL_PORT,
@@ -63,6 +65,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self.hass = hass
         self._transport_mode = transport_mode
         self.lan_credentials = lan_credentials or credentials
+        self._config_entry = None
 
         self.https_client = HttpsClient(
             username=credentials.username,
@@ -115,7 +118,7 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             self.devices,
             self.device_states,
             self.state_store,
-            self.lock_events.remove,
+            self._on_device_removed,
         )
         self.control = ControlExecutor(
             self.devices,
@@ -167,6 +170,24 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """Return the configured transport mode for diagnostic entities."""
 
         return self._transport_mode
+
+    def attach_config_entry(self, config_entry: Any) -> None:
+        """Allow runtime inventory cleanup to prune stale persisted mappings."""
+
+        self._config_entry = config_entry
+
+    def _on_device_removed(self, device_id: str) -> None:
+        self.lock_events.remove(device_id)
+        if self._config_entry is None:
+            return
+        cleaned_options = cleaned_selection_options(
+            self._config_entry.options, self.devices
+        )
+        if cleaned_options != dict(self._config_entry.options):
+            self.hass.config_entries.async_update_entry(
+                self._config_entry,
+                options=cleaned_options,
+            )
 
     def lan_gateway_connected(self, device_id: str) -> bool:
         """Return whether the device's owning gateway has an active LAN session."""
@@ -1094,6 +1115,11 @@ class OrviboMeshCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         state = self.device_states.get(device_id)
         if state is None:
             return None
+        # 属性型设备（灯5 / MixPad 虚拟地暖等）把语义放在 deviceStatus.properties，
+        # 这里折叠成实体已有的状态键（state / brightness / color_temp / target_temperature …）。
+        aliased = apply_property_aliases(dict(state))
+        if aliased != state:
+            state = aliased
         online = self._derive_online(device_id, state)
         if online != state.get("online", False):
             derived = dict(state)

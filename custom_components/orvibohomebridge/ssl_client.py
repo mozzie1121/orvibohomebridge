@@ -364,6 +364,44 @@ class SSLClient:
             _LOGGER.debug("会话密钥未获取，暂不发送登录包")
             return False
 
+    async def send_control_envelope(
+        self,
+        device_id: str,
+        device_uid: str,
+        order: str,
+        value1: int = 0,
+        value2: int = 0,
+        value3: int = 0,
+        value4: int = 0,
+        properties: dict | None = None,
+    ):
+        """下发自定义设备 profile 声明的命令封包（order 由 profile 指定）。"""
+        await self.connect_and_login()
+        if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):
+            _LOGGER.debug("会话密钥无效，无法下发")
+            return False
+        payload = HomemateJsonData.ssl_control_envelope(
+            username=self.username,
+            device_id=device_id,
+            device_uid=device_uid,
+            order=order,
+            value1=value1,
+            value2=value2,
+            value3=value3,
+            value4=value4,
+            properties=properties,
+        )
+        _LOGGER.debug(
+            "下发自定义设备控制 device=%s order=%s v1=%s v2=%s v3=%s v4=%s",
+            device_id,
+            order,
+            value1,
+            value2,
+            value3,
+            value4,
+        )
+        return await self._send_packet(payload, self.session_key)
+
     async def send_control_switch(self, device_id: str, device_uid: str, state: bool):
         await self.connect_and_login()
         if not self.session_key or self.session_key == DEFAULT_KEY.encode("utf-8"):

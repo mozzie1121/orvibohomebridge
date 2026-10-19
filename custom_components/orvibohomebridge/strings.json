@@ -79,7 +79,15 @@
                     "reauth": "Sign in again",
                     "devices": "Select devices",
                     "lock_users": "Lock user mapping",
-                    "transport_mode": "Transport mode"
+                    "transport_mode": "Transport mode",
+                    "custom_profiles": "Custom device profiles"
+                }
+            },
+            "custom_profiles": {
+                "title": "Custom device profiles",
+                "description": "Drop declarative profile files into either directory to support devices this integration does not know:\n\n{directories}\n\n{summary}",
+                "data": {
+                    "reload_custom_profiles": "Reload profiles and restart the integration"
                 }
             },
             "transport_mode": {
@@ -156,7 +164,8 @@
             "no_devices_selected": "Select at least one device",
             "cannot_connect": "Cannot connect to ORVIBO cloud",
             "no_devices": "No devices found in this family",
-            "lan_credentials_required": "Enter the independent MixPad username and password"
+            "lan_credentials_required": "Enter the independent MixPad username and password",
+            "profile_reload_failed": "Reloading profiles failed, check the log"
         },
         "abort": {
             "reauth_successful": "Signed in successfully; existing device and entity settings were preserved"

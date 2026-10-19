@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, MutableMapping
 
 from .device_types import DeviceCategory, classify_device, is_hidden_category
+from .custom_devices import state_defaults_for as custom_state_defaults
 from .lock_status import normalize_battery_properties
 from .parsers import get_state_parser
 from .state_store import StateSource, StateStore
@@ -26,6 +27,8 @@ _BATTERY_FIELDS = (
 class DeviceInventory:
     """Own device discovery, initial state construction, and cloud merges."""
 
+    MISSING_DEVICE_TOLERANCE = 3
+
     def __init__(
         self,
         client: Any,
@@ -39,6 +42,7 @@ class DeviceInventory:
         self.states = states
         self.state_store = state_store
         self._on_removed = on_removed
+        self._missing_counts: dict[str, int] = {}
 
     async def discover(self) -> tuple[Any, list[dict[str, Any]]]:
         """Discover devices via readtable, description, then homepage data."""
@@ -104,6 +108,8 @@ class DeviceInventory:
             self.devices[device_id] = device
             seed_values = self._cloud_values_allowed(device, category)
             state = self._initial_state(device, seed_values=seed_values)
+            # 自定义设备 profile 可在 state_defaults 里补初始字段（如 online）
+            state.update(custom_state_defaults(device))
             parser = get_state_parser(category)
             # 值解析仅当允许播种云端值时执行：陈旧记录的值不可信，
             # 否则刚被门控为 False 的 state 会被陈旧 value1 重新解析成 True
@@ -164,6 +170,7 @@ class DeviceInventory:
 
     def merge_cloud(self, discovered: list[dict[str, Any]]) -> None:
         """Merge a periodic cloud snapshot without overwriting fresh SSL fields."""
+        seen: set[str] = set()
         for device in discovered:
             device_id = device["device_id"]
             category = classify_device(device)
@@ -171,6 +178,8 @@ class DeviceInventory:
                 self._remove(device_id)
                 continue
 
+            seen.add(device_id)
+            self._missing_counts.pop(device_id, None)
             self.devices[device_id] = device
             seed_values = self._cloud_values_allowed(device, category)
             if device_id not in self.states:
@@ -244,10 +253,26 @@ class DeviceInventory:
                         device_id, lock_state, StateSource.CLOUD
                     )
 
+        self._remove_missing_devices(seen)
+
+    def _remove_missing_devices(self, seen: set[str]) -> None:
+        """Drop devices that disappeared from several consecutive cloud snapshots."""
+
+        for device_id in tuple(self.devices):
+            if device_id in seen:
+                continue
+            misses = self._missing_counts.get(device_id, 0) + 1
+            if misses < self.MISSING_DEVICE_TOLERANCE:
+                self._missing_counts[device_id] = misses
+                continue
+            _LOGGER.info("设备已连续 %s 次从云端清单缺失，移除: %s", misses, device_id)
+            self._remove(device_id)
+
     def _remove(self, device_id: str) -> None:
         self.devices.pop(device_id, None)
         self.states.pop(device_id, None)
         self.state_store.remove(device_id)
+        self._missing_counts.pop(device_id, None)
         self._on_removed(device_id)
 
     def _initial_state(

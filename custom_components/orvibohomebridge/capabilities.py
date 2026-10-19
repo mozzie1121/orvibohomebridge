@@ -63,6 +63,46 @@ class DeviceCapability:
     def controllable(self) -> bool:
         return bool(self.channels)
 
+    @classmethod
+    def for_custom_profile(cls, category: DeviceCategory, profile: Any) -> "DeviceCapability":
+        """Build the capability of a user custom-device profile.
+
+        The profile declares its own channels; the generic channel policy is
+        then applied so a custom profile can never be *more* permissive than an
+        equivalent built-in device:
+
+        * a profile without ``hardware_verified`` is registration-only and gets
+          no control channel at all;
+        * ``cloud_only`` forces the cloud channel and blocks LAN state;
+        * requesting LAN without any declared control action is meaningless and
+          collapses to an empty channel set.
+        """
+
+        status_only = bool(profile.status_only) or not profile.control
+        hardware_verified = bool(profile.hardware_verified)
+        registration_only = not hardware_verified or status_only
+        cloud_only = bool(profile.cloud_only)
+
+        channels: FrozenSet[ControlChannel] = frozenset()
+        if not status_only and not registration_only:
+            declared = {str(item).lower() for item in profile.channels}
+            if cloud_only:
+                declared = {"ssl"}
+            channels = frozenset(
+                channel
+                for channel in (ControlChannel.LAN, ControlChannel.SSL)
+                if channel.value in declared
+            )
+
+        return cls(
+            category=category,
+            platforms=frozenset({profile.platform}),
+            channels=channels,
+            status_only=status_only,
+            cloud_only=cloud_only,
+            hardware_verified=hardware_verified,
+        )
+
 
 # ---- 类型级传输与只读策略 ----
 
@@ -164,7 +204,12 @@ def _device_type_key(device: Any) -> int:
 
 def capability_for(device: Any) -> DeviceCapability:
     """解析单台设备的融合能力（不触发任何 I/O）。"""
+
     profile = get_device_profile(device)
+    custom = getattr(profile, "custom_profile", None)
+    if custom is not None:
+        return DeviceCapability.for_custom_profile(profile.category, custom)
+
     category = profile.category
     device_type = _device_type_key(device)
 

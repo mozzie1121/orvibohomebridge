@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .device_types import DeviceCategory
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,85 @@ class ControlRoute:
     optimistic: Mapping[str, Any] = field(default_factory=dict)
 
 
+def _custom_route(category: Any, action: str, *args: Any, **kwargs: Any):
+    """Compile a custom-device profile action, or None when not declared.
+
+    Custom profiles live in their own category namespace, so a category no
+    profile claims falls straight through to the built-in behaviour.  Once a
+    profile claims the category, an action it does not declare is rejected
+    loudly instead of borrowing a built-in command the author never verified.
+    """
+
+    from .custom_control import ControlNotDeclared, build_route, is_custom_category
+
+    if not is_custom_category(category):
+        return None
+    try:
+        return build_route(category, action, *args, strict=True, **kwargs)
+    except ControlNotDeclared:
+        raise
+    except Exception as error:  # noqa: BLE001 - never break built-in routing
+        _LOGGER.error("自定义设备控制路由失败: %s", error)
+        return None
+
+
+def _custom_power_route(
+    category: Any,
+    is_on: bool,
+    current_state: Mapping[str, Any],
+    *,
+    brightness: int | None = None,
+    color_temp: int | None = None,
+):
+    """Route a custom device's power action.
+
+    When turning on with attributes, the profile's own ``on`` action decides
+    what to send; the declared ``value2``/``value3`` specs pull the attribute
+    from the parameters, so nothing is silently dropped.
+    """
+
+    action = "on" if is_on else "off"
+    return _custom_route(
+        category,
+        action,
+        current_state,
+        brightness=brightness,
+        color_temp=color_temp,
+    )
+
+
+def _custom_attribute_route(
+    category: Any,
+    action: str,
+    current_state: Mapping[str, Any],
+    **values: Any,
+):
+    return _custom_route(category, action, current_state, **values)
+
+
+def custom_route_for_device(
+    device: Mapping[str, Any],
+    action: str,
+    current_state: Mapping[str, Any],
+    **values: Any,
+):
+    """Route an action for a device dict, using its custom profile category.
+
+    Returns ``None`` for built-in devices so callers keep their existing path.
+    Raises ``ControlNotDeclared`` when a custom device lacks the action.
+    """
+
+    from .custom_devices import profile_for_device
+    from .device_types import classify_device
+
+    profile = profile_for_device(device)
+    if profile is None:
+        return None
+    return _custom_route(
+        classify_device(device), action, current_state, **values
+    )
+
+
 def power_route(
     category: DeviceCategory,
     is_on: bool,
@@ -28,6 +110,16 @@ def power_route(
     color_temp: int | None = None,
 ) -> ControlRoute:
     """Select the exact existing power-control call for a device category."""
+
+    custom = _custom_power_route(
+        category,
+        is_on,
+        current_state,
+        brightness=brightness,
+        color_temp=color_temp,
+    )
+    if custom is not None:
+        return custom
 
     if category == DeviceCategory.DIM_COLOR_LIGHT:
         if not is_on:
@@ -160,6 +252,12 @@ def brightness_route(
 ) -> ControlRoute:
     """Select a brightness transport and its optimistic normalized state."""
 
+    custom = _custom_attribute_route(
+        category, "brightness", current_state, brightness=brightness
+    )
+    if custom is not None:
+        return custom
+
     if category == DeviceCategory.DIMMABLE_LIGHT:
         value = round(brightness)
         return ControlRoute(
@@ -218,6 +316,12 @@ def color_temp_route(
     device_type_raw: Any = None,
 ) -> ControlRoute:
     """Select a color-temperature transport and optimistic state."""
+
+    custom = _custom_attribute_route(
+        category, "color_temp", current_state, color_temp=color_temp_k
+    )
+    if custom is not None:
+        return custom
 
     optimistic = {"color_temp": color_temp_k}
     if category in (DeviceCategory.CCT_LIGHT, DeviceCategory.CCT_LIGHT_STRIP):

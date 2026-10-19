@@ -33,12 +33,16 @@ from .const import (
     MAX_POLL_INTERVAL_MINUTES,
 )
 from .capabilities import TransportMode
+from .custom_devices import load_custom_profiles
 from .protocol import migrate_password_credentials
 from .models import AccountCredentials
 from .cloud import cloud_for_region
 from .coordinator import OrviboMeshCoordinator
-from .selection import CONF_DEVICE_AREAS, selected_device_ids
+from .selection import CONF_DEVICE_AREAS, cleaned_selection_options, selected_device_ids
 from .service_handlers import async_register_services
+from .meari_probe import async_cancel_video_probes
+from .frontend_resources import async_register_card_resources
+from .registry_sync import sync_selected_device_registries
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,6 +123,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     password_hash = entry.data[CONF_PASSWORD_HASH]
     family_id = entry.data.get(CONF_FAMILY_ID)
 
+    # 自定义设备 profile 必须在设备发现之前加载：分类、平台映射、能力解析
+    # 都在 readtable 归一化阶段就会查这张表。
+    custom_registry = load_custom_profiles(hass)
+    if custom_registry.errors:
+        _LOGGER.error(
+            "有 %s 个自定义设备 profile 未加载，详见上方日志（不影响内置设备）",
+            len(custom_registry.errors),
+        )
+
     options = entry.options
     try:
         transport_mode = TransportMode(
@@ -158,6 +171,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         lan_credentials=lan_credentials,
         poll_interval=timedelta(minutes=poll_minutes),
     )
+    coordinator.attach_config_entry(entry)
 
     try:
         _LOGGER.info("开始设置 Orvibo Mesh...")
@@ -175,6 +189,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         updated_data[CONF_CLOUD_REGION] = detected_region
         hass.config_entries.async_update_entry(entry, data=updated_data)
 
+    cleaned_options = cleaned_selection_options(entry.options, coordinator.devices)
+    if cleaned_options != dict(entry.options):
+        hass.config_entries.async_update_entry(entry, options=cleaned_options)
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
     _LOGGER.info("Coordinator 已注册到 hass.data")
@@ -187,6 +205,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     # 使用 async_forward_entry_setups 一次性加载所有平台
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # 前端卡片与注册表同步：失败只降级，不能影响集成加载
+    try:
+        await async_register_card_resources(hass)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("前端卡片注册失败（不影响加载）: %s", err)
+    try:
+        removed = sync_selected_device_registries(hass, entry, coordinator.devices)
+        if removed:
+            _LOGGER.info("已从注册表移除 %s 个未选设备", removed)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("注册表同步失败（不影响加载）: %s", err)
+
 
     async def _apply_after_refresh():
         """等待 coordinator 第一次刷新完成后再应用区域映射。"""
@@ -271,6 +302,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     if unload_ok:
         coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
         if coordinator:
+            await async_cancel_video_probes(coordinator)
             await coordinator.async_cleanup()
             _LOGGER.info("Coordinator 清理完成")
         hass_data = hass.data.get(DOMAIN, {})

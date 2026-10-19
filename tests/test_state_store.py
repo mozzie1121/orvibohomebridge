@@ -64,12 +64,13 @@ class StateStoreTests(unittest.TestCase):
         self.assertTrue(states["lock"]["state"])
         self.assertEqual(states["lock"]["dry_battery_level"], 82)
 
-    def test_remove_discards_revision_history(self) -> None:
+    def test_remove_discards_state_and_revision_history(self) -> None:
         states = {"device": {"state": True}}
         store = self.module.StateStore(states)
         store.mark("device", ("state",), self.module.StateSource.SSL, now=100)
         store.remove("device")
 
+        self.assertNotIn("device", states)
         changed = store.merge(
             "device", {"state": False}, self.module.StateSource.CLOUD, now=101
         )

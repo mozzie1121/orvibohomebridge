@@ -62,9 +62,23 @@ STATE_PARSERS: dict[DeviceCategory, StateParser] = {
 
 
 def get_state_parser(category: DeviceCategory) -> Optional[StateParser]:
-    """Return the pure parser registered for a device category, if any."""
+    """Return the pure parser registered for a device category, if any.
 
-    return STATE_PARSERS.get(category)
+    Custom-device profiles resolve here too: their declarative ``state`` block is
+    compiled into the same ``StateParser`` contract, so every existing caller
+    (device inventory, status dispatcher) works unchanged.
+    """
+
+    parser = STATE_PARSERS.get(category)
+    if parser is not None:
+        return parser
+
+    from ..custom_devices import profile_for_category_key
+
+    profile = profile_for_category_key(category)
+    if profile is None or not profile.state_specs:
+        return None
+    return profile.state_parser()
 
 
 __all__ = ["StatePatch", "get_state_parser"]

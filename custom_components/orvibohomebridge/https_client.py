@@ -541,7 +541,7 @@ class HttpsClient:
                 if not isinstance(item, dict):
                     continue
                 device_type_raw = _safe_int(item.get("deviceType"))
-                result.append({
+                device = {
                     "device_id": device_id,
                     "device_name": item.get("deviceName", ""),
                     # Unknown/known-only records must never inherit a light platform.
@@ -571,7 +571,10 @@ class HttpsClient:
                     "value2": _safe_int(item.get("value2")),
                     "value3": _safe_int(item.get("value3")),
                     "value4": _safe_int(item.get("value4")),
-                })
+                }
+                # 这一分支重建了新的 dict，必须补上自定义设备识别标记，
+                # 否则实体阶段会因 device_type 已被覆盖而找不到 profile。
+                result.append(self._stamp_custom_platform(device))
             _LOGGER.info(f"从 device_status dict 解析到 {len(result)} 个设备")
             return result
 
@@ -702,6 +705,50 @@ class HttpsClient:
             device_type_raw = None
             class_id = None
 
+        builtin = self._builtin_device_type(
+            item, device_type_raw, sub_device_type, class_id
+        )
+        return self._custom_device_type(item, builtin)
+
+    def _custom_device_type(
+        self, item: dict, builtin: Optional[str]
+    ) -> Optional[str]:
+        """Let a user custom-device profile claim an otherwise unsupported type."""
+
+        try:
+            from .custom_devices import apply_platform
+
+            device = dict(item)
+            device.setdefault("device_type", builtin)
+            apply_platform(device, builtin_platform=builtin)
+        except Exception:  # noqa: BLE001 - profile must never break discovery
+            return builtin
+        return device.get("device_type", builtin)
+
+    def _stamp_custom_platform(self, device: dict) -> dict:
+        """Re-apply custom-device stamping to a rebuilt device dict.
+
+        ``parse_device_status_list``'s dict branch constructs a fresh dict, so the
+        built-in verdict recorded by ``apply_platform`` has to be re-stamped or
+        the entity platforms lose the profile.
+        """
+
+        try:
+            from .custom_devices import apply_platform
+
+            return apply_platform(
+                device, builtin_platform=device.get("device_type")
+            )
+        except Exception:  # noqa: BLE001 - profile must never break discovery
+            return device
+
+    def _builtin_device_type(
+        self,
+        item: dict,
+        device_type_raw: Optional[int],
+        sub_device_type: Optional[int],
+        class_id: Optional[int],
+    ) -> Optional[str]:
         if device_type_raw == 0:
             return DEVICE_TYPE_LIGHT
         if device_type_raw == 102:

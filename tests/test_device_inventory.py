@@ -144,6 +144,39 @@ class DeviceInventoryTests(unittest.TestCase):
         self.assertFalse(states["lock"]["locked"])
         self.assertEqual(states["lock"]["lock_status"], "unlocked")
 
+    def test_merge_cloud_removes_devices_after_consecutive_missing_snapshots(self) -> None:
+        inventory, devices, states, removed = self.make_inventory()
+        devices["old-ac"] = {"device_id": "old-ac", "device_type_raw": 36}
+        states["old-ac"] = {"state": True}
+
+        inventory.merge_cloud([])
+        inventory.merge_cloud([])
+
+        self.assertIn("old-ac", devices)
+        self.assertIn("old-ac", states)
+
+        inventory.merge_cloud([])
+
+        self.assertNotIn("old-ac", devices)
+        self.assertNotIn("old-ac", states)
+        self.assertEqual(removed, ["old-ac"])
+
+    def test_merge_cloud_missing_count_resets_when_device_reappears(self) -> None:
+        inventory, devices, states, removed = self.make_inventory()
+        devices["fresh-air"] = {"device_id": "fresh-air", "device_type_raw": 516}
+        states["fresh-air"] = {"state": True}
+
+        inventory.merge_cloud([])
+        inventory.merge_cloud(
+            [{"device_id": "fresh-air", "device_type_raw": 516, "online": True}]
+        )
+        inventory.merge_cloud([])
+        inventory.merge_cloud([])
+
+        self.assertIn("fresh-air", devices)
+        self.assertIn("fresh-air", states)
+        self.assertEqual(removed, [])
+
 
 if __name__ == "__main__":
     unittest.main()
