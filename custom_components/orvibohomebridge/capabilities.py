@@ -177,6 +177,8 @@ _CATEGORY_PLATFORMS: Dict[DeviceCategory, FrozenSet[str]] = {
     DeviceCategory.DOOR_LOCK: frozenset(
         {PLATFORM_SENSOR, PLATFORM_BINARY_SENSOR, PLATFORM_CAMERA}
     ),
+    DeviceCategory.WIFI_CAMERA: frozenset({PLATFORM_CAMERA}),
+    DeviceCategory.CAMERA_NVR: frozenset({PLATFORM_CAMERA}),
     DeviceCategory.CLOTHES_HORSE: frozenset({PLATFORM_SENSOR}),
     DeviceCategory.MIX_SWITCH: frozenset({PLATFORM_SWITCH}),
     DeviceCategory.BACH_SWITCH: frozenset({PLATFORM_SWITCH}),
