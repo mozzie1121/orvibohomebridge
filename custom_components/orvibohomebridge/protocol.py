@@ -14,8 +14,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import copy
 import hashlib
 import hmac
+import json
 import re
 from typing import Any, Final, Mapping, Sequence
 
@@ -193,6 +195,119 @@ def _parse_room(
         return room_names[room_id]
     return ""
 
+
+def parse_camera_types(raw: Any) -> dict[str, int | None]:
+    """Read only CameraInfo.type, keyed by hardware UID; discard SDK secrets.
+
+    Accept a row list or a UID-keyed table. Never join on CameraInfo.deviceId:
+    the Android application queries this table with Device.uid.
+    """
+    if isinstance(raw, list):
+        rows = ((None, row) for row in raw)
+    elif isinstance(raw, Mapping):
+        rows = raw.items()
+    else:
+        return {}
+
+    result: dict[str, int | None] = {}
+    for key, row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        uid = row.get("uid", key)
+        if not isinstance(uid, str) or not uid.strip():
+            continue
+        uid = uid.strip()
+        if row.get("delFlag") in (1, "1"):
+            result[uid] = None
+            continue
+        value = row.get("type")
+        # int(True) and int(8.5) would silently select the wrong SDK.
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            result[uid] = None
+        elif isinstance(value, str) and not re.fullmatch(r"[+-]?[0-9]{1,10}", value.strip()):
+            result[uid] = None
+        else:
+            result[uid] = int(value)
+    return result
+
+def _table_rows(raw: Any, key_field: str | None = None) -> tuple[dict[str, Any], ...]:
+    """Normalize array/keyed tables without mutating rows or inventing identifiers."""
+    if isinstance(raw, list):
+        entries = ((None, row) for row in raw)
+    elif isinstance(raw, Mapping):
+        entries = raw.items()
+    else:
+        return ()
+    rows = []
+    for key, row in entries:
+        if not isinstance(row, Mapping):
+            continue
+        row = dict(row)
+        if key_field and key is not None and not row.get(key_field):
+            # Legacy aliases take precedence over an outer table key.
+            alias = row.get(key_field[:-2] + "ID") if key_field.endswith("Id") else None
+            row[key_field] = alias or key
+        rows.append(row)
+    return tuple(rows)
+
+def _row_update_time(row: Mapping[str, Any]) -> int:
+    """Use numeric BaseBo millisecond/second timestamps when supplied."""
+    seconds = _safe_int(row.get("updateTimeSec"))
+    if seconds:
+        return seconds * 1000
+    return _safe_int(row.get("updateTime")) or 0
+
+def _merge_properties(base: Mapping[str, Any], patch: Mapping[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(dict(base))
+    for key, value in patch.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            merged[key] = _merge_properties(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+def _readtable_properties(
+    device: Mapping[str, Any], status: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Join inline and DevicePropertyStatus values on (deviceId, property).
+
+    Untimed/equal-time values follow arrival order; independent rows follow inline
+    properties. Deleted properties suppress older values in this snapshot. This
+    is a snapshot policy, not an incremental cache or an inferred control model.
+    """
+    properties: dict[str, Any] = {}
+    times: dict[str, int] = {}
+    for owner in (device, status):
+        raw = owner.get("properties")
+        if isinstance(raw, Mapping):
+            timestamp = _row_update_time(owner)
+            for key, value in raw.items():
+                if timestamp and timestamp < times.get(key, 0):
+                    continue
+                properties = _merge_properties(properties, {key: value})
+                times[key] = timestamp
+    for row in rows:
+        key = row.get("property")
+        if not isinstance(key, str) or not key.strip():
+            continue
+        deleted = row.get("delFlag") in (1, "1")
+        if not deleted and "value" not in row:
+            continue
+        timestamp = _row_update_time(row)
+        if timestamp and timestamp < times.get(key, 0):
+            continue
+        times[key] = timestamp
+        if deleted:
+            properties.pop(key, None)
+            continue
+        value = row["value"]
+        if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                pass
+        properties = _merge_properties(properties, {key: value})
+    return properties
 
 def parse_families(payload: Mapping[str, Any]) -> tuple[OrviboFamily, ...]:
     """归一化家庭响应解析（兼容多种字段名）。"""
@@ -655,6 +770,35 @@ def _infer_initial_state(device: OrviboDevice) -> bool:
     return False
 
 
+def apply_status_properties(
+    device: dict[str, Any],
+    status: Mapping[str, Any] | None,
+    property_rows: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """把 deviceStatus 的 properties（含 DevicePropertyStatus 行）合并进设备 dict。
+
+    保留原有字段；额外提供 ``property_flat`` 的 ``server.property`` 别名，
+    供 climate / light / sensor 解析器直接读取（如 ``thermostat.targetTemp``、
+    ``onoff.status``、``brightness.percent``）。
+    """
+    if status is None and not property_rows:
+        return device
+    props = _readtable_properties(device, status or {}, property_rows)
+    if not props:
+        return device
+    device["properties"] = _merge_properties(device.get("properties") or {}, props)
+    flat: dict[str, Any] = {}
+    for server, value in props.items():
+        if isinstance(value, Mapping):
+            for name, inner in value.items():
+                flat[f"{server}.{name}"] = inner
+    if flat:
+        merged_flat = dict(device.get("property_flat") or {})
+        merged_flat.update(flat)
+        device["property_flat"] = merged_flat
+    return device
+
+
 def parse_readtable_to_device_dicts(
     payload: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
@@ -663,7 +807,27 @@ def parse_readtable_to_device_dicts(
     这是 https_client.parse_device_status_list() 的纯函数替代。
     """
     devices = parse_readtable_devices(payload)
-    return [device_to_dict(d) for d in devices]
+    dicts = [device_to_dict(d) for d in devices]
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(data, Mapping):
+        return dicts
+    statuses: dict[str, Mapping[str, Any]] = {}
+    for row in _table_rows(data.get("deviceStatus")):
+        device_id = _first_text(row, ("deviceId", "deviceID"))
+        if device_id:
+            statuses[device_id] = row
+    property_rows: dict[str, list[Mapping[str, Any]]] = {}
+    for table in ("devicePropertyStatus", "deviceProperties", "propertyStatus"):
+        for row in _table_rows(data.get(table)):
+            device_id = _first_text(row, ("deviceId", "deviceID"))
+            if device_id:
+                property_rows.setdefault(device_id, []).append(row)
+    for item in dicts:
+        device_id = item.get("deviceId") or item.get("device_id") or ""
+        apply_status_properties(
+            item, statuses.get(str(device_id)), property_rows.get(str(device_id), ())
+        )
+    return dicts
 
 
 def parse_families_to_dicts(
