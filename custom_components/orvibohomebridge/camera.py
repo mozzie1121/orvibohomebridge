@@ -56,32 +56,119 @@ async def async_setup_entry(
             continue
         if classify_device(device) == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboLockSnapshotCamera(coordinator, device))
-    video_devices = {
+    camera_devices = {
         device_id: device for device_id, device in coordinator.devices.items()
-        if device_id in selected_ids and camera_sdk_hint(device) == "meari"
+        if device_id in selected_ids
+        and camera_sdk_hint(device) != "unknown"
     }
+    unselected_cameras = [
+        device.get("device_name") or device_id
+        for device_id, device in coordinator.devices.items()
+        if device_id not in selected_ids and camera_sdk_hint(device) != "unknown"
+    ]
+    if unselected_cameras:
+        _LOGGER.info(
+            "以下摄像头未在已选设备中，如需实体请在集成选项里重新勾选「摄像头」分组: %s",
+            ", ".join(unselected_cameras),
+        )
+
+    video_devices = {
+        device_id: device
+        for device_id, device in camera_devices.items()
+        if camera_sdk_hint(device) == "meari"
+    }
+    # 非 meari（danale/ezviz 等）暂无可用的建流实现：先给出占位实体，
+    # 让设备在 HA 里可见，而不是静默消失。
+    for device_id, device in camera_devices.items():
+        if camera_sdk_hint(device) != "meari":
+            entities.append(
+                OrviboCameraUnavailable(
+                    coordinator, device, f"sdk={camera_sdk_hint(device)} 暂未实现实时流"
+                )
+            )
+
     if video_devices:
         bootstrap = LiveCameraBootstrap(coordinator, async_get_clientsession(hass))
         try:
             descriptions = await bootstrap.discover(video_devices)
-        except (ValueError, OSError, TimeoutError):
-            # Raise before adding entities so a platform retry cannot duplicate locks.
-            raise PlatformNotReady("摄像机设备或录像机通道清单暂时不可用，将自动重试") from None
-        binary = get_ffmpeg_manager(hass).binary
-        for description in descriptions:
-            live = OrviboLiveCamera(
-                coordinator, video_devices[description.device_id], description,
-                bootstrap, binary,
+        except Exception as err:  # noqa: BLE001 - 任何建流失败都不应吞掉整平台
+            _LOGGER.warning(
+                "Meari 摄像机通道清单获取失败（%s: %s），先创建占位实体，稍后重试",
+                type(err).__name__,
+                err,
             )
-            entities.append(live)
-            playback = OrviboHddCamera(
-                coordinator, video_devices[description.device_id], description,
-                bootstrap, binary,
-            )
-            live._playback = playback
-            entities.append(playback)
+            for device in video_devices.values():
+                entities.append(
+                    OrviboCameraUnavailable(
+                        coordinator, device, f"P2P 通道不可用: {type(err).__name__}"
+                    )
+                )
+        else:
+            binary = get_ffmpeg_manager(hass).binary
+            for description in descriptions:
+                live = OrviboLiveCamera(
+                    coordinator, video_devices[description.device_id], description,
+                    bootstrap, binary,
+                )
+                entities.append(live)
+                playback = OrviboHddCamera(
+                    coordinator, video_devices[description.device_id], description,
+                    bootstrap, binary,
+                )
+                live._playback = playback
+                entities.append(playback)
     if entities:
         async_add_entities(entities)
+
+
+class OrviboCameraUnavailable(CoordinatorEntity, Camera):
+    """SDK 未实现或 P2P 建流失败时的占位摄像头。
+
+    目的：设备在 HA 里可见可查（含 sdk_hint / 失败原因），而不是整平台静默失败。
+    """
+
+    _attr_icon = "mdi:cctv-off"
+
+    def __init__(
+        self,
+        coordinator: OrviboMeshCoordinator,
+        device: dict[str, Any],
+        reason: str,
+    ) -> None:
+        super().__init__(coordinator)
+        Camera.__init__(self)
+        self._device = device
+        self._device_id = device.get("device_id", "")
+        self._reason = reason
+        self._attr_unique_id = f"orvibohomebridge_camera_unavailable_{self._device_id}"
+        self._attr_name = str(device.get("device_name") or "摄像机") + " 摄像头"
+
+    @property
+    def available(self) -> bool:
+        return False
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        return _PLACEHOLDER_IMAGE
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "reason": self._reason,
+            "sdk_hint": camera_sdk_hint(self._device),
+            "device_type_raw": self._device.get("device_type_raw"),
+        }
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "name": self._device.get("device_name", "Orvibo Camera"),
+            "manufacturer": "ORVIBO",
+            "model": "Camera",
+            "sw_version": "1.0",
+        }
 
 
 class OrviboLockSnapshotCamera(CoordinatorEntity, Camera):
