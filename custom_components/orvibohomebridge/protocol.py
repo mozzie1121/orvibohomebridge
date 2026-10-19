@@ -823,7 +823,15 @@ def _infer_initial_state(device: OrviboDevice) -> bool:
     if v1 is None:
         return False
     if dt in (1, 102, 38, 503, 0, 43):  # 43=COCO插线板 active-low
-        return int(v1) == 0  # active-low
+        try:
+            from .light_values import power_state_from_value1
+        except ImportError:  # 测试里会脱离包单独加载 protocol 模块
+            power_state_from_value1 = None
+        if power_state_from_value1 is not None:
+            parsed = power_state_from_value1(v1, dt, getattr(device, "sub_device_type", None))
+            if parsed is not None:
+                return parsed
+        return int(v1) == 0
     if dt in (135, 136, 137, 143, 518):
         return int(v1) == 1  # active-high
     if dt == 112:

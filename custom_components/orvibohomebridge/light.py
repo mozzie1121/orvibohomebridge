@@ -11,6 +11,7 @@ from .const import DOMAIN, MANUFACTURER, DEVICE_TYPE_LIGHT, DEVICE_TYPE_CLOTHES_
 from .coordinator import OrviboMeshCoordinator
 from .custom_devices import profile_for_device
 from .device_types import classify_device, DeviceCategory
+from .light_values import normalize_brightness
 from .selection import selected_device_ids
 
 _LOGGER = logging.getLogger(__name__)

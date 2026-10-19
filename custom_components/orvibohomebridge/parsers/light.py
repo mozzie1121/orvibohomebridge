@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from ..light_values import (
+    normalize_brightness,
+    normalize_color_temp,
+    percent_to_255,
+    power_state_from_value1,
+)
 from .base import StatePatch, to_int
 
 
@@ -24,7 +30,10 @@ def parse_light(
     elif isinstance(props.get("onoff_status"), str):
         state = props["onoff_status"] == "on"
     elif raw_status.get("value1") is not None:
-        state = int(raw_status["value1"]) == 0
+        parsed_state = power_state_from_value1(
+            raw_status.get("value1"), None, _subdevice_type(raw_status)
+        )
+        state = current_state.get("state", False) if parsed_state is None else parsed_state
     else:
         state = current_state.get("state", False)
     return StatePatch({"state": state})
@@ -45,7 +54,7 @@ def parse_dim_color_light(
             if percent is not None:
                 try:
                     # type=38 量纲为 0-255，percent 换算后钳制
-                    brightness = min(255, max(0, int(float(percent) * 255 / 100)))
+                    brightness = percent_to_255(percent)
                 except (TypeError, ValueError):
                     brightness = None
             else:
@@ -59,11 +68,7 @@ def parse_dim_color_light(
                 )
         else:
             brightness = raw_brightness
-    if brightness is not None:
-        try:
-            brightness = int(brightness)
-        except (TypeError, ValueError):
-            brightness = None
+    brightness = normalize_brightness(brightness)
 
     color_temp = raw_status.get("value3")
     if color_temp is not None:
@@ -82,17 +87,17 @@ def parse_dim_color_light(
             except (TypeError, ValueError):
                 color_temp = None
     if color_temp is not None:
-        color_temp = min(6500, max(2700, color_temp))
+        color_temp = normalize_color_temp(color_temp)
 
     value1 = raw_status.get("value1")
     if isinstance(value1, dict):
         value1 = value1.get("value")
     if value1 is not None:
         sub_device_type = _subdevice_type(raw_status)
-        try:
-            state = int(value1) == (0 if sub_device_type == -2 else 1)
-        except (TypeError, ValueError):
-            state = current_state.get("state", False)
+        parsed_state = power_state_from_value1(
+            value1, raw_status.get("deviceType"), sub_device_type
+        )
+        state = current_state.get("state", False) if parsed_state is None else parsed_state
     else:
         onoff_obj = props.get("onoff", {})
         if isinstance(onoff_obj, dict) and onoff_obj.get("status"):
