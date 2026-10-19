@@ -56,15 +56,17 @@ async def async_setup_entry(
             continue
         if classify_device(device) == DeviceCategory.DOOR_LOCK:
             entities.append(OrviboLockSnapshotCamera(coordinator, device))
+    # 摄像头在旧版本里属于隐藏类别，用户从来没机会勾选它；如果仍按
+    # selected_device_ids 过滤，升级后就永远没有实体。这里对摄像头放宽：
+    # 只要解析到 SDK hint 就创建，日志里注明它未被显式选择。
     camera_devices = {
         device_id: device for device_id, device in coordinator.devices.items()
-        if device_id in selected_ids
-        and camera_sdk_hint(device) != "unknown"
+        if camera_sdk_hint(device) != "unknown"
     }
     unselected_cameras = [
         device.get("device_name") or device_id
-        for device_id, device in coordinator.devices.items()
-        if device_id not in selected_ids and camera_sdk_hint(device) != "unknown"
+        for device_id, device in camera_devices.items()
+        if device_id not in selected_ids
     ]
     if unselected_cameras:
         _LOGGER.info(

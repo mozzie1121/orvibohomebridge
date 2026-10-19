@@ -38,6 +38,26 @@ def _deep_merge_dict(base: dict, patch: dict) -> dict:
     return merged
 
 
+
+def _attach_camera_types(
+    devices: List[Dict[str, Any]], device_status_data: Dict[str, Any]
+) -> None:
+    """把 CameraInfo.type 写到设备上（按硬件 uid 归属）。
+
+    camera_sdk_hint() 依赖 device["camera_type"] 判断 danale/meari；
+    运行时的设备清单走本模块解析，所以这里也必须补，否则摄像头会被当成 unknown。
+    """
+    from .protocol import parse_camera_types
+
+    camera_types = parse_camera_types(device_status_data.get("cameraInfo"))
+    if not camera_types:
+        return
+    for device in devices:
+        uid = str(device.get("uid") or "")
+        if uid and device.get("camera_type") is None and uid in camera_types:
+            device["camera_type"] = camera_types[uid]
+
+
 class HttpsClient:
     def __init__(
         self,
@@ -575,6 +595,7 @@ class HttpsClient:
                 # 这一分支重建了新的 dict，必须补上自定义设备识别标记，
                 # 否则实体阶段会因 device_type 已被覆盖而找不到 profile。
                 result.append(self._stamp_custom_platform(device))
+            _attach_camera_types(result, device_status_data)
             _LOGGER.info(f"从 device_status dict 解析到 {len(result)} 个设备")
             return result
 
@@ -609,6 +630,8 @@ class HttpsClient:
                 dev["properties"] = dict(status_properties)
             result.append(dev)
         
+        _attach_camera_types(result, device_status_data)
+
         # 跳过父开关设备（type=135/136，properties 为空）
         filtered = []
         for dev in result:
