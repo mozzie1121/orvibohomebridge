@@ -1,24 +1,14 @@
 {
   "domain": "orvibohomebridge",
   "name": "ORVIBO HomeBridge",
-  "codeowners": [
-    "@mozzie1121"
-  ],
+  "after_dependencies": ["lovelace"],
+  "codeowners": ["@mozzie1121"],
   "config_flow": true,
-  "dependencies": [
-    "ffmpeg",
-    "frontend",
-    "http",
-    "media_source",
-    "stream"
-  ],
+  "dependencies": ["ffmpeg", "frontend", "http", "media_source", "stream"],
   "documentation": "https://github.com/mozzie1121/orvibohomebridge",
   "homekit": {},
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/mozzie1121/orvibohomebridge/issues",
-  "version": "0.6.0",
-  "after_dependencies": [
-    "lovelace"
-  ],
-  "integration_type": "hub"
+  "version": "0.6.0"
 }
