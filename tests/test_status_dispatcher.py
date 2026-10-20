@@ -60,6 +60,28 @@ class StatusDispatcherTests(unittest.TestCase):
         )
         return dispatcher, calls, diagnostics, updates
 
+    def test_environmental_push_uses_known_device_channel(self) -> None:
+        devices = {
+            "temperature": {"device_type_raw": 22, "uid": "gateway", "ext_addr": "shared"},
+            "humidity": {"device_type_raw": 23, "uid": "gateway", "ext_addr": "shared"},
+        }
+        for source in (self.state_store.StateSource.SSL, self.state_store.StateSource.LAN):
+            with self.subTest(source=source):
+                states = {"temperature": {}, "humidity": {}}
+                dispatcher, _, _, _ = self.make_dispatcher(devices, states)
+                temp_packet = {"cmd": 42, "value1": 2290, "value2": 0, "value4": 45}
+                humidity_packet = {"cmd": 42, "statusType": 23,
+                                   "value1": 0, "value2": 6012, "value4": 45}
+                dispatcher.dispatch("temperature", temp_packet, source)
+                dispatcher.dispatch("humidity", humidity_packet, source)
+                self.assertEqual(states["temperature"]["temperature"], 22.9)
+                self.assertEqual(states["humidity"]["humidity"], 60.12)
+                self.assertNotIn("temperature", states["humidity"])
+                self.assertNotIn("humidity", states["temperature"])
+                self.assertEqual(states["temperature"]["battery"], 45)
+                self.assertEqual(states["humidity"]["battery"], 45)
+                self.assertNotIn("statusType", temp_packet)
+
     def test_resolves_w_prefixed_local_id_after_uid_miss(self) -> None:
         states = {"w-device": {"uid": "different"}}
         dispatcher, _, _, _ = self.make_dispatcher(states=states)

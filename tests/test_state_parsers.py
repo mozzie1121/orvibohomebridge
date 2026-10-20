@@ -214,6 +214,46 @@ class StateParserTests(unittest.TestCase):
             {"state": True, "temperature": 23.5, "humidity": 61.0, "battery": 89},
         )
 
+    def test_legacy_environmental_sensor_channels(self) -> None:
+        for packet, expected in (
+            ({"statusType": 22, "value1": 2290, "value2": 0, "value4": 45},
+             {"state": True, "temperature": 22.9, "battery": 45}),
+            ({"statusType": 23, "value1": 0, "value2": 6012, "value4": 45},
+             {"state": True, "humidity": 60.12, "battery": 45}),
+            ({"statusType": 22, "value1": 0, "value4": 0},
+             {"state": True, "temperature": 0.0, "battery": 0}),
+            ({"statusType": 22, "value1": "-125"},
+             {"state": True, "temperature": -1.25}),
+            ({"statusType": 23, "value2": "0"},
+             {"state": True, "humidity": 0.0}),
+        ):
+            with self.subTest(packet=packet):
+                self.assertEqual(
+                    self.sensor.parse_temp_humidity_sensor({}, packet).values,
+                    expected,
+                )
+
+    def test_legacy_environmental_properties_take_precedence(self) -> None:
+        packet = {"statusType": 22, "value1": 2290, "value4": 45,
+                  "properties": {"temperature": {"value": 24}, "battery": 80}}
+        self.assertEqual(
+            self.sensor.parse_temp_humidity_sensor({}, packet).values,
+            {"state": True, "temperature": 24.0, "battery": 80},
+        )
+
+    def test_legacy_environmental_missing_or_invalid_values_are_not_readings(self) -> None:
+        for packet in (
+            {"statusType": 22},
+            {"statusType": 23, "value2": None, "value4": None},
+            {"statusType": 22, "value1": "bad", "value4": "bad"},
+            {"statusType": 300, "value1": 2290, "value2": 6012, "value4": 45},
+        ):
+            with self.subTest(packet=packet):
+                self.assertEqual(
+                    self.sensor.parse_temp_humidity_sensor({}, packet).values,
+                    {"state": True},
+                )
+
     def test_door_window_parser_preserves_raw_invalid_battery(self) -> None:
         patch = self.sensor.parse_door_window_sensor(
             {}, {"value1": "1", "value4": "unknown"}

@@ -32,7 +32,7 @@ def _integer_or_raw(value: Any) -> Any:
 def parse_temp_humidity_sensor(
     current_state: Mapping[str, Any], raw_status: Mapping[str, Any]
 ) -> StatePatch:
-    """Parse temperature, humidity, and property-based battery values."""
+    """Parse property-based sensors and legacy type 22/23 channels."""
 
     props = raw_status.get("properties", {})
     updates: dict[str, Any] = {"state": True}
@@ -54,6 +54,24 @@ def parse_temp_humidity_sensor(
     battery = _battery_value(props.get("battery", {}))
     if battery is not None:
         updates["battery"] = battery
+
+    # ST30 exposes separate temperature (22) and humidity (23) endpoints.
+    # Each endpoint's other value slot is a placeholder, not a zero reading.
+    status_type = raw_status.get("statusType")
+    if status_type in (22, 23):
+        field, slot = (
+            ("temperature", "value1") if status_type == 22 else ("humidity", "value2")
+        )
+        if field not in updates and raw_status.get(slot) is not None:
+            try:
+                updates[field] = float(raw_status[slot]) / 100
+            except (TypeError, ValueError):
+                pass
+        if "battery" not in updates and raw_status.get("value4") is not None:
+            try:
+                updates["battery"] = int(float(raw_status["value4"]))
+            except (TypeError, ValueError, OverflowError):
+                pass
     return StatePatch(updates)
 
 
